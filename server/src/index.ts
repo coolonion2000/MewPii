@@ -5,7 +5,7 @@ import { execFile } from 'node:child_process';
 import { extname, join, normalize, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer, type WebSocket } from 'ws';
-import { ModelRegistry, ModelRuntime, SessionManager, createAgentSessionServices } from '@earendil-works/pi-coding-agent';
+import { DefaultPackageManager, ModelRegistry, ModelRuntime, SessionManager, SettingsManager, createAgentSessionServices, getAgentDir } from '@earendil-works/pi-coding-agent';
 import type { ClientCommand, ProjectGroup, ServerMessage } from './protocol.js';
 import { SessionHost } from './session-host.js';
 
@@ -124,6 +124,17 @@ async function getModelServices(): Promise<ModelServices> {
   }
   return modelServices;
 }
+
+// ---------------------------------------------------------------------------
+// OAuth login flows (bridged to the browser over REST)
+// ---------------------------------------------------------------------------
+interface OAuthFlow {
+  events: { type: string; message?: string; url?: string; userCode?: string; verificationUri?: string; instructions?: string }[];
+  pendingPrompt?: { message: string; placeholder?: string; inputType: string; resolve: (value: string) => void };
+  done: boolean;
+  error?: string;
+}
+const oauthFlows = new Map<string, OAuthFlow>();
 
 // ---------------------------------------------------------------------------
 // helpers
@@ -281,6 +292,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse): Promise<boo
         name: p.name ?? registry.getProviderDisplayName(p.id),
         configured: Boolean(status?.configured),
         authSource: status?.source,
+        hasOAuth: Boolean(p.auth.oauth),
         modelCount: runtime.getModels(p.id).length,
       };
     });
@@ -295,6 +307,167 @@ async function handleApi(req: IncomingMessage, res: ServerResponse): Promise<boo
       hasAuth: registry.hasConfiguredAuth(m),
     }));
     sendJson(res, 200, { providers, models });
+    return true;
+  }
+
+  // ---- settings (global pi settings) ----------------------------------
+  if (path === '/api/settings' && req.method === 'GET') {
+    const sm = SettingsManager.create(process.cwd(), getAgentDir());
+    const s = sm.getGlobalSettings();
+    sendJson(res, 200, {
+      defaultProvider: s.defaultProvider,
+      defaultModel: s.defaultModel,
+      defaultThinkingLevel: s.defaultThinkingLevel,
+      steeringMode: s.steeringMode,
+      followUpMode: s.followUpMode,
+      compaction: s.compaction,
+      hideThinkingBlock: s.hideThinkingBlock,
+    });
+    return true;
+  }
+
+  if (path === '/api/settings' && req.method === 'POST') {
+    const body = JSON.parse((await readBody(req, 1024 * 1024)).toString()) as Record<string, unknown>;
+    const sm = SettingsManager.create(process.cwd(), getAgentDir());
+    if (typeof body.defaultProvider === 'string' && typeof body.defaultModel === 'string') {
+      sm.setDefaultModelAndProvider(body.defaultProvider, body.defaultModel);
+    } else if (typeof body.defaultProvider === 'string') {
+      sm.setDefaultProvider(body.defaultProvider);
+    } else if (typeof body.defaultModel === 'string') {
+      sm.setDefaultModel(body.defaultModel);
+    }
+    if (typeof body.defaultThinkingLevel === 'string') sm.setDefaultThinkingLevel(body.defaultThinkingLevel as never);
+    if (body.steeringMode === 'all' || body.steeringMode === 'one-at-a-time') sm.setSteeringMode(body.steeringMode);
+    if (body.followUpMode === 'all' || body.followUpMode === 'one-at-a-time') sm.setFollowUpMode(body.followUpMode);
+    if (typeof body.compactionEnabled === 'boolean') sm.setCompactionEnabled(body.compactionEnabled);
+    if (typeof body.hideThinkingBlock === 'boolean') sm.setHideThinkingBlock(body.hideThinkingBlock);
+    sendJson(res, 200, { ok: true });
+    return true;
+  }
+
+  // ---- extensions (pi packages) ----------------------------------------
+  if (path === '/api/extensions' && req.method === 'GET') {
+    const cwd = url.searchParams.get('cwd') ?? process.cwd();
+    const pm = new DefaultPackageManager({
+      cwd,
+      agentDir: getAgentDir(),
+      settingsManager: SettingsManager.create(cwd, getAgentDir()),
+    });
+    sendJson(res, 200, { packages: pm.listConfiguredPackages() });
+    return true;
+  }
+
+  if (path === '/api/extensions' && req.method === 'POST') {
+    const body = JSON.parse((await readBody(req, 1024 * 1024)).toString()) as { source?: string; cwd?: string };
+    if (!body.source) {
+      sendJson(res, 400, { error: 'missing source' });
+      return true;
+    }
+    const cwd = body.cwd ?? process.cwd();
+    const pm = new DefaultPackageManager({
+      cwd,
+      agentDir: getAgentDir(),
+      settingsManager: SettingsManager.create(cwd, getAgentDir()),
+    });
+    await pm.installAndPersist(body.source);
+    sendJson(res, 200, { ok: true });
+    return true;
+  }
+
+  if (path === '/api/extensions' && req.method === 'DELETE') {
+    const source = url.searchParams.get('source');
+    const cwd = url.searchParams.get('cwd') ?? process.cwd();
+    if (!source) {
+      sendJson(res, 400, { error: 'missing source' });
+      return true;
+    }
+    const pm = new DefaultPackageManager({
+      cwd,
+      agentDir: getAgentDir(),
+      settingsManager: SettingsManager.create(cwd, getAgentDir()),
+    });
+    await pm.remove(source);
+    sendJson(res, 200, { ok: true });
+    return true;
+  }
+
+  // ---- OAuth login flows ------------------------------------------------
+  if (path === '/api/auth/oauth/start' && req.method === 'POST') {
+    const body = JSON.parse((await readBody(req, 1024 * 1024)).toString()) as { provider?: string };
+    if (!body.provider) {
+      sendJson(res, 400, { error: 'missing provider' });
+      return true;
+    }
+    const { runtime } = await getModelServices();
+    const provider = runtime.getProvider(body.provider);
+    if (!provider?.auth.oauth) {
+      sendJson(res, 400, { error: `provider ${body.provider} has no OAuth flow` });
+      return true;
+    }
+    const id = crypto.randomUUID();
+    const flow: OAuthFlow = { events: [], done: false };
+    oauthFlows.set(id, flow);
+    void runtime
+      .login(body.provider, 'oauth', {
+        notify: (ev) => {
+          flow.events.push(ev as OAuthFlow['events'][number]);
+        },
+        prompt: (p) =>
+          new Promise<string>((resolvePrompt, rejectPrompt) => {
+            flow.pendingPrompt = {
+              message: p.message,
+              placeholder: 'placeholder' in p ? p.placeholder : undefined,
+              inputType: p.type,
+              resolve: (value: string) => {
+                flow.pendingPrompt = undefined;
+                resolvePrompt(value);
+              },
+            };
+            p.signal?.addEventListener('abort', () => {
+              flow.pendingPrompt = undefined;
+              rejectPrompt(new Error('cancelled'));
+            });
+          }),
+      })
+      .then(() => {
+        flow.done = true;
+      })
+      .catch((err) => {
+        flow.done = true;
+        flow.error = err instanceof Error ? err.message : String(err);
+      });
+    sendJson(res, 200, { id });
+    return true;
+  }
+
+  if (path === '/api/auth/oauth/status' && req.method === 'GET') {
+    const id = url.searchParams.get('id');
+    const flow = id ? oauthFlows.get(id) : undefined;
+    if (!flow) {
+      sendJson(res, 404, { error: 'unknown flow' });
+      return true;
+    }
+    sendJson(res, 200, {
+      events: flow.events,
+      pendingPrompt: flow.pendingPrompt
+        ? { message: flow.pendingPrompt.message, placeholder: flow.pendingPrompt.placeholder, inputType: flow.pendingPrompt.inputType }
+        : undefined,
+      done: flow.done,
+      error: flow.error,
+    });
+    if (flow.done) oauthFlows.delete(id!);
+    return true;
+  }
+
+  if (path === '/api/auth/oauth/answer' && req.method === 'POST') {
+    const body = JSON.parse((await readBody(req, 1024 * 1024)).toString()) as { id?: string; value?: string };
+    const flow = body.id ? oauthFlows.get(body.id) : undefined;
+    if (!flow?.pendingPrompt) {
+      sendJson(res, 400, { error: 'no pending prompt' });
+      return true;
+    }
+    flow.pendingPrompt.resolve(body.value ?? '');
+    sendJson(res, 200, { ok: true });
     return true;
   }
 

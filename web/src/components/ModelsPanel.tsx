@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { fetchModels, type ModelsResponse } from '../api';
+import OAuthDialog from './OAuthDialog';
 import { t } from '../i18n';
 
 export default function ModelsPanel() {
@@ -9,6 +10,7 @@ export default function ModelsPanel() {
   const [keyDraft, setKeyDraft] = useState('');
   const [notice, setNotice] = useState<string>();
   const [filter, setFilter] = useState('');
+  const [oauthProvider, setOauthProvider] = useState<string>();
 
   const refresh = () => {
     fetchModels()
@@ -80,6 +82,9 @@ export default function ModelsPanel() {
                 {p.configured && (
                   <button className="btn btn-sm" onClick={() => void logout(p.id)}>{t('logout')}</button>
                 )}
+                {(p as { hasOAuth?: boolean }).hasOAuth && (
+                  <button className="btn btn-sm" onClick={() => setOauthProvider(p.id)}>{t('loginOAuth')}</button>
+                )}
                 <button
                   className="btn btn-sm"
                   onClick={() => {
@@ -127,6 +132,16 @@ export default function ModelsPanel() {
           );
         })}
       </div>
+      {oauthProvider && (
+        <OAuthDialog
+          provider={oauthProvider}
+          providerName={providers.find((p) => p.id === oauthProvider)?.name ?? oauthProvider}
+          onClose={(success) => {
+            setOauthProvider(undefined);
+            if (success) refresh();
+          }}
+        />
+      )}
     </div>
   );
 }

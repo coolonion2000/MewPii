@@ -6,6 +6,7 @@ import ChatView from './components/ChatView';
 import ModelsPanel from './components/ModelsPanel';
 import FilesPanel from './components/FilesPanel';
 import ResourcesPanel from './components/ResourcesPanel';
+import SettingsPanel from './components/SettingsPanel';
 import { getLang, onLangChange, t } from './i18n';
 
 export interface Selection {
@@ -13,7 +14,7 @@ export interface Selection {
   sessionPath?: string;
 }
 
-export type View = 'chat' | 'files' | 'models' | 'resources';
+export type View = 'chat' | 'files' | 'models' | 'resources' | 'settings';
 
 interface Route {
   view: View;
@@ -129,6 +130,7 @@ export default function App() {
         {route.view === 'models' && <ModelsPanel />}
         {route.view === 'files' && <FilesPanel key={defaultCwd} cwd={defaultCwd} />}
         {route.view === 'resources' && <ResourcesPanel key={defaultCwd} cwd={defaultCwd} />}
+        {route.view === 'settings' && <SettingsPanel dark={dark} onToggleTheme={() => setDark((d) => !d)} />}
         {route.view === 'chat' &&
           (conv ? (
             <ChatView key={`${selection?.cwd}|${selection?.sessionPath ?? 'new'}`} conv={conv} onRefresh={refreshProjects} />

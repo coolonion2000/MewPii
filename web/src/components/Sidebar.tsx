@@ -15,25 +15,26 @@ interface Props {
   onToggleTheme: () => void;
 }
 
-function shortPath(cwd: string): string {
+function basename(cwd: string): string {
   const parts = cwd.split('/').filter(Boolean);
-  return parts.length > 2 ? `…/${parts.slice(-2).join('/')}` : cwd;
+  return parts[parts.length - 1] ?? cwd;
 }
 
 function relTime(iso: string): string {
   const diff = Date.now() - Date.parse(iso);
   const m = Math.floor(diff / 60_000);
   if (m < 1) return t('justNow');
-  if (m < 60) return `${m} ${t('minutesAgo')}`;
+  if (m < 60) return `${m}${t('minutesAgo')}`;
   const h = Math.floor(m / 60);
-  if (h < 24) return `${h} ${t('hoursAgo')}`;
+  if (h < 24) return `${h}${t('hoursAgo')}`;
   const d = Math.floor(h / 24);
-  if (d < 30) return `${d} ${t('daysAgo')}`;
+  if (d < 30) return `${d}${t('daysAgo')}`;
   return new Date(iso).toLocaleDateString();
 }
 
 export default function Sidebar({ projects, selection, view, onNavigate, onSelect, onDelete, onRefresh, dark, onToggleTheme }: Props) {
   const [query, setQuery] = useState('');
+  const [searchOpen, setSearchOpen] = useState(false);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
 
   const filtered = useMemo(() => {
@@ -52,33 +53,36 @@ export default function Sidebar({ projects, selection, view, onNavigate, onSelec
       .filter((p) => p.sessions.length > 0);
   }, [projects, query]);
 
-  const newSessionCwd = projects[0]?.cwd ?? '/';
+  const newSessionCwd = selection?.cwd ?? projects[0]?.cwd ?? '/';
 
   return (
     <div className="sidebar">
-      <div className="sidebar-brand">
-        <span className="logo">π</span>
-        <span>pii</span>
-        <span style={{ fontSize: 11, color: 'var(--dsw-alias-label-tertiary)', fontWeight: 400 }}>pi web</span>
-      </div>
-      <div className="sidebar-actions">
-        <button className="btn btn-primary" onClick={() => onSelect({ cwd: newSessionCwd })}>
-          ＋ {t('newSession')}
+      <div className="wb-header">
+        <span className="wb-title">{t('workspace')}</span>
+        <span className="spacer" />
+        <button className="btn btn-icon" title={t('searchSessions')} onClick={() => setSearchOpen((o) => !o)}>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        </button>
+        <button className={`btn btn-icon ${view === 'settings' ? 'tab-active' : ''}`} title={t('navSettings')} onClick={() => onNavigate('settings')}>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 8h10M18 8h2M4 16h2M10 16h10"/><circle cx="16" cy="8" r="2"/><circle cx="8" cy="16" r="2"/></svg>
+        </button>
+        <button className="btn btn-icon" title={t('newSession')} onClick={() => onSelect({ cwd: newSessionCwd })}>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 5v14M5 12h14"/></svg>
         </button>
       </div>
-      <div style={{ padding: '0 12px 8px' }}>
-        <input
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder={t('searchSessions')}
-          style={{
-            width: '100%', border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 8,
-            padding: '6px 10px', fontSize: 13, fontFamily: 'inherit',
-            background: 'var(--dsw-alias-bg-base)', color: 'var(--dsw-alias-label-primary)',
-            outline: 'none',
-          }}
-        />
-      </div>
+
+      {searchOpen && (
+        <div style={{ padding: '0 12px 8px' }}>
+          <input
+            autoFocus
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder={t('searchSessions')}
+            className="sidebar-search"
+          />
+        </div>
+      )}
+
       <div className="sidebar-scroll">
         {filtered.map((p) => {
           const isCollapsed = collapsed.has(p.cwd);
@@ -96,11 +100,13 @@ export default function Sidebar({ projects, selection, view, onNavigate, onSelec
                   })
                 }
               >
-                <span style={{ fontSize: 10 }}>{isCollapsed ? '▸' : '▾'}</span>
-                <span className="path">{shortPath(p.cwd)}</span>
+                <svg className="folder-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+                  <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/>
+                </svg>
+                <span className="path">{basename(p.cwd)}</span>
                 <button
                   className="btn btn-icon add-btn"
-                  title="在此项目中新建会话"
+                  title={t('newSession')}
                   onClick={(e) => {
                     e.stopPropagation();
                     onSelect({ cwd: p.cwd });
@@ -116,13 +122,9 @@ export default function Sidebar({ projects, selection, view, onNavigate, onSelec
                     className={`session-item ${selection?.sessionPath === s.path ? 'active' : ''}`}
                     onClick={() => onSelect({ cwd: s.cwd || p.cwd, sessionPath: s.path })}
                   >
-                    <div className="title">{s.name || s.firstMessage || '(空会话)'}</div>
-                    <div className="meta">
-                      {s.running && <span className="running-dot" title={t('running')} />}
-                      <span>{s.messageCount} {t('messages')}</span>
-                      <span>·</span>
-                      <span>{relTime(s.modified)}</span>
-                    </div>
+                    <span className={`status-dot ${s.running ? 'on' : ''}`} />
+                    <span className="title">{s.name || s.firstMessage || '(空会话)'}</span>
+                    <span className="time">{relTime(s.modified)}</span>
                     <button
                       className="btn btn-icon btn-sm delete-btn"
                       title={t('deleteSession')}
@@ -144,29 +146,18 @@ export default function Sidebar({ projects, selection, view, onNavigate, onSelec
           </div>
         )}
       </div>
+
       <div className="sidebar-footer">
-        <button
-          className={`btn btn-sm ${view === 'chat' ? 'tab-active' : ''}`}
-          onClick={() => onNavigate('chat')}
-        >
+        <button className={`btn btn-sm ${view === 'chat' ? 'tab-active' : ''}`} onClick={() => onNavigate('chat')}>
           {t('navChat')}
         </button>
-        <button
-          className={`btn btn-sm ${view === 'files' ? 'tab-active' : ''}`}
-          onClick={() => onNavigate('files')}
-        >
+        <button className={`btn btn-sm ${view === 'files' ? 'tab-active' : ''}`} onClick={() => onNavigate('files')}>
           {t('navFiles')}
         </button>
-        <button
-          className={`btn btn-sm ${view === 'models' ? 'tab-active' : ''}`}
-          onClick={() => onNavigate('models')}
-        >
+        <button className={`btn btn-sm ${view === 'models' ? 'tab-active' : ''}`} onClick={() => onNavigate('models')}>
           {t('navModels')}
         </button>
-        <button
-          className={`btn btn-sm ${view === 'resources' ? 'tab-active' : ''}`}
-          onClick={() => onNavigate('resources')}
-        >
+        <button className={`btn btn-sm ${view === 'resources' ? 'tab-active' : ''}`} onClick={() => onNavigate('resources')}>
           {t('navResources')}
         </button>
         <span style={{ flex: 1 }} />
