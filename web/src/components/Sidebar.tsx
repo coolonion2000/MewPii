@@ -85,7 +85,7 @@ export default function Sidebar({ projects, selection, view, onNavigate, onSelec
 
       <div className="sidebar-scroll">
         {filtered.map((p) => {
-          const isCollapsed = collapsed.has(p.cwd);
+          const isCollapsed = !collapsed.has(p.cwd); // default collapsed; click toggles open
           return (
             <div className="project-group" key={p.cwd}>
               <div

@@ -55,6 +55,32 @@ export default function ResourcesPanel({ cwd: initialCwd }: { cwd: string }) {
     }
   };
 
+  const [addingSkill, setAddingSkill] = useState(false);
+  const [skillDraft, setSkillDraft] = useState({ name: '', description: '', content: '' });
+
+  const addSkill = async () => {
+    if (!skillDraft.name.trim()) return;
+    const res = await fetch('/api/skills', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(skillDraft),
+    });
+    if (res.ok) {
+      setAddingSkill(false);
+      setSkillDraft({ name: '', description: '', content: '' });
+      // reload resources
+      setData(undefined);
+      fetch(`/api/resources?cwd=${encodeURIComponent(cwd)}`).then((r) => r.json()).then(setData).catch(() => undefined);
+    }
+  };
+
+  const deleteSkill = async (filePath: string) => {
+    if (!confirm(t('confirmDeleteSkill'))) return;
+    await fetch(`/api/skills?path=${encodeURIComponent(filePath)}`, { method: 'DELETE' }).catch(() => undefined);
+    setData(undefined);
+    fetch(`/api/resources?cwd=${encodeURIComponent(cwd)}`).then((r) => r.json()).then(setData).catch(() => undefined);
+  };
+
   const removePkg = async (source: string) => {
     if (!confirm(t('confirmRemove'))) return;
     await fetch(`/api/extensions?cwd=${encodeURIComponent(cwd)}&source=${encodeURIComponent(source)}`, { method: 'DELETE' }).catch(() => undefined);
@@ -90,13 +116,42 @@ export default function ResourcesPanel({ cwd: initialCwd }: { cwd: string }) {
       {error && <div className="msg-error">{error}</div>}
       {data && (
         <>
-          <h3 className="section-title">{t('skillsSection')} ({data.skills.length})</h3>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <h3 className="section-title" style={{ margin: '20px 0 10px' }}>{t('skillsSection')} ({data.skills.length})</h3>
+            <button className="btn btn-sm" onClick={() => setAddingSkill((v) => !v)}>＋ {t('addSkill')}</button>
+          </div>
+          {addingSkill && (
+            <div className="provider-card" style={{ padding: '12px 14px', marginBottom: 10 }}>
+              <div className="key-row">
+                <input placeholder={t('skillName')} value={skillDraft.name} onChange={(e) => setSkillDraft({ ...skillDraft, name: e.target.value })} />
+                <input placeholder={t('skillDesc')} value={skillDraft.description} onChange={(e) => setSkillDraft({ ...skillDraft, description: e.target.value })} />
+              </div>
+              <textarea
+                placeholder={t('skillContent')}
+                value={skillDraft.content}
+                onChange={(e) => setSkillDraft({ ...skillDraft, content: e.target.value })}
+                rows={4}
+                style={{
+                  width: '100%', marginTop: 8, border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 8,
+                  padding: '7px 10px', fontSize: 12.5, fontFamily: 'inherit',
+                  background: 'var(--dsw-alias-bg-base)', color: 'var(--dsw-alias-label-primary)', outline: 'none', resize: 'vertical',
+                }}
+              />
+              <div style={{ display: 'flex', gap: 8, marginTop: 8, justifyContent: 'flex-end' }}>
+                <button className="btn btn-sm" onClick={() => setAddingSkill(false)}>{t('cancel')}</button>
+                <button className="btn btn-sm btn-primary" style={{ width: 'auto' }} onClick={() => void addSkill()}>{t('add')}</button>
+              </div>
+            </div>
+          )}
           <div className="provider-list">
             {data.skills.map((s) => (
               <div key={s.filePath} className="provider-card" style={{ padding: '10px 14px' }}>
                 <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-                  <span style={{ fontWeight: 600 }}>{s.name}</span>
+                  <span style={{ fontWeight: 600, flex: 1 }}>{s.name}</span>
                   {s.scope && <span className="tag">{s.scope}</span>}
+                  {s.scope === 'user' && (
+                    <button className="btn btn-sm" onClick={() => void deleteSkill(s.filePath)}>{t('remove')}</button>
+                  )}
                 </div>
                 {s.description && <div className="dim" style={{ marginTop: 4 }}>{s.description}</div>}
                 <div className="dim mono" style={{ marginTop: 4, fontSize: 11 }}>{s.filePath}</div>

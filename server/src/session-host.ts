@@ -10,7 +10,7 @@ import {
   type AgentSessionEvent,
   type AgentSessionRuntime,
 } from '@earendil-works/pi-coding-agent';
-import type { ClientCommand, ServerMessage, SessionSnapshot } from './protocol.js';
+import type { ClientCommand, ServerMessage, SessionSnapshot, UiRequest, WidgetState } from './protocol.js';
 
 /** Strip the huge `partial` message from streaming events; keep everything else JSON-passthrough. */
 function serializeEvent(event: AgentSessionEvent): Record<string, unknown> {
@@ -41,6 +41,12 @@ export class SessionHost {
   private sockets = new Set<WebSocket>();
   private unsubscribe?: () => void;
   private idleTimer?: NodeJS.Timeout;
+  /** Extension-provided widgets (string-lines form) keyed by widget key. */
+  private widgets = new Map<string, WidgetState>();
+  /** Extension-provided status bar entries. */
+  private statuses = new Map<string, string>();
+  /** Pending extension dialogs awaiting a browser answer. */
+  private uiPending = new Map<string, (value: string | boolean | undefined) => void>();
 
   static async create(key: string, opts: SessionHostOptions): Promise<SessionHost> {
     const createRuntime = async ({ cwd, sessionManager, sessionStartEvent }: {
@@ -67,12 +73,85 @@ export class SessionHost {
     const modelRegistry = new ModelRegistry(runtime.services.modelRuntime);
     const host = new SessionHost(key, runtime, modelRegistry, opts.onEmpty);
 
-    runtime.setRebindSession(async () => {
+    runtime.setRebindSession(async (session) => {
       host.bindSession();
       host.broadcastSnapshot();
+      await host.bindExtensionUi(session);
     });
     host.bindSession();
+    await host.bindExtensionUi(runtime.session);
     return host;
+  }
+
+  /** Bridge pi's extension UI surface (widgets, status, dialogs, toasts) to web clients. */
+  private async bindExtensionUi(session: AgentSession): Promise<void> {
+    const host = this;
+    try {
+      await session.bindExtensions({
+        uiContext: {
+          select(title: string, options: readonly string[], opts?: { timeout?: number }) {
+            return host.uiRequest<string | undefined>({ kind: 'select', title, options: [...options] }, opts?.timeout);
+          },
+          async confirm(title: string, message: string, opts?: { timeout?: number }) {
+            const v = await host.uiRequest<string | boolean | undefined>({ kind: 'confirm', title, message }, opts?.timeout);
+            return v === true;
+          },
+          async input(title: string, placeholder: string | undefined, opts?: { timeout?: number }) {
+            const v = await host.uiRequest<string | undefined>({ kind: 'input', title, placeholder }, opts?.timeout);
+            return typeof v === 'string' ? v : undefined;
+          },
+          notify(message: string, type?: 'info' | 'warning' | 'error') {
+            host.broadcast({ type: 'toast', message, level: type ?? 'info' });
+          },
+          onTerminalInput() {
+            return () => undefined;
+          },
+          setStatus(key: string, text: string | undefined) {
+            if (text === undefined) host.statuses.delete(key);
+            else host.statuses.set(key, text);
+            host.broadcastStatuses();
+          },
+          setWorkingMessage() {},
+          setWorkingVisible() {},
+          setWorkingIndicator() {},
+          setHiddenThinkingLabel() {},
+          setWidget(key: string, content: unknown, options?: { placement?: 'aboveEditor' | 'belowEditor' }) {
+            if (Array.isArray(content) && content.every((l) => typeof l === 'string')) {
+              host.widgets.set(key, { key, lines: content as string[], placement: options?.placement ?? 'aboveEditor' });
+            } else {
+              // undefined clears; TUI component factories cannot render on web
+              host.widgets.delete(key);
+            }
+            host.broadcastWidgets();
+          },
+        } as never,
+      });
+    } catch {
+      // Extensions are optional; a failing binding must not break the session.
+    }
+  }
+
+  private uiRequest<T>(req: Omit<UiRequest, 'id'>, timeoutMs?: number): Promise<T> {
+    const id = crypto.randomUUID();
+    return new Promise<T>((resolvePromise) => {
+      const timer = setTimeout(() => {
+        this.uiPending.delete(id);
+        resolvePromise(undefined as T);
+      }, timeoutMs ?? 5 * 60_000);
+      this.uiPending.set(id, (value) => {
+        clearTimeout(timer);
+        resolvePromise(value as T);
+      });
+      this.broadcast({ type: 'ui_request', request: { id, ...req } });
+    });
+  }
+
+  private broadcastWidgets(): void {
+    this.broadcast({ type: 'widgets', widgets: [...this.widgets.values()] });
+  }
+
+  private broadcastStatuses(): void {
+    this.broadcast({ type: 'statuses', statuses: Object.fromEntries(this.statuses) });
   }
 
   private bindSession(): void {
@@ -115,6 +194,8 @@ export class SessionHost {
     clearTimeout(this.idleTimer);
     this.sockets.add(ws);
     this.send(ws, { type: 'snapshot', snapshot: this.snapshot() });
+    this.send(ws, { type: 'widgets', widgets: [...this.widgets.values()] });
+    this.send(ws, { type: 'statuses', statuses: Object.fromEntries(this.statuses) });
   }
 
   detach(ws: WebSocket): void {
@@ -237,8 +318,15 @@ export class SessionHost {
           return { ok: !r.cancelled, error: r.cancelled ? 'cancelled' : undefined };
         }
         case 'compact':
-          void s.compact();
+          await s.compact();
           return { ok: true };
+        case 'ui_response': {
+          const resolve = this.uiPending.get(cmd.requestId);
+          if (!resolve) return { ok: false, error: 'no pending request' };
+          this.uiPending.delete(cmd.requestId);
+          resolve(cmd.value);
+          return { ok: true };
+        }
         default:
           return { ok: false, error: `unknown command` };
       }

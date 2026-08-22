@@ -4,6 +4,8 @@ import type {
   ProjectGroup,
   ServerMessage,
   SessionSnapshot,
+  UiRequest,
+  WidgetState,
 } from './types';
 
 export async function fetchProjects(): Promise<ProjectGroup[]> {
@@ -104,6 +106,11 @@ export class Conversation {
   error?: string;
   lastError?: string;
   runStats: RunStats = { llmMs: 0, toolMs: 0, turns: 0, steps: 0, outputChars: 0 };
+  widgets: WidgetState[] = [];
+  statuses: Record<string, string> = {};
+  uiRequest?: UiRequest;
+  toasts: { id: number; message: string; level: string }[] = [];
+  private toastSeq = 0;
 
   constructor(
     public readonly cwd: string,
@@ -153,6 +160,19 @@ export class Conversation {
       this.applySnapshot(msg.snapshot);
     } else if (msg.type === 'event') {
       this.applyEvent(msg.event);
+    } else if (msg.type === 'widgets') {
+      this.widgets = msg.widgets;
+    } else if (msg.type === 'statuses') {
+      this.statuses = msg.statuses;
+    } else if (msg.type === 'toast') {
+      const id = ++this.toastSeq;
+      this.toasts = [...this.toasts, { id, message: msg.message, level: msg.level }];
+      setTimeout(() => {
+        this.toasts = this.toasts.filter((t) => t.id !== id);
+        this.emit();
+      }, 5000);
+    } else if (msg.type === 'ui_request') {
+      this.uiRequest = msg.request;
     } else if (msg.type === 'command_result') {
       if (msg.id && this.pending.has(msg.id)) {
         const p = this.pending.get(msg.id)!;
@@ -267,6 +287,13 @@ export class Conversation {
         }
         break;
     }
+  }
+
+  answerUi(value: string | boolean | undefined): void {
+    const req = this.uiRequest;
+    if (!req) return;
+    this.uiRequest = undefined;
+    void this.send({ type: 'ui_response', requestId: req.id, value }).catch(() => undefined);
   }
 
   send(cmd: ClientCommand): Promise<boolean> {

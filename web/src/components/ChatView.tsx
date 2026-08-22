@@ -3,6 +3,8 @@ import type { Conversation } from '../api';
 import MessageItem from './MessageItem';
 import Composer from './Composer';
 import StatsBar from './StatsBar';
+import Trajectory from './Trajectory';
+import ExtensionUI from './ExtensionUI';
 import { exportHtml } from '../export';
 import type { PiiMessage } from '../types';
 import { t } from '../i18n';
@@ -16,6 +18,7 @@ export default function ChatView({ conv, onRefresh }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState('');
+  const [showTraj, setShowTraj] = useState(false);
   const snap = conv.snapshot;
 
   const allMessages: PiiMessage[] = conv.streaming
@@ -86,6 +89,9 @@ export default function ChatView({ conv, onRefresh }: Props) {
             {t('running')}
           </span>
         )}
+        <button className={`btn btn-sm ${showTraj ? 'tab-active' : ''}`} onClick={() => setShowTraj((v) => !v)}>
+          {t('trajectory')}
+        </button>
         <button className="btn btn-sm" title={t('compact')} onClick={() => void conv.send({ type: 'compact' }).catch(() => undefined)}>
           {t('compact')}
         </button>
@@ -99,6 +105,11 @@ export default function ChatView({ conv, onRefresh }: Props) {
 
       <StatsBar conv={conv} />
 
+      {showTraj ? (
+        <div className="chat-scroll">
+          <Trajectory conv={conv} />
+        </div>
+      ) : (
       <div className="chat-scroll" ref={scrollRef}>
         <div className="chat-column">
           {allMessages.length === 0 && (
@@ -122,10 +133,13 @@ export default function ChatView({ conv, onRefresh }: Props) {
           {conv.error && <div className="msg-error">连接中断：{conv.error}</div>}
         </div>
       </div>
+      )}
 
       <div className="composer-wrap">
         <Composer conv={conv} />
       </div>
+
+      <ExtensionUI conv={conv} />
     </>
   );
 }

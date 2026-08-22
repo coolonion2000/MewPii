@@ -63,12 +63,32 @@ export type ClientCommand =
   | { type: 'setThinkingLevel'; level: string }
   | { type: 'setSessionName'; name: string }
   | { type: 'branch'; entryId: string; summarize?: boolean }
-  | { type: 'compact' };
+  | { type: 'compact' }
+  | { type: 'ui_response'; requestId: string; value: string | boolean | undefined };
+
+export interface WidgetState {
+  key: string;
+  lines: string[];
+  placement: 'aboveEditor' | 'belowEditor';
+}
+
+export interface UiRequest {
+  id: string;
+  kind: 'select' | 'confirm' | 'input';
+  title: string;
+  message?: string;
+  options?: string[];
+  placeholder?: string;
+}
 
 /** Server → Client WebSocket messages. */
 export type ServerMessage =
   | { type: 'snapshot'; snapshot: SessionSnapshot }
   | { type: 'event'; event: Record<string, unknown> }
+  | { type: 'widgets'; widgets: WidgetState[] }
+  | { type: 'statuses'; statuses: Record<string, string> }
+  | { type: 'toast'; message: string; level: 'info' | 'warning' | 'error' }
+  | { type: 'ui_request'; request: UiRequest }
   | { type: 'command_result'; id?: string; ok: boolean; error?: string };
 
 export interface SessionSnapshot {

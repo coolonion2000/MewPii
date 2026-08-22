@@ -11,6 +11,49 @@ export default function ModelsPanel() {
   const [notice, setNotice] = useState<string>();
   const [filter, setFilter] = useState('');
   const [oauthProvider, setOauthProvider] = useState<string>();
+  const [addingProvider, setAddingProvider] = useState(false);
+  const [newProvider, setNewProvider] = useState({ id: '', name: '', baseUrl: '', api: 'openai-completions', apiKey: '', models: '' });
+  const [addError, setAddError] = useState<string>();
+
+  const addProvider = async () => {
+    const models = newProvider.models
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const [id, name, ctx] = line.split(',').map((x) => x.trim());
+        return {
+          id,
+          name: name || id,
+          reasoning: true,
+          input: ['text'],
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+          contextWindow: Number(ctx) || 128000,
+          maxTokens: 8192,
+        };
+      });
+    const res = await fetch('/api/providers', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: newProvider.id.trim(),
+        name: newProvider.name.trim() || undefined,
+        baseUrl: newProvider.baseUrl.trim(),
+        api: newProvider.api,
+        apiKey: newProvider.apiKey.trim() || undefined,
+        models,
+      }),
+    });
+    const d = (await res.json()) as { ok?: boolean; error?: string };
+    if (res.ok) {
+      setAddingProvider(false);
+      setAddError(undefined);
+      setNewProvider({ id: '', name: '', baseUrl: '', api: 'openai-completions', apiKey: '', models: '' });
+      refresh();
+    } else {
+      setAddError(d.error ?? 'failed');
+    }
+  };
 
   const refresh = () => {
     fetchModels()
@@ -67,6 +110,52 @@ export default function ModelsPanel() {
       </div>
       {error && <div className="msg-error">{error}</div>}
       {notice && <div className="panel-notice">{notice}</div>}
+      <div style={{ marginBottom: 12 }}>
+        <button className="btn btn-sm" onClick={() => setAddingProvider((v) => !v)}>
+          ＋ {t('addProvider')}
+        </button>
+      </div>
+      {addingProvider && (
+        <div className="provider-card" style={{ padding: '12px 14px', marginBottom: 12 }}>
+          <div className="key-row">
+            <input placeholder={t('providerId')} value={newProvider.id} onChange={(e) => setNewProvider({ ...newProvider, id: e.target.value })} />
+            <input placeholder={t('providerName')} value={newProvider.name} onChange={(e) => setNewProvider({ ...newProvider, name: e.target.value })} />
+          </div>
+          <div className="key-row" style={{ marginTop: 8 }}>
+            <input placeholder={t('providerBaseUrl')} value={newProvider.baseUrl} onChange={(e) => setNewProvider({ ...newProvider, baseUrl: e.target.value })} />
+            <select
+              value={newProvider.api}
+              onChange={(e) => setNewProvider({ ...newProvider, api: e.target.value })}
+              style={{ border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 8, padding: '6px 10px', background: 'var(--dsw-alias-bg-base)', color: 'var(--dsw-alias-label-primary)' }}
+            >
+              <option value="openai-completions">openai-completions</option>
+              <option value="openai-responses">openai-responses</option>
+              <option value="anthropic-messages">anthropic-messages</option>
+              <option value="google-generative-ai">google-generative-ai</option>
+              <option value="mistral-conversations">mistral-conversations</option>
+            </select>
+          </div>
+          <div className="key-row" style={{ marginTop: 8 }}>
+            <input type="password" placeholder={t('providerKey')} value={newProvider.apiKey} onChange={(e) => setNewProvider({ ...newProvider, apiKey: e.target.value })} />
+          </div>
+          <textarea
+            placeholder={t('providerModels')}
+            value={newProvider.models}
+            onChange={(e) => setNewProvider({ ...newProvider, models: e.target.value })}
+            rows={3}
+            style={{
+              width: '100%', marginTop: 8, border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 8,
+              padding: '7px 10px', fontSize: 12.5, fontFamily: 'var(--ds-font-family-code)',
+              background: 'var(--dsw-alias-bg-base)', color: 'var(--dsw-alias-label-primary)', outline: 'none', resize: 'vertical',
+            }}
+          />
+          {addError && <div className="msg-error">{addError}</div>}
+          <div style={{ display: 'flex', gap: 8, marginTop: 8, justifyContent: 'flex-end' }}>
+            <button className="btn btn-sm" onClick={() => setAddingProvider(false)}>{t('cancel')}</button>
+            <button className="btn btn-sm btn-primary" style={{ width: 'auto' }} onClick={() => void addProvider()}>{t('add')}</button>
+          </div>
+        </div>
+      )}
       <div className="provider-list">
         {providers.map((p) => {
           const models = (data?.models ?? []).filter((m) => m.provider === p.id);

@@ -51,6 +51,15 @@ Always set a password, and prefer an HTTPS tunnel or reverse proxy
 }
 
 const options = parseOptions(process.argv.slice(2));
+
+// A long-running server must never die from a stray rejection (e.g. an SDK
+// edge case); log it and keep serving.
+process.on('unhandledRejection', (err) => {
+  console.error('[unhandledRejection]', err);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[uncaughtException]', err);
+});
 const isLoopback = options.host === '127.0.0.1' || options.host === 'localhost' || options.host === '::1';
 if (!isLoopback && !options.password) {
   console.error('Refusing to listen on a non-loopback host without a password. Set --password or PII_PASSWORD.');
@@ -307,6 +316,106 @@ async function handleApi(req: IncomingMessage, res: ServerResponse): Promise<boo
       hasAuth: registry.hasConfiguredAuth(m),
     }));
     sendJson(res, 200, { providers, models });
+    return true;
+  }
+
+  // ---- custom providers (~/.pi/agent/models.json) ----------------------
+  if (path === '/api/providers' && req.method === 'POST') {
+    const body = JSON.parse((await readBody(req, 4 * 1024 * 1024)).toString()) as {
+      id?: string;
+      name?: string;
+      baseUrl?: string;
+      api?: string;
+      apiKey?: string;
+      models?: Record<string, unknown>[];
+    };
+    if (!body.id || !body.baseUrl || !body.api || !Array.isArray(body.models) || body.models.length === 0) {
+      sendJson(res, 400, { error: 'required: id, baseUrl, api, models[]' });
+      return true;
+    }
+    if (!/^[a-z0-9][a-z0-9-]*$/.test(body.id)) {
+      sendJson(res, 400, { error: 'id must be lowercase letters/digits/dashes' });
+      return true;
+    }
+    const modelsPath = join(getAgentDir(), 'models.json');
+    const doc = existsSync(modelsPath)
+      ? (JSON.parse(await readFile(modelsPath, 'utf-8')) as Record<string, unknown>)
+      : {};
+    const providers = (doc.providers ?? {}) as Record<string, unknown>;
+    providers[body.id] = {
+      ...(body.name ? { name: body.name } : {}),
+      baseUrl: body.baseUrl,
+      api: body.api,
+      ...(body.apiKey ? { apiKey: body.apiKey } : {}),
+      models: body.models,
+    };
+    doc.providers = providers;
+    await writeFile(modelsPath, JSON.stringify(doc, null, 2) + '\n');
+    // Recreate the shared model runtime so the new provider shows up.
+    modelServices = undefined;
+    sendJson(res, 200, { ok: true });
+    return true;
+  }
+
+  if (path === '/api/providers' && req.method === 'DELETE') {
+    const id = url.searchParams.get('id');
+    if (!id) {
+      sendJson(res, 400, { error: 'missing id' });
+      return true;
+    }
+    const modelsPath = join(getAgentDir(), 'models.json');
+    const doc = existsSync(modelsPath)
+      ? (JSON.parse(await readFile(modelsPath, 'utf-8')) as Record<string, unknown>)
+      : {};
+    const providers = (doc.providers ?? {}) as Record<string, unknown>;
+    if (!(id in providers)) {
+      sendJson(res, 404, { error: 'not a custom (models.json) provider' });
+      return true;
+    }
+    delete providers[id];
+    doc.providers = providers;
+    await writeFile(modelsPath, JSON.stringify(doc, null, 2) + '\n');
+    modelServices = undefined;
+    sendJson(res, 200, { ok: true });
+    return true;
+  }
+
+  // ---- skills add / delete ----------------------------------------------
+  if (path === '/api/skills' && req.method === 'POST') {
+    const body = JSON.parse((await readBody(req, 4 * 1024 * 1024)).toString()) as {
+      name?: string;
+      description?: string;
+      content?: string;
+    };
+    if (!body.name || !/^[a-z0-9][a-z0-9-]*$/.test(body.name)) {
+      sendJson(res, 400, { error: 'name must be lowercase letters/digits/dashes' });
+      return true;
+    }
+    const home = process.env.HOME ?? '';
+    const dir = join(home, '.agents', 'skills', body.name);
+    await mkdir(dir, { recursive: true });
+    const front = `---\nname: ${body.name}\ndescription: ${(body.description ?? '').replace(/\n/g, ' ')}\n---\n\n`;
+    await writeFile(join(dir, 'SKILL.md'), front + (body.content ?? ''));
+    sendJson(res, 200, { ok: true, path: join(dir, 'SKILL.md') });
+    return true;
+  }
+
+  if (path === '/api/skills' && req.method === 'DELETE') {
+    const filePath = url.searchParams.get('path');
+    if (!filePath) {
+      sendJson(res, 400, { error: 'missing path' });
+      return true;
+    }
+    const home = process.env.HOME ?? '';
+    const allowedRoots = [join(home, '.agents', 'skills'), join(getAgentDir(), 'skills')];
+    const dir = dirname(normalize(filePath));
+    if (!allowedRoots.some((root) => dir.startsWith(root + '/') || dir === root)) {
+      sendJson(res, 403, { error: 'only user-scope skill directories can be removed' });
+      return true;
+    }
+    const { rm } = await import('node:fs/promises');
+    await rm(dir, { recursive: true, force: true });
+    sendJson(res, 200, { ok: true });
     return true;
   }
 
