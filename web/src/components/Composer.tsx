@@ -19,7 +19,7 @@ export default function Composer({ conv }: Props) {
   const [text, setText] = useState('');
   const [images, setImages] = useState<PendingImage[]>([]);
   const [models, setModels] = useState<ModelsResponse | undefined>();
-  const [openMenu, setOpenMenu] = useState<'model' | 'thinking' | undefined>();
+  const [menuOpen, setMenuOpen] = useState<'model' | 'thinking' | undefined>();
   const [queueMode, setQueueMode] = useState<'steer' | 'followUp'>('steer');
   const taRef = useRef<HTMLTextAreaElement>(null);
   const imgInputRef = useRef<HTMLInputElement>(null);
@@ -27,6 +27,13 @@ export default function Composer({ conv }: Props) {
   useEffect(() => {
     fetchModels().then(setModels).catch(() => undefined);
   }, []);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const close = () => setMenuOpen(undefined);
+    window.addEventListener('click', close);
+    return () => window.removeEventListener('click', close);
+  }, [menuOpen]);
 
   const snap = conv.snapshot;
   const streaming = Boolean(snap?.isStreaming);
@@ -79,6 +86,7 @@ export default function Composer({ conv }: Props) {
     (m) => m.provider === currentModel?.provider && m.id === currentModel?.id,
   );
   const supportsImage = currentModelInfo?.input.includes('image') ?? true;
+  const isReasoning = currentModelInfo?.reasoning ?? false;
   const configuredModels = models?.models.filter((m) => m.hasAuth) ?? [];
 
   return (
@@ -120,84 +128,13 @@ export default function Composer({ conv }: Props) {
           }
         }}
       />
-      <div className="composer-toolbar">
-        <div className="menu-anchor">
-          <button className="chip" onClick={() => setOpenMenu(openMenu === 'model' ? undefined : 'model')}>
-            <span className="chip-label">{currentModel ? currentModel.name : t('selectModel')}</span>
-            <span style={{ fontSize: 9 }}>▾</span>
-          </button>
-          {openMenu === 'model' && (
-            <div className="menu">
-              {configuredModels.length === 0 && (
-                <div style={{ padding: 10, fontSize: 12, color: 'var(--dsw-alias-label-tertiary)' }}>
-                  {t('noConfiguredModels')}
-                </div>
-              )}
-              {configuredModels.map((m) => (
-                <button
-                  key={`${m.provider}/${m.id}`}
-                  className={`menu-item ${currentModel?.provider === m.provider && currentModel.id === m.id ? 'active' : ''}`}
-                  onClick={() => {
-                    setOpenMenu(undefined);
-                    void conv.send({ type: 'setModel', provider: m.provider, modelId: m.id }).catch(() => undefined);
-                  }}
-                >
-                  <span>{m.name}</span>
-                  <span className="dim">{m.provider}</span>
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
 
-        {currentModel && models?.models.find((m) => m.provider === currentModel.provider && m.id === currentModel.id)?.reasoning && (
-          <div className="menu-anchor">
-            <button className="chip" onClick={() => setOpenMenu(openMenu === 'thinking' ? undefined : 'thinking')}>
-              <span className="chip-label">{t('thinking')}: {snap?.thinkingLevel ?? 'off'}</span>
-              <span style={{ fontSize: 9 }}>▾</span>
-            </button>
-            {openMenu === 'thinking' && (
-              <div className="menu">
-                {THINKING_LEVELS.map((level) => (
-                  <button
-                    key={level}
-                    className={`menu-item ${snap?.thinkingLevel === level ? 'active' : ''}`}
-                    onClick={() => {
-                      setOpenMenu(undefined);
-                      void conv.send({ type: 'setThinkingLevel', level }).catch(() => undefined);
-                    }}
-                  >
-                    {level}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-
-        <div className="spacer" />
-        {streaming && (
-          <div className="queue-mode">
-            <button
-              className={`btn btn-sm ${queueMode === 'steer' ? 'tab-active' : ''}`}
-              title={t('sendSteer')}
-              onClick={() => setQueueMode('steer')}
-            >
-              {t('sendSteer')}
-            </button>
-            <button
-              className={`btn btn-sm ${queueMode === 'followUp' ? 'tab-active' : ''}`}
-              title={t('sendFollowUp')}
-              onClick={() => setQueueMode('followUp')}
-            >
-              {t('sendFollowUp')}
-            </button>
-          </div>
-        )}
+      {/* bottom bar: + attach | queue mode … model chip · thinking · spinner · send circle */}
+      <div className="composer-bar">
         {supportsImage && (
           <>
-            <button className="btn btn-icon" title={t('attachImage')} onClick={() => imgInputRef.current?.click()}>
-              ⧉
+            <button className="round-btn" title={t('attachImage')} onClick={() => imgInputRef.current?.click()}>
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg>
             </button>
             <input
               ref={imgInputRef}
@@ -212,17 +149,114 @@ export default function Composer({ conv }: Props) {
             />
           </>
         )}
+
+        {streaming && (
+          <div className="queue-mode">
+            <button
+              className={`qm-btn ${queueMode === 'steer' ? 'active' : ''}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                setQueueMode('steer');
+              }}
+            >
+              {t('sendSteer')}
+            </button>
+            <button
+              className={`qm-btn ${queueMode === 'followUp' ? 'active' : ''}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                setQueueMode('followUp');
+              }}
+            >
+              {t('sendFollowUp')}
+            </button>
+          </div>
+        )}
+
+        <span style={{ flex: 1 }} />
+
+        {/* model + thinking combined chip, pi-web style */}
+        <div className="menu-anchor">
+          <button
+            className="model-chip"
+            onClick={(e) => {
+              e.stopPropagation();
+              setMenuOpen(menuOpen === 'model' ? undefined : 'model');
+            }}
+          >
+            <span className="model-chip-name">{currentModel ? currentModel.name : t('selectModel')}</span>
+            {currentModel && isReasoning && (
+              <span className="model-chip-qualifier">{snap?.thinkingLevel ?? 'off'}</span>
+            )}
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round"><path d="m6 9 6 6 6-6" /></svg>
+          </button>
+          {menuOpen === 'model' && (
+            <div className="menu" onClick={(e) => e.stopPropagation()}>
+              {configuredModels.map((m) => (
+                <button
+                  key={`${m.provider}/${m.id}`}
+                  className={`menu-item ${currentModel?.provider === m.provider && currentModel.id === m.id ? 'active' : ''}`}
+                  onClick={() => {
+                    setMenuOpen(undefined);
+                    void conv.send({ type: 'setModel', provider: m.provider, modelId: m.id }).catch(() => undefined);
+                  }}
+                >
+                  <span>{m.name}</span>
+                  <span className="dim">{m.provider}</span>
+                </button>
+              ))}
+              {configuredModels.length === 0 && (
+                <div style={{ padding: 10, fontSize: 12, color: 'var(--dsw-alias-label-tertiary)' }}>{t('noConfiguredModels')}</div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {isReasoning && (
+          <div className="menu-anchor">
+            <button
+              className="model-chip"
+              onClick={(e) => {
+                e.stopPropagation();
+                setMenuOpen(menuOpen === 'thinking' ? undefined : 'thinking');
+              }}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M12 3a6 6 0 0 0-4 10.5c.8.7 1.3 1.5 1.5 2.5h5c.2-1 .7-1.8 1.5-2.5A6 6 0 0 0 12 3z" /><path d="M10 19h4" /></svg>
+              <span className="model-chip-qualifier">{snap?.thinkingLevel ?? 'off'}</span>
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round"><path d="m6 9 6 6 6-6" /></svg>
+            </button>
+            {menuOpen === 'thinking' && (
+              <div className="menu" onClick={(e) => e.stopPropagation()}>
+                {THINKING_LEVELS.map((level) => (
+                  <button
+                    key={level}
+                    className={`menu-item ${snap?.thinkingLevel === level ? 'active' : ''}`}
+                    onClick={() => {
+                      setMenuOpen(undefined);
+                      void conv.send({ type: 'setThinkingLevel', level }).catch(() => undefined);
+                    }}
+                  >
+                    {level}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {streaming && <span className="composer-spinner" />}
+
         {streaming ? (
           <button
-            className="send-btn stop"
+            className="send-circle stop"
             title={t('abort')}
             onClick={() => void conv.send({ type: 'abort' }).catch(() => undefined)}
           >
-            ■
+            <span className="stop-square" />
           </button>
         ) : (
-          <button className="send-btn" title={t('send')} disabled={!canSend} onClick={() => void submit()}>
-            ↑
+          <button className="send-circle" title={t('send')} disabled={!canSend} onClick={() => void submit()}>
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M12 19V5M5 12l7-7 7 7" /></svg>
           </button>
         )}
       </div>
