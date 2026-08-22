@@ -87,9 +87,15 @@ function requireAuth(req: IncomingMessage, res: ServerResponse): boolean {
 const hosts = new Map<string, SessionHost>();
 
 async function acquireHost(cwd: string, sessionPath?: string): Promise<SessionHost> {
+  // Unify by live session file: a host created for a "new" session already
+  // drives that file once the first prompt lands, so attaching by path must
+  // find it instead of opening a second, diverging runtime over the same file.
+  if (sessionPath) {
+    for (const h of hosts.values()) {
+      if (h.session.sessionFile === sessionPath) return h;
+    }
+  }
   const key = sessionPath ? `file:${sessionPath}` : `new:${cwd}:${crypto.randomUUID()}`;
-  const existing = sessionPath ? hosts.get(key) : undefined;
-  if (existing) return existing;
   const host = await SessionHost.create(key, {
     cwd,
     sessionPath,
@@ -255,9 +261,12 @@ async function handleApi(req: IncomingMessage, res: ServerResponse): Promise<boo
       sendJson(res, 400, { error: 'missing path' });
       return true;
     }
-    const host = hosts.get(`file:${sessionPath}`);
-    if (host) await host.dispose();
-    hosts.delete(`file:${sessionPath}`);
+    for (const [key, h] of [...hosts]) {
+      if (h.session.sessionFile === sessionPath) {
+        await h.dispose();
+        hosts.delete(key);
+      }
+    }
     await unlink(sessionPath);
     sendJson(res, 200, { ok: true });
     return true;
