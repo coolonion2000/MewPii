@@ -47,6 +47,8 @@ export class SessionHost {
   private statuses = new Map<string, string>();
   /** Pending extension dialogs awaiting a browser answer. */
   private uiPending = new Map<string, (value: string | boolean | undefined) => void>();
+  /** Last observed prompt queue (from queue_update events). */
+  private queue = { steering: [] as string[], followUp: [] as string[] };
 
   static async create(key: string, opts: SessionHostOptions): Promise<SessionHost> {
     const createRuntime = async ({ cwd, sessionManager, sessionStartEvent }: {
@@ -175,6 +177,14 @@ export class SessionHost {
         clearTimeout(pendingSnapshot);
         this.broadcastSnapshot();
       }
+      // Track the prompt queue so snapshots reflect it for late joiners.
+      if (event.type === 'queue_update') {
+        const q = event as unknown as { steering?: readonly string[]; followUp?: readonly string[] };
+        this.queue = {
+          steering: [...(q.steering ?? [])],
+          followUp: [...(q.followUp ?? [])],
+        };
+      }
     });
   }
 
@@ -264,7 +274,7 @@ export class SessionHost {
         ? { provider: model.provider, id: model.id, name: model.name ?? model.id }
         : undefined,
       messages: messages as SessionSnapshot['messages'],
-      queue: { steering: [], followUp: [] },
+      queue: { ...this.queue },
       stats,
     };
   }

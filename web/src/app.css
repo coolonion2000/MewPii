@@ -261,6 +261,26 @@ body[data-ds-dark-theme] .tag-assistant { background: var(--dsw-static-deepseek-
 .toast-error { border-left: 3px solid var(--dsw-alias-state-error-primary); }
 .toast-info { border-left: 3px solid var(--dsw-alias-state-business-primary); }
 
+/* queued messages strip */
+.queue-strip {
+  max-width: 800px; width: 100%; margin: 0 auto;
+  padding: 0 24px 6px;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.queue-item {
+  display: flex; align-items: center; gap: 8px;
+  background: var(--dsw-specific-tip);
+  border-radius: 8px; padding: 5px 10px; font-size: 12.5px;
+}
+.queue-label {
+  flex-shrink: 0; font-size: 10.5px; font-weight: 600;
+  border-radius: 4px; padding: 1px 7px;
+}
+.queue-steer .queue-label { background: var(--dsw-alias-state-warn-tertiary); color: var(--dsw-alias-state-warn-label); }
+.queue-follow .queue-label { background: var(--dsw-alias-state-business-tertiary); color: var(--dsw-alias-state-business-primary); }
+.queue-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dsw-alias-label-secondary); }
+.queue-mode { display: flex; gap: 2px; background: var(--dsw-alias-bg-layer-2); border-radius: 8px; padding: 2px; }
+
 .msg-assistant { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .msg-error {
   background: var(--dsw-alias-interactive-bg-hover-danger);

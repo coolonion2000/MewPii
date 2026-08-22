@@ -20,6 +20,7 @@ export default function Composer({ conv }: Props) {
   const [images, setImages] = useState<PendingImage[]>([]);
   const [models, setModels] = useState<ModelsResponse | undefined>();
   const [openMenu, setOpenMenu] = useState<'model' | 'thinking' | undefined>();
+  const [queueMode, setQueueMode] = useState<'steer' | 'followUp'>('steer');
   const taRef = useRef<HTMLTextAreaElement>(null);
   const imgInputRef = useRef<HTMLInputElement>(null);
 
@@ -50,7 +51,7 @@ export default function Composer({ conv }: Props) {
         type: 'prompt',
         message: value,
         images: imgs.length ? imgs.map(({ data, mimeType }) => ({ data, mimeType })) : undefined,
-        streamingBehavior: streaming ? 'steer' : undefined,
+        streamingBehavior: streaming ? queueMode : undefined,
       });
     } catch (err) {
       setText(value);
@@ -175,6 +176,24 @@ export default function Composer({ conv }: Props) {
         )}
 
         <div className="spacer" />
+        {streaming && (
+          <div className="queue-mode">
+            <button
+              className={`btn btn-sm ${queueMode === 'steer' ? 'tab-active' : ''}`}
+              title={t('sendSteer')}
+              onClick={() => setQueueMode('steer')}
+            >
+              {t('sendSteer')}
+            </button>
+            <button
+              className={`btn btn-sm ${queueMode === 'followUp' ? 'tab-active' : ''}`}
+              title={t('sendFollowUp')}
+              onClick={() => setQueueMode('followUp')}
+            >
+              {t('sendFollowUp')}
+            </button>
+          </div>
+        )}
         {supportsImage && (
           <>
             <button className="btn btn-icon" title={t('attachImage')} onClick={() => imgInputRef.current?.click()}>

@@ -135,6 +135,23 @@ export default function ChatView({ conv, onRefresh }: Props) {
       </div>
       )}
 
+      {(conv.queue.steering.length > 0 || conv.queue.followUp.length > 0) && (
+        <div className="queue-strip">
+          {conv.queue.steering.map((msg, i) => (
+            <div key={`s${i}`} className="queue-item queue-steer">
+              <span className="queue-label">{t('queuedSteer')}</span>
+              <span className="queue-text">{msg}</span>
+            </div>
+          ))}
+          {conv.queue.followUp.map((msg, i) => (
+            <div key={`f${i}`} className="queue-item queue-follow">
+              <span className="queue-label">{t('queuedFollowUp')}</span>
+              <span className="queue-text">{msg}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
       <div className="composer-wrap">
         <Composer conv={conv} />
       </div>

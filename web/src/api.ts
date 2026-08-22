@@ -106,6 +106,7 @@ export class Conversation {
   error?: string;
   lastError?: string;
   runStats: RunStats = { llmMs: 0, toolMs: 0, turns: 0, steps: 0, outputChars: 0 };
+  queue = { steering: [] as string[], followUp: [] as string[] };
   widgets: WidgetState[] = [];
   statuses: Record<string, string> = {};
   uiRequest?: UiRequest;
@@ -188,6 +189,7 @@ export class Conversation {
   private applySnapshot(snap: SessionSnapshot): void {
     this.snapshot = snap;
     this.messages = snap.messages;
+    this.queue = { steering: [...(snap.queue?.steering ?? [])], followUp: [...(snap.queue?.followUp ?? [])] };
     if (!snap.isStreaming) {
       this.streaming = undefined;
       for (const t of this.tools.values()) t.running = false;
@@ -198,6 +200,12 @@ export class Conversation {
     const type = event.type as string;
     const now = Date.now();
     switch (type) {
+      case 'queue_update':
+        this.queue = {
+          steering: [...((event.steering as string[]) ?? [])],
+          followUp: [...((event.followUp as string[]) ?? [])],
+        };
+        break;
       case 'agent_start':
         this.runStats = { agentStartedAt: now, llmMs: 0, toolMs: 0, turns: 0, steps: 0, outputChars: 0 };
         break;
