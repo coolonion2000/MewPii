@@ -39,7 +39,43 @@ export interface ToolActivity {
   args?: Record<string, unknown>;
   running: boolean;
   isError?: boolean;
-  update?: unknown;
+  startedAt?: number;
+  endedAt?: number;
+  /** Live partial output text (e.g. bash stdout while running). */
+  liveOutput?: string;
+}
+
+/** Live-measured timing for the current/last run (not persisted by pi). */
+export interface RunStats {
+  agentStartedAt?: number;
+  firstDeltaAt?: number;
+  llmMs: number;
+  toolMs: number;
+  turns: number;
+  steps: number;
+  outputChars: number;
+}
+
+function extractText(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (value && typeof value === 'object') {
+    const content = (value as { content?: unknown }).content;
+    if (typeof content === 'string') return content;
+    if (Array.isArray(content)) {
+      return content
+        .map((b) => (b as { type?: string; text?: string }))
+        .filter((b) => b.type === 'text')
+        .map((b) => b.text ?? '')
+        .join('\n');
+    }
+  }
+  return '';
+}
+
+// eslint-disable-next-line no-control-regex
+const ANSI_RE = /\x1b(?:\[[0-9;?]*[a-zA-Z]|\][^\x07]*\x07|\([0-9A-B])/g;
+export function stripAnsi(text: string): string {
+  return text.replace(ANSI_RE, '');
 }
 
 interface StreamSub {
@@ -67,6 +103,7 @@ export class Conversation {
   connected = false;
   error?: string;
   lastError?: string;
+  runStats: RunStats = { llmMs: 0, toolMs: 0, turns: 0, steps: 0, outputChars: 0 };
 
   constructor(
     public readonly cwd: string,
@@ -139,7 +176,14 @@ export class Conversation {
 
   private applyEvent(event: Record<string, unknown>): void {
     const type = event.type as string;
+    const now = Date.now();
     switch (type) {
+      case 'agent_start':
+        this.runStats = { agentStartedAt: now, llmMs: 0, toolMs: 0, turns: 0, steps: 0, outputChars: 0 };
+        break;
+      case 'turn_start':
+        this.runStats.turns += 1;
+        break;
       case 'message_start': {
         const message = event.message as PiiMessage | undefined;
         if (!message) break;
@@ -160,6 +204,8 @@ export class Conversation {
           const block = content[idx] as Record<string, unknown> | undefined;
           const key = sub.type === 'text_delta' ? 'text' : 'thinking';
           if (block) block[key] = String(block[key] ?? '') + (sub.delta ?? '');
+          if (!this.runStats.firstDeltaAt) this.runStats.firstDeltaAt = now;
+          this.runStats.outputChars += (sub.delta ?? '').length;
         } else if (sub.type === 'toolcall_start') {
           content[idx] = { type: 'toolCall', id: `pending-${idx}`, name: '', arguments: {} };
         } else if (sub.type === 'toolcall_end' && sub.toolCall) {
@@ -188,6 +234,7 @@ export class Conversation {
           toolName: String(event.toolName ?? ''),
           args: event.args as Record<string, unknown>,
           running: true,
+          startedAt: now,
         });
         this.tools = new Map(this.tools);
         break;
@@ -196,7 +243,7 @@ export class Conversation {
         const id = String(event.toolCallId ?? '');
         const t = this.tools.get(id);
         if (t) {
-          t.update = event.partialResult ?? event.update;
+          t.liveOutput = stripAnsi(extractText(event.partialResult ?? event.update));
           this.tools = new Map(this.tools);
         }
         break;
@@ -207,10 +254,18 @@ export class Conversation {
         if (t) {
           t.running = false;
           t.isError = Boolean(event.isError);
+          t.endedAt = now;
+          this.runStats.steps += 1;
+          if (t.startedAt) this.runStats.toolMs += now - t.startedAt;
           this.tools = new Map(this.tools);
         }
         break;
       }
+      case 'agent_end':
+        if (this.runStats.agentStartedAt) {
+          this.runStats.llmMs = Math.max(0, now - this.runStats.agentStartedAt - this.runStats.toolMs);
+        }
+        break;
     }
   }
 

@@ -76,10 +76,14 @@ export default function MessageItem({ message, streaming, toolResults, tools, on
       {blocks.map((b, i) => {
         if (b.type === 'thinking') {
           const isStreamingThis = streaming && i === blocks.length - 1;
+          const len = (b.thinking ?? '').length;
           return (
             <details key={i} className={`thinking-block ${isStreamingThis ? 'streaming' : ''}`} open={isStreamingThis}>
-              <summary>{t('thinkingProcess')}</summary>
-              <div className="thinking-content">{b.thinking}</div>
+              <summary>
+                {t('thinkingProcess')}
+                {len > 0 && <span className="thinking-count">{len} {t('chars')}</span>}
+              </summary>
+              <div className="thinking-content">{b.thinking || t('thinkingEmpty')}</div>
             </details>
           );
         }

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { Conversation } from '../api';
 import MessageItem from './MessageItem';
 import Composer from './Composer';
+import StatsBar from './StatsBar';
 import { exportHtml } from '../export';
 import type { PiiMessage } from '../types';
 import { t } from '../i18n';
@@ -35,7 +36,6 @@ export default function ChatView({ conv, onRefresh }: Props) {
   }, [lastMsg, conv.streaming, conv.tools]);
 
   const title = snap?.name || firstUserText(allMessages) || '新会话';
-  const stats = snap?.stats;
 
   const saveTitle = () => {
     setEditingTitle(false);
@@ -80,12 +80,6 @@ export default function ChatView({ conv, onRefresh }: Props) {
           <div className="sub">{snap?.cwd ?? conv.cwd}</div>
         </div>
         <div className="spacer" />
-        {stats && (
-          <span className="header-stat" title={`tokens: ${stats.tokens.total.toLocaleString()} (in ${stats.tokens.input.toLocaleString()} / out ${stats.tokens.output.toLocaleString()} / cache ${(stats.tokens.cacheRead + stats.tokens.cacheWrite).toLocaleString()})`}>
-            {stats.contextPercent != null ? `${t('context')} ${Math.round(stats.contextPercent)}%` : ''}
-            {stats.cost > 0 ? ` · $${stats.cost.toFixed(4)}` : ''}
-          </span>
-        )}
         {snap?.isStreaming && (
           <span style={{ fontSize: 12, color: 'var(--dsw-alias-state-business-primary)', display: 'flex', alignItems: 'center', gap: 6 }}>
             <span style={{ display: 'inline-block', width: 6, height: 6, borderRadius: '50%', background: 'var(--dsw-alias-state-business-primary)', animation: 'pulse 1.2s ease-in-out infinite' }} />
@@ -93,15 +87,17 @@ export default function ChatView({ conv, onRefresh }: Props) {
           </span>
         )}
         <button className="btn btn-sm" title={t('compact')} onClick={() => void conv.send({ type: 'compact' }).catch(() => undefined)}>
-          压缩
+          {t('compact')}
         </button>
         <button className="btn btn-sm" title={t('export')} onClick={() => exportHtml(title, snap?.cwd ?? conv.cwd, conv.messages)}>
-          导出
+          {t('export')}
         </button>
         <button className="btn btn-sm" onClick={() => conv.send({ type: 'newSession' }).then(onRefresh).catch(() => undefined)}>
-          新会话
+          {t('newSession')}
         </button>
       </div>
+
+      <StatsBar conv={conv} />
 
       <div className="chat-scroll" ref={scrollRef}>
         <div className="chat-column">

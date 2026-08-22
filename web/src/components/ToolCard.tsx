@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import type { PiiMessage } from '../types';
-import type { ToolActivity } from '../api';
+import { stripAnsi, type ToolActivity } from '../api';
 import { t } from '../i18n';
 
 export interface ToolCallBlock {
@@ -18,13 +18,18 @@ interface Props {
 
 const TOOL_ICONS: Record<string, string> = {
   read: 'R',
-  bash: '›_',
+  bash: '>_',
   edit: 'E',
   write: 'W',
   grep: 'G',
   find: 'F',
   ls: 'L',
 };
+
+interface EditEntry {
+  oldText?: string;
+  newText?: string;
+}
 
 /** Short human-readable headline argument for the collapsed header. */
 function headlineArg(name: string, args?: Record<string, unknown>): string {
@@ -34,10 +39,10 @@ function headlineArg(name: string, args?: Record<string, unknown>): string {
     case 'read':
     case 'write':
     case 'edit':
-      return pick('path') ?? '';
+      return pick('path') ?? pick('file_path') ?? '';
     case 'bash': {
       const cmd = pick('command') ?? '';
-      return cmd.length > 80 ? cmd.slice(0, 80) + '…' : cmd;
+      return cmd.length > 80 ? cmd.slice(0, 80) + '\u2026' : cmd;
     }
     case 'grep':
       return pick('pattern') ?? '';
@@ -50,7 +55,7 @@ function headlineArg(name: string, args?: Record<string, unknown>): string {
   }
 }
 
-function resultText(result?: PiiMessage): { text: string; isError: boolean } {
+function resultText(result?: PiiMessage): { text: string; isError: boolean; diff?: string } {
   if (!result) return { text: '', isError: false };
   const content = result.content;
   let text = '';
@@ -62,72 +67,97 @@ function resultText(result?: PiiMessage): { text: string; isError: boolean } {
       .map((b) => b.text ?? '')
       .join('\n');
   }
-  return { text, isError: Boolean(result.isError) };
+  const details = (result as { details?: { diff?: string } }).details;
+  return { text: stripAnsi(text), isError: Boolean(result.isError), diff: details?.diff };
 }
 
-function diffLines(text: string): boolean {
-  return text.split('\n').some((l) => l.startsWith('+') || l.startsWith('-'));
-}
-
-function ColorizedPre({ text, isError }: { text: string; isError?: boolean }) {
-  const colored = useMemo(() => diffLines(text), [text]);
-  if (!colored) return <pre className={`tool-pre ${isError ? 'is-error' : ''}`}>{text}</pre>;
+/** Renders text with diff line coloring. */
+export function DiffPre({ text, isError, className }: { text: string; isError?: boolean; className?: string }) {
+  const lines = useMemo(() => text.split('\n'), [text]);
   return (
-    <pre className="tool-pre">
-      {text.split('\n').map((line, i) => {
-        const cls = line.startsWith('+') && !line.startsWith('+++') ? 'diff-add'
-          : line.startsWith('-') && !line.startsWith('---') ? 'diff-del'
-          : '';
-        return cls ? <div key={i} className={cls}>{line}</div> : <div key={i}>{line}</div>;
+    <pre className={`tool-pre ${isError ? 'is-error' : ''} ${className ?? ''}`}>
+      {lines.map((line, i) => {
+        const cls =
+          line.startsWith('+') && !line.startsWith('+++')
+            ? 'diff-add'
+            : line.startsWith('-') && !line.startsWith('---')
+              ? 'diff-del'
+              : '';
+        return <div key={i} className={cls}>{line}</div>;
       })}
     </pre>
   );
 }
 
+/** edit tool input: render each edits[] entry as -old/+new pair. */
+function EditInput({ args }: { args: Record<string, unknown> }) {
+  const edits = (Array.isArray(args.edits) ? args.edits : []) as EditEntry[];
+  if (edits.length === 0 && typeof args.oldText === 'string') {
+    edits.push({ oldText: args.oldText, newText: args.newText as string });
+  }
+  return (
+    <div>
+      {edits.map((e, i) => (
+        <div key={i} className="edit-pair">
+          {edits.length > 1 && <div className="tool-section-label">#{i + 1}</div>}
+          <pre className="tool-pre">
+            {String(e.oldText ?? '').split('\n').map((l, j) => (
+              <div key={`o${j}`} className="diff-del">- {l}</div>
+            ))}
+            {String(e.newText ?? '').split('\n').map((l, j) => (
+              <div key={`n${j}`} className="diff-add">+ {l}</div>
+            ))}
+          </pre>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function ToolCard({ call, result, activity }: Props) {
-  const [open, setOpen] = useState(false);
+  // auto-open while the tool is running, collapse when done (unless user toggled)
+  const [userToggled, setUserToggled] = useState<boolean>();
   const name = call.name ?? activity?.toolName ?? 'tool';
   const args = call.arguments ?? activity?.args;
   const running = activity?.running ?? (!result && Boolean(call.id));
-  const { text: output, isError } = resultText(result);
+  const open = userToggled ?? running;
+  const { text: output, isError, diff } = resultText(result);
   const error = isError || activity?.isError;
+  const showOutput = diff ?? output ?? activity?.liveOutput ?? '';
 
-  // input section: command / content / patch depending on tool
-  let inputText = '';
+  let inputNode: React.ReactNode = null;
   if (args) {
-    if (name === 'bash') inputText = String(args.command ?? '');
-    else if (name === 'write') inputText = String(args.content ?? '');
-    else if (name === 'edit') inputText = String(args.oldText ?? '') + '\n→\n' + String(args.newText ?? '');
-    else inputText = JSON.stringify(args, null, 2);
+    if (name === 'bash') inputNode = <DiffPre text={String(args.command ?? '')} />;
+    else if (name === 'write') inputNode = <DiffPre text={String(args.content ?? '')} />;
+    else if (name === 'edit') inputNode = <EditInput args={args} />;
+    else inputNode = <DiffPre text={JSON.stringify(args, null, 2)} />;
   }
 
   return (
     <div className="tool-card">
-      <div className="tool-card-header" onClick={() => setOpen((o) => !o)}>
+      <div className="tool-card-header" onClick={() => setUserToggled(!open)}>
         <span className="tool-icon">{TOOL_ICONS[name] ?? 'T'}</span>
         <span className="tool-name">{name}</span>
         <span className="tool-arg">{headlineArg(name, args)}</span>
         <span className={`tool-status ${running ? 'running' : error ? 'error' : 'ok'}`} />
-        <span className={`tool-chevron ${open ? 'open' : ''}`}>▸</span>
+        <span className={`tool-chevron ${open ? 'open' : ''}`}>&#9656;</span>
       </div>
       {open && (
         <div className="tool-card-body">
-          {inputText && (
+          {inputNode && (
             <div className="tool-section">
               <div className="tool-section-label">{t('input')}</div>
-              <ColorizedPre text={inputText} />
+              {inputNode}
             </div>
           )}
-          {(output || running) && (
-            <div className="tool-section">
-              <div className="tool-section-label">{t('output')}</div>
-              {output ? (
-                <ColorizedPre text={output} isError={error} />
-              ) : (
-                <div style={{ color: 'var(--dsw-alias-label-caption)', fontSize: 12 }}>{t('executing')}</div>
-              )}
-            </div>
-          )}
+          <div className="tool-section">
+            <div className="tool-section-label">{t('output')}</div>
+            {showOutput ? (
+              <DiffPre text={showOutput} isError={error} />
+            ) : (
+              <div style={{ color: 'var(--dsw-alias-label-caption)', fontSize: 12 }}>{t('executing')}</div>
+            )}
+          </div>
         </div>
       )}
     </div>
