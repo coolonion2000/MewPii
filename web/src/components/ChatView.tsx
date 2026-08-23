@@ -5,6 +5,7 @@ import Composer from './Composer';
 import StatsBar from './StatsBar';
 import Trajectory from './Trajectory';
 import ExtensionUI from './ExtensionUI';
+import { IconTrash, IconPencil, IconX } from '../icons';
 import { exportHtml } from '../export';
 import type { PiiMessage } from '../types';
 import { t } from '../i18n';
@@ -19,6 +20,7 @@ export default function ChatView({ conv, onRefresh }: Props) {
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState('');
   const [showTraj, setShowTraj] = useState(false);
+  const [draft, setDraft] = useState<string>();
   const snap = conv.snapshot;
 
   const allMessages: PiiMessage[] = conv.streaming
@@ -105,6 +107,23 @@ export default function ChatView({ conv, onRefresh }: Props) {
 
       <StatsBar conv={conv} />
 
+      {conv.compaction && (
+        <div className="compaction-banner">
+          <span className="composer-spinner" style={{ width: 13, height: 13 }} />
+          <span>
+            {t('compacting')}
+            <span className="dim">
+              {' · '}
+              {conv.compaction.reason === 'manual'
+                ? t('compactReasonManual')
+                : conv.compaction.reason === 'threshold'
+                  ? t('compactReasonThreshold')
+                  : t('compactReasonOverflow')}
+            </span>
+          </span>
+        </div>
+      )}
+
       {showTraj ? (
         <div className="chat-scroll">
           <Trajectory conv={conv} />
@@ -137,23 +156,40 @@ export default function ChatView({ conv, onRefresh }: Props) {
 
       {(conv.queue.steering.length > 0 || conv.queue.followUp.length > 0) && (
         <div className="queue-strip">
+          <div className="queue-header">
+            <button
+              className="btn btn-sm"
+              title={t('queueClear')}
+              onClick={() => void conv.send({ type: 'queue_clear' }).catch(() => undefined)}
+            >
+              <IconTrash size={11} /> {t('queueClear')}
+            </button>
+          </div>
           {conv.queue.steering.map((msg, i) => (
-            <div key={`s${i}`} className="queue-item queue-steer">
-              <span className="queue-label">{t('queuedSteer')}</span>
-              <span className="queue-text">{msg}</span>
-            </div>
+            <QueueItem
+              key={`s${i}-${msg}`}
+              kind="steer"
+              index={i}
+              msg={msg}
+              conv={conv}
+              onEdit={(m) => setDraft(m)}
+            />
           ))}
           {conv.queue.followUp.map((msg, i) => (
-            <div key={`f${i}`} className="queue-item queue-follow">
-              <span className="queue-label">{t('queuedFollowUp')}</span>
-              <span className="queue-text">{msg}</span>
-            </div>
+            <QueueItem
+              key={`f${i}-${msg}`}
+              kind="followUp"
+              index={i}
+              msg={msg}
+              conv={conv}
+              onEdit={(m) => setDraft(m)}
+            />
           ))}
         </div>
       )}
 
       <div className="composer-wrap">
-        <Composer conv={conv} />
+        <Composer conv={conv} draft={draft} onDraft={setDraft} />
       </div>
 
       <ExtensionUI conv={conv} />
@@ -172,4 +208,49 @@ function firstUserText(messages: PiiMessage[]): string {
     }
   }
   return '';
+}
+
+
+function QueueItem({ kind, index, msg, conv, onEdit }: {
+  kind: 'steer' | 'followUp';
+  index: number;
+  msg: string;
+  conv: Conversation;
+  onEdit: (m: string) => void;
+}) {
+  const other = kind === 'steer' ? 'followUp' : 'steer';
+  const apiQueue = kind === 'steer' ? 'steering' : 'followUp';
+  const apiOther = other === 'steer' ? 'steering' : 'followUp';
+  return (
+    <div className={`queue-item queue-${kind}`}>
+      <span className="queue-label">{kind === 'steer' ? t('queuedSteer') : t('queuedFollowUp')}</span>
+      <span className="queue-text">{msg}</span>
+      <span className="queue-actions">
+        <button
+          className="btn btn-icon btn-sm"
+          title={t('queueMove', { mode: other === 'steer' ? t('queuedSteer') : t('queuedFollowUp') })}
+          onClick={() => void conv.send({ type: 'queue_move', from: apiQueue, to: apiOther, index }).catch(() => undefined)}
+        >
+          ⇄
+        </button>
+        <button
+          className="btn btn-icon btn-sm"
+          title={t('queueEdit')}
+          onClick={() => {
+            onEdit(msg);
+            void conv.send({ type: 'queue_remove', queue: apiQueue, index }).catch(() => undefined);
+          }}
+        >
+          <IconPencil size={11} />
+        </button>
+        <button
+          className="btn btn-icon btn-sm"
+          title={t('queueRemove')}
+          onClick={() => void conv.send({ type: 'queue_remove', queue: apiQueue, index }).catch(() => undefined)}
+        >
+          <IconX size={11} />
+        </button>
+      </span>
+    </div>
+  );
 }

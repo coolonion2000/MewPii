@@ -112,10 +112,29 @@ const dict = {
     submit: '提交',
     close: '关闭',
     loginSuccess: '登录成功',
+    queueClear: '清空队列',
+    queueEdit: '编辑（移回输入框）',
+    queueRemove: '删除',
+    queueMove: '移到{mode}',
     queuedSteer: '介入中',
     queuedFollowUp: '排队中',
     sendSteer: '介入',
     sendFollowUp: '排队',
+    collapseSidebar: '收起侧边栏',
+    expandSidebar: '展开侧边栏',
+    pinTop: '收藏置顶',
+    rename: '重命名',
+    archive: '归档',
+    unarchive: '取消归档',
+    archivedSection: '已归档',
+    tabGeneral: '界面',
+    tabModels: '模型',
+    tabResources: '扩展与技能',
+    settingsNavTitle: '设置',
+    compacting: '正在压缩上下文',
+    compactReasonManual: '手动触发',
+    compactReasonThreshold: '接近上下文上限',
+    compactReasonOverflow: '超出上下文上限',
     trajectory: '轨迹',
     trajKind: '类型',
     trajContent: '内容',
@@ -242,10 +261,29 @@ const dict = {
     submit: 'Submit',
     close: 'Close',
     loginSuccess: 'Signed in',
+    queueClear: 'Clear queue',
+    queueEdit: 'Edit (move to input)',
+    queueRemove: 'Remove',
+    queueMove: 'Move to {mode}',
     queuedSteer: 'Steering',
     queuedFollowUp: 'Queued',
     sendSteer: 'Steer',
     sendFollowUp: 'Queue',
+    collapseSidebar: 'Collapse sidebar',
+    expandSidebar: 'Expand sidebar',
+    pinTop: 'Pin to top',
+    rename: 'Rename',
+    archive: 'Archive',
+    unarchive: 'Unarchive',
+    archivedSection: 'Archived',
+    tabGeneral: 'General',
+    tabModels: 'Models',
+    tabResources: 'Extensions & Skills',
+    settingsNavTitle: 'Settings',
+    compacting: 'Compacting context',
+    compactReasonManual: 'manual',
+    compactReasonThreshold: 'near context limit',
+    compactReasonOverflow: 'context overflow',
     trajectory: 'Trajectory',
     trajKind: 'Kind',
     trajContent: 'Content',
@@ -292,6 +330,10 @@ export function onLangChange(fn: () => void): () => void {
   return () => listeners.delete(fn);
 }
 
-export function t(key: I18nKey): string {
-  return dict[current][key] ?? dict.en[key] ?? key;
+export function t(key: I18nKey, params?: Record<string, string>): string {
+  let out = (dict[current][key] ?? dict.en[key] ?? key) as string;
+  if (params) {
+    for (const [k, v] of Object.entries(params)) out = out.replace(`{${k}}`, v);
+  }
+  return out;
 }

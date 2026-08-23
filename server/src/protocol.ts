@@ -27,6 +27,9 @@ export interface SessionSummary {
   messageCount: number;
   firstMessage: string;
   running: boolean;
+  archived?: boolean;
+  /** Present for sessions forked from / spawned by another session (subagents). */
+  parentSessionPath?: string;
 }
 
 export interface ProjectGroup {
@@ -64,6 +67,9 @@ export type ClientCommand =
   | { type: 'setSessionName'; name: string }
   | { type: 'branch'; entryId: string; summarize?: boolean }
   | { type: 'compact' }
+  | { type: 'queue_remove'; queue: 'steering' | 'followUp'; index: number }
+  | { type: 'queue_move'; from: 'steering' | 'followUp'; to: 'steering' | 'followUp'; index: number }
+  | { type: 'queue_clear' }
   | { type: 'ui_response'; requestId: string; value: string | boolean | undefined };
 
 export interface WidgetState {

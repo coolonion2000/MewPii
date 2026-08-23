@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useReducer, useState } from 'react';
 import { Conversation, deleteSession, fetchProjects } from './api';
-import type { ProjectGroup } from './types';
+import type { ProjectGroup, SessionSummary } from './types';
 import Sidebar from './components/Sidebar';
 import ChatView from './components/ChatView';
 import ModelsPanel from './components/ModelsPanel';
@@ -28,8 +28,9 @@ function parseHash(): Route {
   const cwd = params.get('cwd');
   const session = params.get('session');
   if (view === 'chat' && cwd) return { view, selection: { cwd, sessionPath: session ?? undefined } };
-  if ((view === 'files' || view === 'resources') && cwd) return { view, selection: { cwd } };
-  return { view: view === 'chat' && !cwd ? 'chat' : view };
+  if ((view === 'files' || view === 'resources' || view === 'models') && cwd)
+    return { view, selection: { cwd } };
+  return { view };
 }
 
 function toHash(route: Route): string {
@@ -42,8 +43,12 @@ function toHash(route: Route): string {
 
 export default function App() {
   const [projects, setProjects] = useState<ProjectGroup[]>([]);
+  const [archivedSessions, setArchivedSessions] = useState<SessionSummary[]>([]);
   const [route, setRouteState] = useState<Route>(parseHash);
   const [dark, setDark] = useState(() => localStorage.getItem('pii-theme') !== 'light');
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(
+    () => localStorage.getItem('pii-sidebar') === 'collapsed',
+  );
   const [, force] = useReducer((x: number) => x + 1, 0);
   const lang = getLang();
 
@@ -54,6 +59,13 @@ export default function App() {
     document.documentElement.lang = lang === 'zh' ? 'zh-CN' : 'en';
     localStorage.setItem('pii-theme', dark ? 'dark' : 'light');
   }, [dark, lang]);
+
+  const toggleCollapse = useCallback(() => {
+    setSidebarCollapsed((c) => {
+      localStorage.setItem('pii-sidebar', c ? 'open' : 'collapsed');
+      return !c;
+    });
+  }, []);
 
   const setRoute = useCallback((r: Route) => {
     setRouteState(r);
@@ -72,8 +84,25 @@ export default function App() {
   }, []);
 
   const refreshProjects = useCallback(() => {
-    fetchProjects()
-      .then(setProjects)
+    fetchProjects().then(setProjects).catch(() => undefined);
+    fetch('/api/sessions/archive')
+      .then((r) => r.json())
+      .then(async (d: { archived: string[] }) => {
+        if (!d.archived?.length) {
+          setArchivedSessions([]);
+          return;
+        }
+        const all = await fetchProjects(); // cheap enough; refetch with flag instead
+        void all;
+      })
+      .catch(() => undefined);
+    // archived list with details:
+    fetch('/api/sessions?includeArchived=1')
+      .then((r) => r.json())
+      .then((d: { projects: ProjectGroup[] }) => {
+        const flat = d.projects.flatMap((p) => p.sessions).filter((s) => s.archived);
+        setArchivedSessions(flat);
+      })
       .catch(() => undefined);
   }, []);
 
@@ -111,26 +140,92 @@ export default function App() {
     [selection, refreshProjects, setRoute],
   );
 
+  const handleRename = useCallback(
+    async (path: string, name: string) => {
+      await fetch('/api/sessions/rename', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path, name }),
+      }).catch(() => undefined);
+      refreshProjects();
+    },
+    [refreshProjects],
+  );
+
+  const handleArchive = useCallback(
+    async (path: string, archived: boolean) => {
+      await fetch('/api/sessions/archive', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path, archived }),
+      }).catch(() => undefined);
+      if (archived && selection?.sessionPath === path) setRoute({ view: 'chat' });
+      refreshProjects();
+    },
+    [selection, refreshProjects, setRoute],
+  );
+
   const defaultCwd = selection?.cwd ?? projects[0]?.cwd ?? '/';
+  const isSettingsish = route.view === 'settings' || route.view === 'models' || route.view === 'resources';
 
   return (
     <div className="app">
       <Sidebar
         projects={projects}
+        archivedSessions={archivedSessions}
         selection={route.view === 'chat' ? selection : undefined}
         view={route.view}
-        onNavigate={(view) => setRoute({ view, selection: view === 'chat' ? selection : { cwd: defaultCwd } })}
+        collapsed={sidebarCollapsed}
+        onToggleCollapse={toggleCollapse}
+        onNavigate={(view) =>
+          setRoute({
+            view,
+            selection: view === 'chat' || view === 'files' ? selection : { cwd: defaultCwd },
+          })
+        }
         onSelect={setSelection}
         onDelete={handleDelete}
+        onRename={handleRename}
+        onArchive={handleArchive}
         onRefresh={refreshProjects}
         dark={dark}
         onToggleTheme={() => setDark((d) => !d)}
       />
       <div className="main">
-        {route.view === 'models' && <ModelsPanel />}
+        {isSettingsish && (
+          <div className="unified-settings">
+            <div className="us-rail">
+              <div className="us-rail-title">{t('settingsNavTitle')}</div>
+              {(
+                [
+                  ['general', t('tabGeneral')],
+                  ['models', t('tabModels')],
+                  ['resources', t('tabResources')],
+                ] as const
+              ).map(([tab, label]) => (
+                <button
+                  key={tab}
+                  className={`us-tab ${
+                    (route.view === 'settings' && tab === 'general') ||
+                    (route.view === 'models' && tab === 'models') ||
+                    (route.view === 'resources' && tab === 'resources')
+                      ? 'active'
+                      : ''
+                  }`}
+                  onClick={() => setRoute({ view: tab as View, selection: { cwd: defaultCwd } })}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <div className="us-panel">
+              {route.view === 'settings' && <SettingsPanel dark={dark} onToggleTheme={() => setDark((d) => !d)} />}
+              {route.view === 'models' && <ModelsPanel />}
+              {route.view === 'resources' && <ResourcesPanel key={defaultCwd} cwd={defaultCwd} />}
+            </div>
+          </div>
+        )}
         {route.view === 'files' && <FilesPanel key={defaultCwd} cwd={defaultCwd} />}
-        {route.view === 'resources' && <ResourcesPanel key={defaultCwd} cwd={defaultCwd} />}
-        {route.view === 'settings' && <SettingsPanel dark={dark} onToggleTheme={() => setDark((d) => !d)} />}
         {route.view === 'chat' &&
           (conv ? (
             <ChatView key={`${selection?.cwd}|${selection?.sessionPath ?? 'new'}`} conv={conv} onRefresh={refreshProjects} />

@@ -107,6 +107,8 @@ export class Conversation {
   lastError?: string;
   runStats: RunStats = { llmMs: 0, toolMs: 0, turns: 0, steps: 0, outputChars: 0 };
   queue = { steering: [] as string[], followUp: [] as string[] };
+  /** Active while a context compaction is running. */
+  compaction?: { reason: string };
   widgets: WidgetState[] = [];
   statuses: Record<string, string> = {};
   uiRequest?: UiRequest;
@@ -200,6 +202,12 @@ export class Conversation {
     const type = event.type as string;
     const now = Date.now();
     switch (type) {
+      case 'compaction_start':
+        this.compaction = { reason: String(event.reason ?? 'manual') };
+        break;
+      case 'compaction_end':
+        this.compaction = undefined;
+        break;
       case 'queue_update':
         this.queue = {
           steering: [...((event.steering as string[]) ?? [])],

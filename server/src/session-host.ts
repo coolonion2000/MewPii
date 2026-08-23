@@ -274,7 +274,10 @@ export class SessionHost {
         ? { provider: model.provider, id: model.id, name: model.name ?? model.id }
         : undefined,
       messages: messages as SessionSnapshot['messages'],
-      queue: { ...this.queue },
+      queue: {
+        steering: [...s.getSteeringMessages()],
+        followUp: [...s.getFollowUpMessages()],
+      },
       stats,
     };
   }
@@ -329,6 +332,40 @@ export class SessionHost {
         }
         case 'compact':
           await s.compact();
+          return { ok: true };
+        case 'queue_remove': {
+          const current = [...(cmd.queue === 'steering' ? s.getSteeringMessages() : s.getFollowUpMessages())];
+          if (cmd.index < 0 || cmd.index >= current.length) return { ok: false, error: 'index out of range' };
+          current.splice(cmd.index, 1);
+          s.clearQueue();
+          for (const m of current) {
+            if (cmd.queue === 'steering') await s.steer(m);
+            else await s.followUp(m);
+          }
+          this.broadcastSnapshot();
+          return { ok: true };
+        }
+        case 'queue_move': {
+          const src = [...(cmd.from === 'steering' ? s.getSteeringMessages() : s.getFollowUpMessages())];
+          if (cmd.index < 0 || cmd.index >= src.length) return { ok: false, error: 'index out of range' };
+          const [moved] = src.splice(cmd.index, 1);
+          const dst = [...(cmd.to === 'steering' ? s.getSteeringMessages() : s.getFollowUpMessages())];
+          dst.push(moved);
+          s.clearQueue();
+          for (const m of src) {
+            if (cmd.from === 'steering') await s.steer(m);
+            else await s.followUp(m);
+          }
+          for (const m of dst) {
+            if (cmd.to === 'steering') await s.steer(m);
+            else await s.followUp(m);
+          }
+          this.broadcastSnapshot();
+          return { ok: true };
+        }
+        case 'queue_clear':
+          s.clearQueue();
+          this.broadcastSnapshot();
           return { ok: true };
         case 'ui_response': {
           const resolve = this.uiPending.get(cmd.requestId);

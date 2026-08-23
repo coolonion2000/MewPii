@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { fetchModels, type ModelsResponse } from '../api';
 import OAuthDialog from './OAuthDialog';
 import { t } from '../i18n';
@@ -6,14 +6,58 @@ import { t } from '../i18n';
 export default function ModelsPanel() {
   const [data, setData] = useState<ModelsResponse | undefined>();
   const [error, setError] = useState<string>();
-  const [editingProvider, setEditingProvider] = useState<string>();
+  const [selected, setSelected] = useState<string>();
+  const [filter, setFilter] = useState('');
+  const [editingKey, setEditingKey] = useState(false);
   const [keyDraft, setKeyDraft] = useState('');
   const [notice, setNotice] = useState<string>();
-  const [filter, setFilter] = useState('');
   const [oauthProvider, setOauthProvider] = useState<string>();
   const [addingProvider, setAddingProvider] = useState(false);
   const [newProvider, setNewProvider] = useState({ id: '', name: '', baseUrl: '', api: 'openai-completions', apiKey: '', models: '' });
   const [addError, setAddError] = useState<string>();
+
+  const refresh = () => {
+    fetchModels()
+      .then((d) => {
+        setData(d);
+        setError(undefined);
+        setSelected((prev) =>
+          prev && d.providers.some((p) => p.id === prev)
+            ? prev
+            : [...d.providers].sort((a, b) => Number(b.configured) - Number(a.configured))[0]?.id,
+        );
+      })
+      .catch((e) => setError(String(e)));
+  };
+  useEffect(refresh, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const saveKey = async (provider: string) => {
+    const key = keyDraft.trim();
+    if (!key) return;
+    const res = await fetch('/api/auth/key', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider, key }),
+    });
+    const body = (await res.json()) as { ok?: boolean; runtimeOnly?: boolean; error?: string };
+    if (res.ok && body.ok) {
+      setNotice(body.runtimeOnly ? `${provider}: ${t('keySaved')} (runtime only)` : `${provider}: ${t('keySaved')}`);
+      setEditingKey(false);
+      setKeyDraft('');
+      refresh();
+    } else {
+      setNotice(body.error ?? 'failed');
+    }
+  };
+
+  const logout = async (provider: string) => {
+    await fetch('/api/auth/logout', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider }),
+    }).catch(() => undefined);
+    refresh();
+  };
 
   const addProvider = async () => {
     const models = newProvider.models
@@ -55,176 +99,149 @@ export default function ModelsPanel() {
     }
   };
 
-  const refresh = () => {
-    fetchModels()
-      .then((d) => {
-        setData(d);
-        setError(undefined);
-      })
-      .catch((e) => setError(String(e)));
-  };
-  useEffect(refresh, []);
+  const providers = useMemo(() => {
+    const q = filter.trim().toLowerCase();
+    return (data?.providers ?? [])
+      .filter((p) => !q || p.id.includes(q) || p.name.toLowerCase().includes(q))
+      .sort((a, b) => Number(b.configured) - Number(a.configured) || b.modelCount - a.modelCount);
+  }, [data, filter]);
 
-  const saveKey = async (provider: string) => {
-    const key = keyDraft.trim();
-    if (!key) return;
-    const res = await fetch('/api/auth/key', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ provider, key }),
-    });
-    const body = (await res.json()) as { ok?: boolean; runtimeOnly?: boolean; error?: string };
-    if (res.ok && body.ok) {
-      setNotice(body.runtimeOnly ? `${provider}: ${t('keySaved')} (runtime only)` : `${provider}: ${t('keySaved')}`);
-      setEditingProvider(undefined);
-      setKeyDraft('');
-      refresh();
-    } else {
-      setNotice(body.error ?? 'failed');
-    }
-  };
-
-  const logout = async (provider: string) => {
-    await fetch('/api/auth/logout', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ provider }),
-    }).catch(() => undefined);
-    refresh();
-  };
-
-  const providers = (data?.providers ?? [])
-    .filter((p) => !filter || p.id.includes(filter) || p.name.toLowerCase().includes(filter.toLowerCase()))
-    .sort((a, b) => Number(b.configured) - Number(a.configured) || b.modelCount - a.modelCount);
+  const current = data?.providers.find((p) => p.id === selected);
+  const currentModels = (data?.models ?? []).filter((m) => m.provider === selected);
 
   return (
-    <div className="panel-page">
-      <div className="panel-header">
-        <h2>{t('modelsTitle')}</h2>
-        <input
-          className="panel-search"
-          placeholder="filter…"
-          value={filter}
-          onChange={(e) => setFilter(e.target.value)}
-        />
-      </div>
-      {error && <div className="msg-error">{error}</div>}
-      {notice && <div className="panel-notice">{notice}</div>}
-      <div style={{ marginBottom: 12 }}>
-        <button className="btn btn-sm" onClick={() => setAddingProvider((v) => !v)}>
+    <div className="mp">
+      {/* master: provider list */}
+      <div className="mp-rail">
+        <input className="panel-search" placeholder="filter…" value={filter} onChange={(e) => setFilter(e.target.value)} />
+        <div className="mp-list">
+          {providers.map((p) => (
+            <button
+              key={p.id}
+              className={`mp-row ${selected === p.id ? 'active' : ''}`}
+              onClick={() => {
+                setSelected(p.id);
+                setEditingKey(false);
+                setAddingProvider(false);
+              }}
+            >
+              <span className={`mp-dot ${p.configured ? 'ok' : ''}`} />
+              <span className="mp-name">{p.name}</span>
+              <span className="mp-count">{p.modelCount}</span>
+            </button>
+          ))}
+        </div>
+        <button className={`btn btn-sm mp-add ${addingProvider ? 'tab-active' : ''}`} onClick={() => setAddingProvider((v) => !v)}>
           ＋ {t('addProvider')}
         </button>
       </div>
-      {addingProvider && (
-        <div className="provider-card" style={{ padding: '12px 14px', marginBottom: 12 }}>
-          <div className="key-row">
-            <input placeholder={t('providerId')} value={newProvider.id} onChange={(e) => setNewProvider({ ...newProvider, id: e.target.value })} />
-            <input placeholder={t('providerName')} value={newProvider.name} onChange={(e) => setNewProvider({ ...newProvider, name: e.target.value })} />
-          </div>
-          <div className="key-row" style={{ marginTop: 8 }}>
-            <input placeholder={t('providerBaseUrl')} value={newProvider.baseUrl} onChange={(e) => setNewProvider({ ...newProvider, baseUrl: e.target.value })} />
-            <select
-              value={newProvider.api}
-              onChange={(e) => setNewProvider({ ...newProvider, api: e.target.value })}
-              style={{ border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 8, padding: '6px 10px', background: 'var(--dsw-alias-bg-base)', color: 'var(--dsw-alias-label-primary)' }}
-            >
-              <option value="openai-completions">openai-completions</option>
-              <option value="openai-responses">openai-responses</option>
-              <option value="anthropic-messages">anthropic-messages</option>
-              <option value="google-generative-ai">google-generative-ai</option>
-              <option value="mistral-conversations">mistral-conversations</option>
-            </select>
-          </div>
-          <div className="key-row" style={{ marginTop: 8 }}>
-            <input type="password" placeholder={t('providerKey')} value={newProvider.apiKey} onChange={(e) => setNewProvider({ ...newProvider, apiKey: e.target.value })} />
-          </div>
-          <textarea
-            placeholder={t('providerModels')}
-            value={newProvider.models}
-            onChange={(e) => setNewProvider({ ...newProvider, models: e.target.value })}
-            rows={3}
-            style={{
-              width: '100%', marginTop: 8, border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 8,
-              padding: '7px 10px', fontSize: 12.5, fontFamily: 'var(--ds-font-family-code)',
-              background: 'var(--dsw-alias-bg-base)', color: 'var(--dsw-alias-label-primary)', outline: 'none', resize: 'vertical',
-            }}
-          />
-          {addError && <div className="msg-error">{addError}</div>}
-          <div style={{ display: 'flex', gap: 8, marginTop: 8, justifyContent: 'flex-end' }}>
-            <button className="btn btn-sm" onClick={() => setAddingProvider(false)}>{t('cancel')}</button>
-            <button className="btn btn-sm btn-primary" style={{ width: 'auto' }} onClick={() => void addProvider()}>{t('add')}</button>
-          </div>
-        </div>
-      )}
-      <div className="provider-list">
-        {providers.map((p) => {
-          const models = (data?.models ?? []).filter((m) => m.provider === p.id);
-          return (
-            <div key={p.id} className="provider-card">
-              <div className="provider-head">
-                <span className={`badge ${p.configured ? 'ok' : ''}`}>
-                  {p.configured ? t('configured') : t('notConfigured')}
-                </span>
-                <span className="provider-name">{p.name}</span>
-                <span className="dim">{p.id} · {p.modelCount} models{p.authSource ? ` · ${t('authSource')}: ${p.authSource}` : ''}</span>
-                <span className="spacer" />
-                {p.configured && (
-                  <button className="btn btn-sm" onClick={() => void logout(p.id)}>{t('logout')}</button>
-                )}
-                {(p as { hasOAuth?: boolean }).hasOAuth && (
-                  <button className="btn btn-sm" onClick={() => setOauthProvider(p.id)}>{t('loginOAuth')}</button>
-                )}
-                <button
-                  className="btn btn-sm"
-                  onClick={() => {
-                    setEditingProvider(editingProvider === p.id ? undefined : p.id);
-                    setKeyDraft('');
-                  }}
-                >
-                  {t('setKey')}
-                </button>
-              </div>
-              {editingProvider === p.id && (
-                <div className="key-row">
-                  <input
-                    type="password"
-                    autoFocus
-                    value={keyDraft}
-                    placeholder={`${p.name} API key`}
-                    onChange={(e) => setKeyDraft(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') void saveKey(p.id);
-                      if (e.key === 'Escape') setEditingProvider(undefined);
-                    }}
-                  />
-                  <button className="btn btn-sm" onClick={() => void saveKey(p.id)}>{t('saveKey')}</button>
-                  <button className="btn btn-sm" onClick={() => setEditingProvider(undefined)}>{t('cancel')}</button>
-                </div>
-              )}
-              {models.length > 0 && (
-                <div className="model-list">
-                  {models.slice(0, 30).map((m) => (
-                    <div key={m.id} className={`model-row ${m.hasAuth ? '' : 'dimmed'}`}>
-                      <span className="model-name">{m.name}</span>
-                      <span className="dim mono">{m.id}</span>
-                      <span className="tags">
-                        {m.reasoning && <span className="tag">{t('reasoning')}</span>}
-                        {m.input.includes('image') && <span className="tag">{t('image')}</span>}
-                        {m.contextWindow ? <span className="tag">{Math.round(m.contextWindow / 1024)}k</span> : null}
-                      </span>
-                    </div>
-                  ))}
-                  {models.length > 30 && <div className="dim" style={{ padding: '4px 10px' }}>… {models.length - 30} more</div>}
-                </div>
-              )}
+
+      {/* detail */}
+      <div className="mp-detail">
+        {error && <div className="msg-error">{error}</div>}
+        {notice && <div className="panel-notice">{notice}</div>}
+
+        {addingProvider && (
+          <div className="provider-card" style={{ padding: '12px 14px' }}>
+            <div className="key-row">
+              <input placeholder={t('providerId')} value={newProvider.id} onChange={(e) => setNewProvider({ ...newProvider, id: e.target.value })} />
+              <input placeholder={t('providerName')} value={newProvider.name} onChange={(e) => setNewProvider({ ...newProvider, name: e.target.value })} />
             </div>
-          );
-        })}
+            <div className="key-row" style={{ marginTop: 8 }}>
+              <input placeholder={t('providerBaseUrl')} value={newProvider.baseUrl} onChange={(e) => setNewProvider({ ...newProvider, baseUrl: e.target.value })} />
+              <select
+                value={newProvider.api}
+                onChange={(e) => setNewProvider({ ...newProvider, api: e.target.value })}
+                style={{ border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 8, padding: '6px 10px', background: 'var(--dsw-alias-bg-base)', color: 'var(--dsw-alias-label-primary)' }}
+              >
+                <option value="openai-completions">openai-completions</option>
+                <option value="openai-responses">openai-responses</option>
+                <option value="anthropic-messages">anthropic-messages</option>
+                <option value="google-generative-ai">google-generative-ai</option>
+                <option value="mistral-conversations">mistral-conversations</option>
+              </select>
+            </div>
+            <div className="key-row" style={{ marginTop: 8 }}>
+              <input type="password" placeholder={t('providerKey')} value={newProvider.apiKey} onChange={(e) => setNewProvider({ ...newProvider, apiKey: e.target.value })} />
+            </div>
+            <textarea
+              placeholder={t('providerModels')}
+              value={newProvider.models}
+              onChange={(e) => setNewProvider({ ...newProvider, models: e.target.value })}
+              rows={3}
+              style={{
+                width: '100%', marginTop: 8, border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 8,
+                padding: '7px 10px', fontSize: 12.5, fontFamily: 'var(--ds-font-family-code)',
+                background: 'var(--dsw-alias-bg-base)', color: 'var(--dsw-alias-label-primary)', outline: 'none', resize: 'vertical',
+              }}
+            />
+            {addError && <div className="msg-error">{addError}</div>}
+            <div style={{ display: 'flex', gap: 8, marginTop: 8, justifyContent: 'flex-end' }}>
+              <button className="btn btn-sm" onClick={() => setAddingProvider(false)}>{t('cancel')}</button>
+              <button className="btn btn-sm btn-primary" style={{ width: 'auto' }} onClick={() => void addProvider()}>{t('add')}</button>
+            </div>
+          </div>
+        )}
+
+        {!addingProvider && current && (
+          <>
+            <div className="mp-head">
+              <span className="mp-head-name">{current.name}</span>
+              <span className="dim mono">{current.id}</span>
+              <span className={`badge ${current.configured ? 'ok' : ''}`}>
+                {current.configured ? t('configured') : t('notConfigured')}
+              </span>
+              {current.authSource && <span className="dim">{t('authSource')}: {current.authSource}</span>}
+              <span className="spacer" />
+              {(current as { hasOAuth?: boolean }).hasOAuth && (
+                <button className="btn btn-sm" onClick={() => setOauthProvider(current.id)}>{t('loginOAuth')}</button>
+              )}
+              {current.configured && <button className="btn btn-sm" onClick={() => void logout(current.id)}>{t('logout')}</button>}
+              <button className="btn btn-sm" onClick={() => { setEditingKey((v) => !v); setKeyDraft(''); }}>{t('setKey')}</button>
+            </div>
+
+            {editingKey && (
+              <div className="key-row" style={{ marginBottom: 12 }}>
+                <input
+                  type="password"
+                  autoFocus
+                  value={keyDraft}
+                  placeholder={`${current.name} API key`}
+                  onChange={(e) => setKeyDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') void saveKey(current.id);
+                    if (e.key === 'Escape') setEditingKey(false);
+                  }}
+                />
+                <button className="btn btn-sm" onClick={() => void saveKey(current.id)}>{t('saveKey')}</button>
+                <button className="btn btn-sm" onClick={() => setEditingKey(false)}>{t('cancel')}</button>
+              </div>
+            )}
+
+            <div className="mp-models">
+              {currentModels.map((m) => (
+                <div key={m.id} className={`model-row ${m.hasAuth ? '' : 'dimmed'}`}>
+                  <span className="model-name">{m.name}</span>
+                  <span className="dim mono">{m.id}</span>
+                  <span className="tags">
+                    {m.reasoning && <span className="tag">{t('reasoning')}</span>}
+                    {m.input.includes('image') && <span className="tag">{t('image')}</span>}
+                    {m.contextWindow ? <span className="tag">{Math.round(m.contextWindow / 1024)}k</span> : null}
+                  </span>
+                </div>
+              ))}
+              {currentModels.length === 0 && <div className="dim" style={{ padding: 12 }}>—</div>}
+            </div>
+          </>
+        )}
+
+        {!addingProvider && !current && <div className="empty-state" style={{ flex: 1 }}>—</div>}
       </div>
+
       {oauthProvider && (
         <OAuthDialog
           provider={oauthProvider}
-          providerName={providers.find((p) => p.id === oauthProvider)?.name ?? oauthProvider}
+          providerName={data?.providers.find((p) => p.id === oauthProvider)?.name ?? oauthProvider}
           onClose={(success) => {
             setOauthProvider(undefined);
             if (success) refresh();

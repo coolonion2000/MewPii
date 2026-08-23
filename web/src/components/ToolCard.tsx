@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import type { PiiMessage } from '../types';
 import { stripAnsi, type ToolActivity } from '../api';
 import { t } from '../i18n';
+import { ToolIcon, IconChevronRight, type ToolIconName } from '../icons';
 
 export interface ToolCallBlock {
   type: 'toolCall';
@@ -16,15 +17,7 @@ interface Props {
   activity?: ToolActivity;
 }
 
-const TOOL_ICONS: Record<string, string> = {
-  read: 'R',
-  bash: '>_',
-  edit: 'E',
-  write: 'W',
-  grep: 'G',
-  find: 'F',
-  ls: 'L',
-};
+
 
 interface EditEntry {
   oldText?: string;
@@ -136,11 +129,11 @@ export default function ToolCard({ call, result, activity }: Props) {
   return (
     <div className="tool-card">
       <div className="tool-card-header" onClick={() => setUserToggled(!open)}>
-        <span className="tool-icon">{TOOL_ICONS[name] ?? 'T'}</span>
+        <span className="tool-icon"><ToolIcon name={(name as ToolIconName) ?? 'tool'} /></span>
         <span className="tool-name">{name}</span>
         <span className="tool-arg">{headlineArg(name, args)}</span>
         <span className={`tool-status ${running ? 'running' : error ? 'error' : 'ok'}`} />
-        <span className={`tool-chevron ${open ? 'open' : ''}`}>&#9656;</span>
+        <span className={`tool-chevron ${open ? 'open' : ''}`}><IconChevronRight size={11} /></span>
       </div>
       {open && (
         <div className="tool-card-body">

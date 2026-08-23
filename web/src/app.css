@@ -609,3 +609,88 @@ body[data-ds-dark-theme] .composer:focus-within { box-shadow: 0 2px 14px rgba(0,
   border: 1px solid var(--dsw-alias-border-l1); border-radius: var(--dsl-diff-radius);
   background: var(--dsw-alias-bg-layer-1); padding: 10px 12px; max-height: 60vh;
 }
+
+/* compaction in progress */
+.compaction-banner {
+  display: flex; align-items: center; gap: 8px;
+  max-width: 800px; width: 100%; margin: 0 auto;
+  padding: 6px 24px 10px;
+  font-size: 12.5px; color: var(--dsw-alias-state-business-primary);
+}
+.compaction-banner .dim { font-size: 11.5px; }
+
+/* collapsed sidebar rail */
+.sidebar-collapsed { width: 46px; align-items: center; padding-top: 10px; gap: 4px; }
+.sidebar-collapsed .btn { padding: 6px; }
+
+/* favorites / project & session actions */
+.fav-star { color: var(--dsw-static-amber-500); flex-shrink: 0; }
+.project-actions { display: none; align-items: center; }
+.project-header:hover .project-actions { display: flex; }
+.project-header .path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.session-actions { display: none; align-items: center; flex-shrink: 0; }
+.session-item:hover .session-actions { display: flex; }
+.session-item:hover .time { visibility: hidden; }
+.session-item .time { transition: visibility 0s; }
+
+/* subagent nesting */
+.session-item.sub { margin-left: 26px; }
+.subagent-group { border-left: 1px solid var(--dsw-alias-border-l1); margin-left: 19px; padding-left: 2px; }
+.subagent-icon { color: var(--dsw-alias-label-caption); flex-shrink: 0; }
+.archived-section { margin-top: 8px; border-top: 1px solid var(--dsw-alias-border-l1); padding-top: 6px; }
+.session-item.archived .title { color: var(--dsw-alias-label-tertiary); }
+.folder-icon { color: var(--dsw-alias-state-business-primary); flex-shrink: 0; }
+.folder-icon.dimmed { color: var(--dsw-alias-label-caption); }
+
+/* queue ops */
+.queue-header { display: flex; justify-content: flex-end; }
+.queue-actions { display: none; align-items: center; flex-shrink: 0; }
+.queue-item:hover .queue-actions { display: flex; }
+
+/* unified settings layout */
+.unified-settings { display: flex; flex: 1; min-height: 0; }
+.us-rail {
+  width: 168px; flex-shrink: 0;
+  border-right: 1px solid var(--dsw-alias-border-l1);
+  padding: 20px 10px;
+  display: flex; flex-direction: column; gap: 2px;
+}
+.us-rail-title { font-size: 15px; font-weight: 600; padding: 0 10px 14px; }
+.us-tab {
+  border: none; background: transparent; cursor: pointer; text-align: left;
+  font-family: inherit; font-size: 13px; color: var(--dsw-alias-label-secondary);
+  padding: 8px 10px; border-radius: 8px;
+}
+.us-tab:hover { background: var(--dsw-alias-interactive-bg-hover); }
+.us-tab.active { background: var(--dsw-alias-interactive-bg-active); color: var(--dsw-alias-label-primary); font-weight: 500; }
+.us-panel { flex: 1; min-width: 0; overflow-y: auto; display: flex; flex-direction: column; }
+
+/* models master-detail */
+.mp { display: flex; flex: 1; min-height: 0; }
+.mp-rail {
+  width: 232px; flex-shrink: 0;
+  border-right: 1px solid var(--dsw-alias-border-l1);
+  padding: 14px 10px; display: flex; flex-direction: column; gap: 8px;
+  overflow-y: auto;
+}
+.mp-list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 1px; }
+.mp-row {
+  display: flex; align-items: center; gap: 8px;
+  border: none; background: transparent; cursor: pointer; text-align: left;
+  font-family: inherit; font-size: 13px; color: var(--dsw-alias-label-primary);
+  padding: 7px 10px; border-radius: 8px;
+}
+.mp-row:hover { background: var(--dsw-alias-interactive-bg-hover); }
+.mp-row.active { background: var(--dsw-alias-interactive-bg-active); }
+.mp-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--dsw-alias-border-l3); flex-shrink: 0; }
+.mp-dot.ok { background: var(--dsw-alias-state-success-primary); }
+.mp-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mp-count { font-size: 11px; color: var(--dsw-alias-label-caption); }
+.mp-add { justify-content: center; }
+.mp-detail { flex: 1; min-width: 0; overflow-y: auto; padding: 18px 24px; }
+.mp-head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
+.mp-head-name { font-size: 16px; font-weight: 600; }
+.mp-models {
+  border: 1px solid var(--dsw-alias-border-l1); border-radius: 10px;
+  background: var(--dsw-alias-bg-layer-1); overflow: hidden;
+}

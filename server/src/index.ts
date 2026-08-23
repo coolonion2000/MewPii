@@ -146,6 +146,24 @@ interface OAuthFlow {
 const oauthFlows = new Map<string, OAuthFlow>();
 
 // ---------------------------------------------------------------------------
+// pii-web state (archive list etc.), stored next to pi's own config
+// ---------------------------------------------------------------------------
+const STATE_PATH = join(getAgentDir(), 'pii-web-state.json');
+
+async function readState(): Promise<{ archived: string[] }> {
+  try {
+    const doc = JSON.parse(await readFile(STATE_PATH, 'utf-8')) as { archived?: string[] };
+    return { archived: Array.isArray(doc.archived) ? doc.archived : [] };
+  } catch {
+    return { archived: [] };
+  }
+}
+
+async function writeState(state: { archived: string[] }): Promise<void> {
+  await writeFile(STATE_PATH, JSON.stringify(state, null, 2) + '\n');
+}
+
+// ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
 function readBody(req: IncomingMessage, limit = 64 * 1024 * 1024): Promise<Buffer> {
@@ -241,12 +259,16 @@ async function handleApi(req: IncomingMessage, res: ServerResponse): Promise<boo
   }
 
   if (path === '/api/sessions' && req.method === 'GET') {
+    const includeArchived = url.searchParams.get('includeArchived') === '1';
     const running = new Set(
       [...hosts.values()].filter((h) => h.isRunning).map((h) => h.session.sessionFile).filter(Boolean) as string[],
     );
+    const state = await readState();
+    const archivedSet = new Set(state.archived);
     const all = await SessionManager.listAll();
     const byCwd = new Map<string, ProjectGroup>();
     for (const s of all) {
+      if (!includeArchived && archivedSet.has(s.path)) continue;
       const cwd = s.cwd || '(unknown)';
       let group = byCwd.get(cwd);
       if (!group) {
@@ -263,6 +285,8 @@ async function handleApi(req: IncomingMessage, res: ServerResponse): Promise<boo
         messageCount: s.messageCount,
         firstMessage: s.firstMessage.slice(0, 200),
         running: running.has(s.path),
+        archived: archivedSet.has(s.path),
+        parentSessionPath: s.parentSessionPath,
       });
     }
     const groups = [...byCwd.values()].sort(
@@ -272,6 +296,65 @@ async function handleApi(req: IncomingMessage, res: ServerResponse): Promise<boo
     );
     for (const g of groups) g.sessions.sort((a, b) => Date.parse(b.modified) - Date.parse(a.modified));
     sendJson(res, 200, { projects: groups });
+    return true;
+  }
+
+  if (path === '/api/sessions/archive' && req.method === 'POST') {
+    const body = JSON.parse((await readBody(req, 1024 * 1024)).toString()) as { path?: string; archived?: boolean };
+    if (!body.path) {
+      sendJson(res, 400, { error: 'missing path' });
+      return true;
+    }
+    const state = await readState();
+    const set = new Set(state.archived);
+    if (body.archived) set.add(body.path);
+    else set.delete(body.path);
+    await writeState({ archived: [...set] });
+    sendJson(res, 200, { ok: true });
+    return true;
+  }
+
+  if (path === '/api/sessions/rename' && req.method === 'POST') {
+    const body = JSON.parse((await readBody(req, 1024 * 1024)).toString()) as { path?: string; name?: string };
+    if (!body.path || typeof body.name !== 'string') {
+      sendJson(res, 400, { error: 'missing path or name' });
+      return true;
+    }
+    // A live host renames through the SDK; otherwise append a session_info
+    // entry to the session file directly (pi's own persistence format).
+    const liveHost = [...hosts.values()].find((h) => h.session.sessionFile === body.path);
+    if (liveHost) {
+      liveHost.session.setSessionName(body.name);
+    } else {
+      const content = (await readFile(body.path, 'utf-8')).split('\n').filter(Boolean);
+      if (content.length === 0) {
+        sendJson(res, 400, { error: 'empty session file' });
+        return true;
+      }
+      let parentId: string | null = null;
+      try {
+        const last = JSON.parse(content[content.length - 1]) as { id?: string };
+        parentId = last.id ?? null;
+      } catch {
+        // keep null
+      }
+      const entry = {
+        type: 'session_info',
+        id: crypto.randomUUID().slice(0, 8),
+        parentId,
+        timestamp: new Date().toISOString(),
+        name: body.name,
+      };
+      content.push(JSON.stringify(entry));
+      await writeFile(body.path, content.join('\n') + '\n');
+    }
+    sendJson(res, 200, { ok: true });
+    return true;
+  }
+
+  if (path === '/api/sessions/archive' && req.method === 'GET') {
+    const state = await readState();
+    sendJson(res, 200, { archived: state.archived });
     return true;
   }
 

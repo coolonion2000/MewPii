@@ -2,9 +2,12 @@ import { useEffect, useRef, useState } from 'react';
 import type { Conversation } from '../api';
 import { fetchModels, type ModelsResponse } from '../api';
 import { t } from '../i18n';
+import { IconPlus, IconArrowUp, IconStop, IconThink, IconChevronDown } from '../icons';
 
 interface Props {
   conv: Conversation;
+  draft?: string;
+  onDraft?: (d: string | undefined) => void;
 }
 
 const THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
@@ -15,7 +18,7 @@ interface PendingImage {
   name: string;
 }
 
-export default function Composer({ conv }: Props) {
+export default function Composer({ conv, draft, onDraft }: Props) {
   const [text, setText] = useState('');
   const [images, setImages] = useState<PendingImage[]>([]);
   const [models, setModels] = useState<ModelsResponse | undefined>();
@@ -27,6 +30,17 @@ export default function Composer({ conv }: Props) {
   useEffect(() => {
     fetchModels().then(setModels).catch(() => undefined);
   }, []);
+
+  // external draft injection (e.g. editing a queued message)
+  useEffect(() => {
+    if (draft !== undefined) {
+      setText(draft);
+      onDraft?.(undefined);
+      taRef.current?.focus();
+      requestAnimationFrame(autoResize);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft]);
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -134,7 +148,7 @@ export default function Composer({ conv }: Props) {
         {supportsImage && (
           <>
             <button className="round-btn" title={t('attachImage')} onClick={() => imgInputRef.current?.click()}>
-              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg>
+<IconPlus size={16} />
             </button>
             <input
               ref={imgInputRef}
@@ -188,7 +202,7 @@ export default function Composer({ conv }: Props) {
             {currentModel && isReasoning && (
               <span className="model-chip-qualifier">{snap?.thinkingLevel ?? 'off'}</span>
             )}
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round"><path d="m6 9 6 6 6-6" /></svg>
+<IconChevronDown size={12} />
           </button>
           {menuOpen === 'model' && (
             <div className="menu" onClick={(e) => e.stopPropagation()}>
@@ -221,9 +235,9 @@ export default function Composer({ conv }: Props) {
                 setMenuOpen(menuOpen === 'thinking' ? undefined : 'thinking');
               }}
             >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M12 3a6 6 0 0 0-4 10.5c.8.7 1.3 1.5 1.5 2.5h5c.2-1 .7-1.8 1.5-2.5A6 6 0 0 0 12 3z" /><path d="M10 19h4" /></svg>
+<IconThink size={14} />
               <span className="model-chip-qualifier">{snap?.thinkingLevel ?? 'off'}</span>
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round"><path d="m6 9 6 6 6-6" /></svg>
+<IconChevronDown size={11} />
             </button>
             {menuOpen === 'thinking' && (
               <div className="menu" onClick={(e) => e.stopPropagation()}>
@@ -252,11 +266,11 @@ export default function Composer({ conv }: Props) {
             title={t('abort')}
             onClick={() => void conv.send({ type: 'abort' }).catch(() => undefined)}
           >
-            <span className="stop-square" />
+            <IconStop size={13} />
           </button>
         ) : (
           <button className="send-circle" title={t('send')} disabled={!canSend} onClick={() => void submit()}>
-            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M12 19V5M5 12l7-7 7 7" /></svg>
+<IconArrowUp size={17} />
           </button>
         )}
       </div>
