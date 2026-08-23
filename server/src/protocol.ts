@@ -71,7 +71,7 @@ export type ClientCommand =
   | { type: 'queue_move'; from: 'steering' | 'followUp'; to: 'steering' | 'followUp'; index: number }
   | { type: 'queue_clear' }
   | { type: 'setToolMode'; mode: 'off' | 'read-only' | 'default' | 'full' }
-  | { type: 'ui_response'; requestId: string; value: string | boolean | undefined };
+  | { type: 'ui_response'; requestId: string; value: unknown };
 
 export interface WidgetState {
   key: string;
@@ -81,11 +81,17 @@ export interface WidgetState {
 
 export interface UiRequest {
   id: string;
-  kind: 'select' | 'confirm' | 'input';
+  kind: 'select' | 'confirm' | 'input' | 'question' | 'questionnaire';
   title: string;
   message?: string;
   options?: string[];
   placeholder?: string;
+  /** question/questionnaire tool payloads */
+  payload?: {
+    question?: string;
+    options?: { label: string; description?: string }[];
+    questions?: { label: string; prompt: string; options: { label: string; description?: string }[]; allowOther?: boolean }[];
+  };
 }
 
 /** Server → Client WebSocket messages. */

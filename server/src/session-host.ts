@@ -54,9 +54,11 @@ export class SessionHost {
   /** Extension-provided status bar entries. */
   private statuses = new Map<string, string>();
   /** Pending extension dialogs awaiting a browser answer. */
-  private uiPending = new Map<string, (value: string | boolean | undefined) => void>();
+  private uiPending = new Map<string, (value: unknown) => void>();
   /** Last observed prompt queue (from queue_update events). */
   private queue = { steering: [] as string[], followUp: [] as string[] };
+  /** Currently executing tool calls (toolCallId → name/args), for ui.custom dialogs. */
+  private activeToolCalls = new Map<string, { toolName: string; args: Record<string, unknown> }>();
 
   static async create(key: string, opts: SessionHostOptions): Promise<SessionHost> {
     const createRuntime = async ({ cwd, sessionManager, sessionStartEvent }: {
@@ -98,7 +100,41 @@ export class SessionHost {
     const host = this;
     try {
       await session.bindExtensions({
+        mode: 'tui',
         uiContext: {
+          custom: async () => {
+            // Tool-aware custom dialog: the extension tool executing right now
+            // tells us its args; render the matching web dialog and answer with
+            // the shape the tool expects.
+            const active = [...host.activeToolCalls.values()].pop();
+            if (!active) return null;
+            if (active.toolName === 'question') {
+              const args = active.args as { question?: string; options?: { label: string; description?: string }[] };
+              const answer = await host.uiRequest<unknown>({
+                kind: 'question',
+                title: args.question ?? 'question',
+                payload: { question: args.question, options: args.options ?? [] },
+              });
+              return answer ?? null;
+            }
+            if (active.toolName === 'questionnaire') {
+              const args = active.args as { questions?: { label?: string; prompt: string; options: { label: string; description?: string }[]; allowOther?: boolean }[] };
+              const questions = (args.questions ?? []).map((q, i) => ({
+                label: q.label ?? `Q${i + 1}`,
+                prompt: q.prompt,
+                options: q.options ?? [],
+                allowOther: q.allowOther !== false,
+              }));
+              const answer = await host.uiRequest<unknown>({
+                kind: 'questionnaire',
+                title: 'questionnaire',
+                payload: { questions },
+              });
+              if (!answer) return { questions, answers: [], cancelled: true };
+              return answer;
+            }
+            return null;
+          },
           select(title: string, options: readonly string[], opts?: { timeout?: number }) {
             return host.uiRequest<string | undefined>({ kind: 'select', title, options: [...options] }, opts?.timeout);
           },
@@ -122,6 +158,9 @@ export class SessionHost {
             host.broadcastStatuses();
           },
           setWorkingMessage() {},
+          setFooter() {},
+          setHeader() {},
+          setTitle() {},
           setWorkingVisible() {},
           setWorkingIndicator() {},
           setHiddenThinkingLabel() {},
@@ -186,6 +225,14 @@ export class SessionHost {
         this.broadcastSnapshot();
       }
       // Track the prompt queue so snapshots reflect it for late joiners.
+      if (event.type === 'tool_execution_start') {
+        const e = event as unknown as { toolCallId?: string; toolName?: string; args?: Record<string, unknown> };
+        if (e.toolCallId) this.activeToolCalls.set(e.toolCallId, { toolName: e.toolName ?? '', args: e.args ?? {} });
+      }
+      if (event.type === 'tool_execution_end') {
+        const e = event as unknown as { toolCallId?: string };
+        if (e.toolCallId) this.activeToolCalls.delete(e.toolCallId);
+      }
       if (event.type === 'queue_update') {
         const q = event as unknown as { steering?: readonly string[]; followUp?: readonly string[] };
         this.queue = {

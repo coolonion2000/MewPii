@@ -322,7 +322,7 @@ export class Conversation {
     this.emit();
   }
 
-  answerUi(value: string | boolean | undefined): void {
+  answerUi(value: unknown): void {
     const req = this.uiRequest;
     if (!req) return;
     this.uiRequest = undefined;

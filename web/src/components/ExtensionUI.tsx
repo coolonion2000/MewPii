@@ -55,8 +55,12 @@ export default function ExtensionUI({ conv }: { conv: Conversation }) {
         </div>
       )}
 
+      {/* question / questionnaire tool dialogs */}
+      {req?.kind === 'question' && <QuestionDialog req={req} conv={conv} />}
+      {req?.kind === 'questionnaire' && <QuestionnaireDialog req={req} conv={conv} />}
+
       {/* extension dialogs */}
-      {req && (
+      {req && req.kind !== 'question' && req.kind !== 'questionnaire' && (
         <div className="modal-mask" onClick={() => conv.answerUi(undefined)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <h3>{req.title}</h3>
@@ -118,5 +122,132 @@ export default function ExtensionUI({ conv }: { conv: Conversation }) {
         </div>
       )}
     </>
+  );
+}
+
+
+interface DialogProps {
+  req: import('../types').UiRequest;
+  conv: Conversation;
+}
+
+function QuestionDialog({ req, conv }: DialogProps) {
+  const [custom, setCustom] = useState('');
+  const options = req.payload?.options ?? [];
+  return (
+    <div className="modal-mask" onClick={() => conv.answerUi(null)}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <h3>{req.payload?.question ?? req.title}</h3>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 8 }}>
+          {options.map((opt, i) => (
+            <button
+              key={opt.label}
+              className="menu-item"
+              onClick={() => conv.answerUi({ answer: opt.label, wasCustom: false, index: i + 1 })}
+            >
+              <span>{opt.label}</span>
+              {opt.description && <span className="dim">{opt.description}</span>}
+            </button>
+          ))}
+        </div>
+        <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+          <input
+            autoFocus
+            value={custom}
+            placeholder={t('customAnswer')}
+            onChange={(e) => setCustom(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && custom.trim()) conv.answerUi({ answer: custom.trim(), wasCustom: true });
+            }}
+            style={{
+              flex: 1, border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 8,
+              padding: '7px 10px', fontSize: 13, fontFamily: 'inherit',
+              background: 'var(--dsw-alias-bg-base)', color: 'var(--dsw-alias-label-primary)', outline: 'none',
+            }}
+          />
+          <button className="btn btn-sm" onClick={() => custom.trim() && conv.answerUi({ answer: custom.trim(), wasCustom: true })}>
+            {t('submit')}
+          </button>
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 10 }}>
+          <button className="btn btn-sm" onClick={() => conv.answerUi(null)}>{t('cancel')}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function QuestionnaireDialog({ req, conv }: DialogProps) {
+  const questions = req.payload?.questions ?? [];
+  const [answers, setAnswers] = useState<Record<number, { label: string; wasCustom: boolean; index?: number }>>({});
+  const [customs, setCustoms] = useState<Record<number, string>>({});
+  const done = questions.every((_, i) => answers[i]);
+  return (
+    <div className="modal-mask" onClick={() => conv.answerUi(null)}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        {questions.map((q, qi) => (
+          <div key={qi} style={{ marginBottom: 14 }}>
+            <h3 style={{ marginBottom: 6 }}>
+              <span className="dim" style={{ marginRight: 8, fontSize: 12 }}>{q.label}</span>
+              {q.prompt}
+            </h3>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+              {q.options.map((opt, oi) => (
+                <button
+                  key={opt.label}
+                  className={`menu-item ${answers[qi]?.label === opt.label ? 'active' : ''}`}
+                  onClick={() => setAnswers((prev) => ({ ...prev, [qi]: { label: opt.label, wasCustom: false, index: oi + 1 } }))}
+                >
+                  <span>{opt.label}</span>
+                  {opt.description && <span className="dim">{opt.description}</span>}
+                </button>
+              ))}
+            </div>
+            {q.allowOther && (
+              <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+                <input
+                  value={customs[qi] ?? ''}
+                  placeholder={t('customAnswer')}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setCustoms((prev) => ({ ...prev, [qi]: v }));
+                    if (v.trim()) setAnswers((prev) => ({ ...prev, [qi]: { label: v.trim(), wasCustom: true } }));
+                    else setAnswers((prev) => { const n = { ...prev }; delete n[qi]; return n; });
+                  }}
+                  style={{
+                    flex: 1, border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 8,
+                    padding: '6px 10px', fontSize: 12.5, fontFamily: 'inherit',
+                    background: 'var(--dsw-alias-bg-base)', color: 'var(--dsw-alias-label-primary)', outline: 'none',
+                  }}
+                />
+              </div>
+            )}
+          </div>
+        ))}
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          <button className="btn btn-sm" onClick={() => conv.answerUi(null)}>{t('cancel')}</button>
+          <button
+            className="btn btn-sm btn-primary"
+            style={{ width: 'auto', opacity: done ? 1 : 0.4 }}
+            onClick={() => {
+              if (!done) return;
+              conv.answerUi({
+                questions,
+                answers: questions.map((q, i) => ({
+                  id: q.label,
+                  value: answers[i].label,
+                  label: answers[i].label,
+                  wasCustom: answers[i].wasCustom,
+                  index: answers[i].index,
+                })),
+                cancelled: false,
+              });
+            }}
+          >
+            {t('submit')}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
