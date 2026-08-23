@@ -187,7 +187,8 @@ export default function ChatView({ conv, onRefresh, onForked }: Props) {
             />
           ))}
           {conv.lastError && <div className="msg-error">{conv.lastError}</div>}
-          {conv.error && <div className="msg-error">连接中断：{conv.error}</div>}
+          {conv.reconnecting && <div className="msg-error">{t('reconnecting')}</div>}
+          {!conv.reconnecting && !conv.connected && <div className="msg-error">{t('disconnected')}</div>}
         </div>
       </div>
       )}

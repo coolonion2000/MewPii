@@ -103,8 +103,13 @@ export class Conversation {
   /** Live tool execution states keyed by toolCallId. */
   tools = new Map<string, ToolActivity>();
   connected = false;
+  /** True while attempting to re-establish a dropped connection. */
+  reconnecting = false;
   error?: string;
   lastError?: string;
+  private closedIntentionally = false;
+  private reconnectTimer?: ReturnType<typeof setTimeout>;
+  private reconnectAttempts = 0;
   runStats: RunStats = { llmMs: 0, toolMs: 0, turns: 0, steps: 0, outputChars: 0 };
   queue = { steering: [] as string[], followUp: [] as string[] };
   /** Active while a context compaction is running. */
@@ -130,6 +135,8 @@ export class Conversation {
   }
 
   connect(): void {
+    if (this.closedIntentionally) return;
+    clearTimeout(this.reconnectTimer);
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
     const url = `${proto}://${location.host}/ws?cwd=${encodeURIComponent(this.cwd)}${
       this.sessionPath ? `&session=${encodeURIComponent(this.sessionPath)}` : ''
@@ -138,22 +145,39 @@ export class Conversation {
     this.ws = ws;
     ws.onopen = () => {
       this.connected = true;
+      this.reconnecting = false;
+      this.reconnectAttempts = 0;
       this.error = undefined;
       this.emit();
     };
     ws.onclose = (ev) => {
+      const wasConnected = this.connected;
       this.connected = false;
-      if (ev.code !== 1000) this.error = `connection closed (${ev.code})`;
+      // fail all in-flight commands so the UI unblocks
+      for (const [, p] of this.pending) p.reject(new Error('connection closed'));
+      this.pending.clear();
+      if (!this.closedIntentionally) {
+        if (ev.code !== 1000 || wasConnected) this.scheduleReconnect();
+        else this.error = `connection closed (${ev.code})`;
+      }
       this.emit();
     };
     ws.onerror = () => {
-      this.error = 'connection error';
-      this.emit();
+      // onclose follows; handled there
     };
     ws.onmessage = (ev) => this.handleMessage(JSON.parse(String(ev.data)) as ServerMessage);
   }
 
+  private scheduleReconnect(): void {
+    this.reconnecting = true;
+    this.reconnectAttempts += 1;
+    const delay = Math.min(15000, 800 * 2 ** Math.min(this.reconnectAttempts, 5)) + Math.random() * 400;
+    this.reconnectTimer = setTimeout(() => this.connect(), delay);
+  }
+
   dispose(): void {
+    this.closedIntentionally = true;
+    clearTimeout(this.reconnectTimer);
     this.ws?.close(1000);
     this.listeners.clear();
   }
