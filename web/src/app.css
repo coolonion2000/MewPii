@@ -694,3 +694,20 @@ body[data-ds-dark-theme] .composer:focus-within { box-shadow: 0 2px 14px rgba(0,
   border: 1px solid var(--dsw-alias-border-l1); border-radius: 10px;
   background: var(--dsw-alias-bg-layer-1); overflow: hidden;
 }
+
+/* parent session with subagents */
+.parent-row { display: flex; align-items: center; gap: 0; }
+.sub-chevron {
+  border: none; background: transparent; cursor: pointer;
+  color: var(--dsw-alias-label-caption); padding: 2px; margin-left: 2px;
+  display: grid; place-items: center; border-radius: 4px; flex-shrink: 0;
+  transition: transform 0.12s;
+}
+.sub-chevron:hover { background: var(--dsw-alias-interactive-bg-hover); }
+.sub-chevron.open { transform: rotate(90deg); }
+.sub-count {
+  font-size: 10px; color: var(--dsw-alias-label-caption);
+  background: var(--dsw-alias-bg-layer-2); border-radius: 99px;
+  padding: 0 6px; margin-right: 6px; flex-shrink: 0;
+}
+.session-item.sub { margin-left: 30px; }

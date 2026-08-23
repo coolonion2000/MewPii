@@ -64,6 +64,7 @@ export default function Sidebar(props: Props) {
   const [renamingPath, setRenamingPath] = useState<string>();
   const [renameDraft, setRenameDraft] = useState('');
   const [showArchived, setShowArchived] = useState(false);
+  const [openParents, setOpenParents] = useState<Set<string>>(new Set());
   const [favs, setFavs] = useState<string[]>(() => {
     try {
       return JSON.parse(localStorage.getItem('pii-favs') ?? '[]') as string[];
@@ -184,10 +185,30 @@ export default function Sidebar(props: Props) {
     }
     return tops.map((s) => {
       const kids = children.get(s.path) ?? [];
+      if (kids.length === 0) return <div key={s.path}>{renderSessionRow(s, false)}</div>;
+      const open = openParents.has(s.path);
       return (
-        <div key={s.path}>
-          {renderSessionRow(s, false)}
-          {kids.length > 0 && <div className="subagent-group">{kids.map((k) => renderSessionRow(k, true))}</div>}
+        <div key={s.path} className="parent-with-subs">
+          <div className="parent-row">
+            <button
+              className={`sub-chevron ${open ? 'open' : ''}`}
+              title={`${kids.length} subagents`}
+              onClick={(e) => {
+                e.stopPropagation();
+                setOpenParents((prev) => {
+                  const next = new Set(prev);
+                  if (next.has(s.path)) next.delete(s.path);
+                  else next.add(s.path);
+                  return next;
+                });
+              }}
+            >
+              <IconChevronRight size={10} />
+            </button>
+            <div style={{ flex: 1, minWidth: 0 }}>{renderSessionRow(s, false)}</div>
+            <span className="sub-count">{kids.length}</span>
+          </div>
+          {open && <div className="subagent-group">{kids.map((k) => renderSessionRow(k, true))}</div>}
         </div>
       );
     });
