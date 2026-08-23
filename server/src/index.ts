@@ -834,6 +834,39 @@ async function handleApi(req: IncomingMessage, res: ServerResponse): Promise<boo
     return true;
   }
 
+  // ---- session import (JSONL) ------------------------------------------
+  if (path === '/api/sessions/import' && req.method === 'POST') {
+    const body = await readBody(req, 64 * 1024 * 1024);
+    const lines = body.toString('utf-8').split('\n').filter(Boolean);
+    if (lines.length === 0) {
+      sendJson(res, 400, { error: 'empty file' });
+      return true;
+    }
+    let header: { type?: string; cwd?: string };
+    try {
+      header = JSON.parse(lines[0]);
+    } catch {
+      sendJson(res, 400, { error: 'invalid JSONL' });
+      return true;
+    }
+    if (header.type !== 'session' || !header.cwd) {
+      sendJson(res, 400, { error: 'not a pi session file' });
+      return true;
+    }
+    const importsDir = join(getAgentDir(), 'imports');
+    await mkdir(importsDir, { recursive: true });
+    const tmpPath = join(importsDir, `import-${Date.now()}.jsonl`);
+    await writeFile(tmpPath, body);
+    const host = await acquireHost(header.cwd);
+    const result = await host.runtime_import(tmpPath);
+    if (!result.ok) {
+      sendJson(res, 400, { error: result.error ?? 'import failed' });
+      return true;
+    }
+    sendJson(res, 200, { ok: true, cwd: header.cwd, sessionFile: result.sessionFile });
+    return true;
+  }
+
   // ---- auth: API key login / logout ----------------------------------
   if (path === '/api/auth/key' && req.method === 'POST') {
     const body = JSON.parse((await readBody(req, 1024 * 1024)).toString()) as { provider?: string; key?: string };

@@ -1,11 +1,11 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ProjectGroup, SessionSummary } from '../types';
 import type { Selection, View } from '../App';
 import { setLang, getLang, t } from '../i18n';
 import {
   IconPlus, IconSearch, IconSettings, IconTrash, IconStar, IconStarFilled,
   IconArchive, IconUnarchive, IconPencil, IconFolder, IconChevronLeft,
-  IconChevronRight, IconRefresh, IconSun, IconMoon, IconRobot,
+  IconChevronRight, IconRefresh, IconSun, IconMoon, IconRobot, IconExport,
 } from '../icons';
 
 interface Props {
@@ -64,6 +64,7 @@ export default function Sidebar(props: Props) {
   const [renamingPath, setRenamingPath] = useState<string>();
   const [renameDraft, setRenameDraft] = useState('');
   const [showArchived, setShowArchived] = useState(false);
+  const importRef = useRef<HTMLInputElement>(null);
   const [openParents, setOpenParents] = useState<Set<string>>(new Set());
   const [favs, setFavs] = useState<string[]>(() => {
     try {
@@ -248,10 +249,34 @@ export default function Sidebar(props: Props) {
         <button className={`btn btn-icon ${view !== 'chat' && view !== 'files' ? 'tab-active' : ''}`} title={t('navSettings')} onClick={() => onNavigate('settings')}>
           <IconSettings />
         </button>
+        <button className="btn btn-icon" title={t('importSession')} onClick={() => importRef.current?.click()}>
+          <IconExport size={14} style={{ transform: 'rotate(180deg)' }} />
+        </button>
         <button className="btn btn-icon" title={t('newSession')} onClick={() => onSelect({ cwd: newSessionCwd })}>
           <IconPlus />
         </button>
       </div>
+      <input
+        ref={importRef}
+        type="file"
+        accept=".jsonl,application/jsonl"
+        style={{ display: 'none' }}
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          e.target.value = '';
+          if (!file) return;
+          void file.arrayBuffer().then((buf) =>
+            fetch('/api/sessions/import', { method: 'POST', body: buf })
+              .then((r) => r.json())
+              .then((d: { ok?: boolean; cwd?: string; sessionFile?: string; error?: string }) => {
+                if (d.ok && d.cwd && d.sessionFile) onSelect({ cwd: d.cwd, sessionPath: d.sessionFile });
+                else alert(t('importFailed') + ': ' + (d.error ?? ''));
+                onRefresh();
+              })
+              .catch(() => undefined),
+          );
+        }}
+      />
 
       {searchOpen && (
         <div style={{ padding: '0 12px 8px' }}>

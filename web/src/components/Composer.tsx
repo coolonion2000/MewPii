@@ -31,6 +31,21 @@ export default function Composer({ conv, draft, onDraft }: Props) {
     fetchModels().then(setModels).catch(() => undefined);
   }, []);
 
+  // slash commands (skills + prompt templates) for autocomplete
+  const [slashItems, setSlashItems] = useState<{ cmd: string; desc: string }[]>([]);
+  useEffect(() => {
+    const cwd = conv.snapshot?.cwd ?? conv.cwd;
+    fetch(`/api/resources?cwd=${encodeURIComponent(cwd)}`)
+      .then((r) => r.json())
+      .then((d: { skills?: { name: string; description?: string }[]; prompts?: { name: string; description?: string }[] }) => {
+        const items: { cmd: string; desc: string }[] = [];
+        for (const sk of d.skills ?? []) items.push({ cmd: `/skill:${sk.name}`, desc: sk.description ?? '' });
+        for (const p of d.prompts ?? []) items.push({ cmd: `/${p.name}`, desc: p.description ?? '' });
+        setSlashItems(items);
+      })
+      .catch(() => undefined);
+  }, [conv.snapshot?.cwd, conv.cwd]);
+
   // external draft injection (e.g. editing a queued message)
   useEffect(() => {
     if (draft !== undefined) {
@@ -95,6 +110,17 @@ export default function Composer({ conv, draft, onDraft }: Props) {
     }
   };
 
+  // slash autocomplete: current word starts with '/'
+  const slashQuery = (() => {
+    if (text.includes(' ') && !text.startsWith('/')) return undefined;
+    const m = text.match(/^\/([a-zA-Z0-9:_-]*)$/);
+    return m ? m[1].toLowerCase() : undefined;
+  })();
+  const slashMatches = slashQuery !== undefined
+    ? slashItems.filter((it) => it.cmd.slice(1).toLowerCase().startsWith(slashQuery)).slice(0, 8)
+    : [];
+  const [slashIndex, setSlashIndex] = useState(0);
+
   const currentModel = snap?.model;
   const currentModelInfo = models?.models.find(
     (m) => m.provider === currentModel?.provider && m.id === currentModel?.id,
@@ -129,6 +155,25 @@ export default function Composer({ conv, draft, onDraft }: Props) {
           ))}
         </div>
       )}
+      {slashMatches.length > 0 && (
+        <div className="slash-menu">
+          {slashMatches.map((it, i) => (
+            <button
+              key={it.cmd}
+              className={`menu-item ${i === slashIndex ? 'active' : ''}`}
+              onMouseDown={(e) => {
+                e.preventDefault();
+                setText(it.cmd + ' ');
+                setSlashIndex(0);
+                taRef.current?.focus();
+              }}
+            >
+              <span className="mono">{it.cmd}</span>
+              <span className="dim">{it.desc.slice(0, 40)}</span>
+            </button>
+          ))}
+        </div>
+      )}
       <textarea
         ref={taRef}
         value={text}
@@ -138,6 +183,29 @@ export default function Composer({ conv, draft, onDraft }: Props) {
           autoResize();
         }}
         onKeyDown={(e) => {
+          if (slashMatches.length > 0 && !e.nativeEvent.isComposing) {
+            if (e.key === 'ArrowDown') {
+              e.preventDefault();
+              setSlashIndex((i) => (i + 1) % slashMatches.length);
+              return;
+            }
+            if (e.key === 'ArrowUp') {
+              e.preventDefault();
+              setSlashIndex((i) => (i - 1 + slashMatches.length) % slashMatches.length);
+              return;
+            }
+            if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
+              e.preventDefault();
+              setText(slashMatches[Math.min(slashIndex, slashMatches.length - 1)].cmd + ' ');
+              setSlashIndex(0);
+              requestAnimationFrame(autoResize);
+              return;
+            }
+            if (e.key === 'Escape') {
+              setText(text + ' ');
+              return;
+            }
+          }
           if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
             e.preventDefault();
             void submit();

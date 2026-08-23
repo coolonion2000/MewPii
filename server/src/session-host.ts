@@ -200,6 +200,17 @@ export class SessionHost {
     return this.runtime.session;
   }
 
+  /** Import a JSONL session into this host's runtime. */
+  async runtime_import(inputPath: string): Promise<{ ok: boolean; sessionFile?: string; error?: string }> {
+    try {
+      const r = await this.runtime.importFromJsonl(inputPath);
+      this.broadcastSnapshot();
+      return { ok: !r.cancelled, sessionFile: this.runtime.session.sessionFile, error: r.cancelled ? 'cancelled' : undefined };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
   get cwd(): string {
     return this.runtime.cwd;
   }

@@ -95,6 +95,24 @@ export default function ChatView({ conv, onRefresh, onForked }: Props) {
         <button className={`btn btn-sm ${showTraj ? 'tab-active' : ''}`} onClick={() => setShowTraj((v) => !v)}>
           {t('trajectory')}
         </button>
+        <button
+          className="btn btn-sm"
+          title={t('clone')}
+          onClick={() => {
+            const last = [...allMessages].reverse().find((m) => m._entryId);
+            if (!last?._entryId) return;
+            void conv
+              .send({ type: 'fork', entryId: last._entryId })
+              .then((data) => {
+                onRefresh();
+                const file = data?.sessionFile as string | undefined;
+                if (file && onForked) onForked(conv.snapshot?.cwd ?? conv.cwd, file);
+              })
+              .catch(() => undefined);
+          }}
+        >
+          {t('clone')}
+        </button>
         <button className="btn btn-sm" title={t('compact')} onClick={() => void conv.send({ type: 'compact' }).catch(() => undefined)}>
           {t('compact')}
         </button>
