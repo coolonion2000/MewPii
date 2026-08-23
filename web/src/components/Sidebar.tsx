@@ -5,7 +5,7 @@ import { setLang, getLang, t } from '../i18n';
 import {
   IconPlus, IconSearch, IconSettings, IconTrash, IconStar, IconStarFilled,
   IconArchive, IconUnarchive, IconPencil, IconFolder, IconChevronLeft,
-  IconChevronRight, IconRefresh, IconSun, IconMoon, IconRobot, IconExport,
+  IconChevronRight, IconRefresh, IconSun, IconMoon, IconRobot, IconExport, IconChat,
 } from '../icons';
 
 interface Props {
@@ -225,6 +225,9 @@ export default function Sidebar(props: Props) {
           <IconPlus />
         </button>
         <div style={{ flex: 1 }} />
+        <button className={`btn btn-icon ${view === 'chat' ? 'tab-active' : ''}`} title={t('navChat')} onClick={() => onNavigate('chat')}>
+          <IconChat />
+        </button>
         <button className={`btn btn-icon ${view === 'files' ? 'tab-active' : ''}`} title={t('navFiles')} onClick={() => onNavigate('files')}>
           <IconFolder />
         </button>
