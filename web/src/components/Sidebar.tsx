@@ -138,7 +138,7 @@ export default function Sidebar(props: Props) {
     depth: number,
     kids?: { count: number; open: boolean; toggle: () => void },
   ) => {
-    const indent = 8 + depth * 14;
+    const indent = 4 + depth * 8;
     if (renamingPath === s.path) {
       return (
         <input

@@ -41,7 +41,7 @@
 .project-header:hover .add-btn { visibility: visible; }
 
 .session-item {
-  display: flex; align-items: center; gap: 5px;
+  display: flex; align-items: center; gap: 4px;
   padding: 4px 8px; margin: 0; border-radius: 8px;
   cursor: pointer; position: relative;
 }
@@ -697,7 +697,7 @@ body[data-ds-dark-theme] .composer:focus-within { box-shadow: 0 2px 14px rgba(0,
 
 .sub-chevron {
   border: none; background: transparent; cursor: pointer;
-  color: var(--dsw-alias-label-caption); padding: 0; margin-left: 0; width: 12px;
+  color: var(--dsw-alias-label-caption); padding: 0; margin-left: 0; width: 10px;
   outline: none;
   display: grid; place-items: center; border-radius: 4px; flex-shrink: 0;
   transition: transform 0.12s;
@@ -742,5 +742,5 @@ body[data-ds-dark-theme] .composer:focus-within { box-shadow: 0 2px 14px rgba(0,
 .sidebar-resize:hover { background: var(--dsw-alias-state-business-primary); opacity: 0.25; }
 
 /* tree indent, fixed +14px per level */
-.sub-chevron-placeholder { width: 12px; flex-shrink: 0; }
-.subagent-group { border-left: 1px solid var(--dsw-alias-border-l1); margin-left: 21px; }
+.sub-chevron-placeholder { width: 10px; flex-shrink: 0; }
+.subagent-group { border-left: 1px solid var(--dsw-alias-border-l1); margin-left: 10px; }
