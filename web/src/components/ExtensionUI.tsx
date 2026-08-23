@@ -3,6 +3,15 @@ import type { Conversation } from '../api';
 import { stripAnsi } from '../api';
 import { t } from '../i18n';
 
+/** Inline question/questionnaire panel, docked above the composer (dsh-style). */
+export function InlineQuestions({ conv }: { conv: Conversation }) {
+  const req = conv.uiRequest;
+  if (!req) return null;
+  if (req.kind === 'question') return <QuestionDialog req={req} conv={conv} />;
+  if (req.kind === 'questionnaire') return <QuestionnaireDialog req={req} conv={conv} />;
+  return null;
+}
+
 /** Extension-provided UI: widget chips (bottom-right), toasts (top-right), dialogs (modal). */
 export default function ExtensionUI({ conv }: { conv: Conversation }) {
   const [openWidgets, setOpenWidgets] = useState<Set<string>>(new Set());
@@ -55,11 +64,7 @@ export default function ExtensionUI({ conv }: { conv: Conversation }) {
         </div>
       )}
 
-      {/* question / questionnaire tool dialogs */}
-      {req?.kind === 'question' && <QuestionDialog req={req} conv={conv} />}
-      {req?.kind === 'questionnaire' && <QuestionnaireDialog req={req} conv={conv} />}
-
-      {/* extension dialogs */}
+      {/* extension dialogs (question/questionnaire render inline above the composer) */}
       {req && req.kind !== 'question' && req.kind !== 'questionnaire' && (
         <div className="modal-mask" onClick={() => conv.answerUi(undefined)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
@@ -135,8 +140,8 @@ function QuestionDialog({ req, conv }: DialogProps) {
   const [custom, setCustom] = useState('');
   const options = req.payload?.options ?? [];
   return (
-    <div className="modal-mask" onClick={() => conv.answerUi(null)}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
+    <div className="ask-panel">
+      <div className="ask-panel-body">
         <h3>{req.payload?.question ?? req.title}</h3>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 8 }}>
           {options.map((opt, i) => (
@@ -183,8 +188,8 @@ function QuestionnaireDialog({ req, conv }: DialogProps) {
   const [customs, setCustoms] = useState<Record<number, string>>({});
   const done = questions.every((_, i) => answers[i]);
   return (
-    <div className="modal-mask" onClick={() => conv.answerUi(null)}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
+    <div className="ask-panel">
+      <div className="ask-panel-body">
         {questions.map((q, qi) => (
           <div key={qi} style={{ marginBottom: 14 }}>
             <h3 style={{ marginBottom: 6 }}>

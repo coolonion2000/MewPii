@@ -4,7 +4,7 @@ import MessageItem from './MessageItem';
 import Composer from './Composer';
 import StatsBar from './StatsBar';
 import Trajectory from './Trajectory';
-import ExtensionUI from './ExtensionUI';
+import ExtensionUI, { InlineQuestions } from './ExtensionUI';
 import { IconTrash, IconPencil, IconX } from '../icons';
 import { exportHtml } from '../export';
 import type { PiiMessage } from '../types';
@@ -228,6 +228,7 @@ export default function ChatView({ conv, onRefresh, onForked }: Props) {
       )}
 
       <div className="composer-wrap">
+        <InlineQuestions conv={conv} />
         <Composer conv={conv} draft={draft} onDraft={setDraft} />
       </div>
 
