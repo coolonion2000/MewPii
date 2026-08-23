@@ -305,6 +305,23 @@ export class Conversation {
     }
   }
 
+  /** Surface an error to the message area. */
+  reportError(message: string): void {
+    this.lastError = message;
+    this.emit();
+  }
+
+  /** Transient toast. */
+  toast(message: string, level = 'info'): void {
+    const id = ++this.toastSeq;
+    this.toasts = [...this.toasts, { id, message, level }];
+    setTimeout(() => {
+      this.toasts = this.toasts.filter((t) => t.id !== id);
+      this.emit();
+    }, 4000);
+    this.emit();
+  }
+
   answerUi(value: string | boolean | undefined): void {
     const req = this.uiRequest;
     if (!req) return;

@@ -152,8 +152,9 @@ export default function ChatView({ conv, onRefresh, onForked }: Props) {
                     onRefresh();
                     const file = data?.sessionFile as string | undefined;
                     if (file && onForked) onForked(conv.snapshot?.cwd ?? conv.cwd, file);
+                    else conv.toast(t('forkFailed'), 'error');
                   })
-                  .catch(() => undefined)
+                  .catch((err) => conv.reportError(err instanceof Error ? err.message : String(err)))
               }
               onBranch={(entryId) =>
                 void conv
@@ -161,8 +162,9 @@ export default function ChatView({ conv, onRefresh, onForked }: Props) {
                   .then((data) => {
                     const text = data?.editorText as string | undefined;
                     if (text) setDraft(text);
+                    else conv.toast(t('branchedHere'));
                   })
-                  .catch(() => undefined)
+                  .catch((err) => conv.reportError(err instanceof Error ? err.message : String(err)))
               }
             />
           ))}

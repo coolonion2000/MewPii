@@ -1,11 +1,19 @@
 import { useCallback, useEffect, useState } from 'react';
 import { t } from '../i18n';
+import { IconChevronRight } from '../icons';
 
-interface Pkg {
+interface PkgFile {
+  path: string;
+  enabled: boolean;
+}
+
+interface PkgConfig {
   source: string;
   scope: string;
-  filtered?: boolean;
   installedPath?: string;
+  enabled: boolean;
+  filters: Record<string, string[]>;
+  contents: Record<string, PkgFile[]>;
 }
 
 interface ExtItem {
@@ -14,19 +22,27 @@ interface ExtItem {
   scope?: string;
 }
 
+const KIND_LABELS: Record<string, string> = {
+  skills: 'skills',
+  extensions: 'extensions',
+  prompts: 'prompts',
+  themes: 'themes',
+};
+
 export default function ExtensionsPanel({ cwd: initialCwd }: { cwd: string }) {
   const [cwd, setCwd] = useState(initialCwd);
   const [cwdDraft, setCwdDraft] = useState(initialCwd);
-  const [packages, setPackages] = useState<Pkg[]>([]);
+  const [packages, setPackages] = useState<PkgConfig[]>([]);
   const [extensions, setExtensions] = useState<ExtItem[]>([]);
   const [installSource, setInstallSource] = useState('');
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string>();
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
   const load = useCallback(() => {
-    fetch(`/api/extensions?cwd=${encodeURIComponent(cwd)}`)
+    fetch(`/api/packages/config?cwd=${encodeURIComponent(cwd)}`)
       .then((r) => r.json())
-      .then((d: { packages?: Pkg[] }) => setPackages(d.packages ?? []))
+      .then((d: { packages?: PkgConfig[] }) => setPackages(d.packages ?? []))
       .catch(() => undefined);
     fetch(`/api/resources?cwd=${encodeURIComponent(cwd)}`)
       .then((r) => r.json())
@@ -64,6 +80,33 @@ export default function ExtensionsPanel({ cwd: initialCwd }: { cwd: string }) {
     load();
   };
 
+  const togglePkg = async (pkg: PkgConfig, enabled: boolean) => {
+    await fetch(`/api/packages/config?cwd=${encodeURIComponent(cwd)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source: pkg.source, scope: pkg.scope, enabled }),
+    }).catch(() => undefined);
+    load();
+  };
+
+  const toggleFile = async (pkg: PkgConfig, kind: string, file: PkgFile, enabled: boolean) => {
+    await fetch(`/api/packages/config?cwd=${encodeURIComponent(cwd)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        source: pkg.source,
+        scope: pkg.scope,
+        toggleKind: kind,
+        togglePath: file.path,
+        toggleEnabled: enabled,
+        contents: pkg.contents,
+      }),
+    }).catch(() => undefined);
+    load();
+  };
+
+  const fileLabel = (path: string) => path.split('/').pop() ?? path;
+
   return (
     <div className="panel-page">
       <div className="panel-header">
@@ -92,16 +135,48 @@ export default function ExtensionsPanel({ cwd: initialCwd }: { cwd: string }) {
 
       <h3 className="section-title">{t('installedPackages')} ({packages.length})</h3>
       <div className="provider-list">
-        {packages.map((pkg) => (
-          <div key={pkg.source + pkg.scope} className="provider-card" style={{ padding: '10px 14px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <span className="mono" style={{ fontSize: 12.5, flex: 1 }}>{pkg.source}</span>
-              <span className="tag">{pkg.scope}</span>
-              <button className="btn btn-sm" onClick={() => void removePkg(pkg.source)}>{t('remove')}</button>
+        {packages.map((pkg) => {
+          const key = pkg.source + pkg.scope;
+          const open = expanded.has(key);
+          const kinds = Object.entries(pkg.contents).filter(([, files]) => files.length > 0);
+          const totalFiles = kinds.reduce((n, [, files]) => n + files.length, 0);
+          return (
+            <div key={key} className="provider-card">
+              <div className="pkg-head" onClick={() => totalFiles > 0 && setExpanded((prev) => { const n = new Set(prev); if (n.has(key)) n.delete(key); else n.add(key); return n; })}>
+                {totalFiles > 0 && (
+                  <span className={`sub-chevron ${open ? 'open' : ''}`}><IconChevronRight size={10} /></span>
+                )}
+                <span className="mono" style={{ fontSize: 12.5, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{pkg.source}</span>
+                <span className="tag">{pkg.scope}</span>
+                <button
+                  className={`toggle ${pkg.enabled ? 'on' : ''}`}
+                  title={t('pkgEnabled')}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void togglePkg(pkg, !pkg.enabled);
+                  }}
+                />
+                <button className="btn btn-sm" onClick={(e) => { e.stopPropagation(); void removePkg(pkg.source); }}>{t('remove')}</button>
+              </div>
+              {open && kinds.map(([kind, files]) => (
+                <div key={kind} className="pkg-kind">
+                  <div className="tool-section-label">{KIND_LABELS[kind] ?? kind}</div>
+                  {files.map((f) => (
+                    <div key={f.path} className="pkg-file">
+                      <button
+                        className={`toggle ${f.enabled ? 'on' : ''}`}
+                        onClick={() => void toggleFile(pkg, kind, f, !f.enabled)}
+                      />
+                      <span className="mono" style={{ fontSize: 12 }}>{fileLabel(f.path)}</span>
+                      <span className="dim mono" style={{ fontSize: 10.5 }}>{f.path}</span>
+                    </div>
+                  ))}
+                </div>
+              ))}
+              {open && totalFiles === 0 && <div className="dim" style={{ padding: '4px 14px 10px' }}>—</div>}
             </div>
-            {pkg.installedPath && <div className="dim mono" style={{ fontSize: 11, marginTop: 4 }}>{pkg.installedPath}</div>}
-          </div>
-        ))}
+          );
+        })}
         {packages.length === 0 && <div className="dim">—</div>}
       </div>
 

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useReducer, useState } from 'react';
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { Conversation, deleteSession, fetchProjects } from './api';
 import type { ProjectGroup, SessionSummary } from './types';
 import Sidebar from './components/Sidebar';
@@ -126,11 +126,19 @@ export default function App() {
   useEffect(() => (conv ? conv.subscribe(force) : undefined), [conv]);
   useEffect(() => () => conv?.dispose(), [conv]);
 
-  // Refresh the sidebar when a run finishes (titles/mtimes change).
+  // Refresh the sidebar when a run finishes, when the session file is
+  // assigned, and when the first message lands (new session appears).
+  const msgCount = conv?.snapshot?.messages.length ?? conv?.messages.length ?? 0;
+  const prevCount = useRef(0);
   useEffect(() => {
-    if (conv && !conv.snapshot?.isStreaming) refreshProjects();
+    const count = msgCount;
+    const wasEmpty = prevCount.current === 0;
+    prevCount.current = count;
+    if ((wasEmpty && count > 0) || (conv && !conv.snapshot?.isStreaming)) {
+      refreshProjects();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [conv?.snapshot?.isStreaming, conv?.snapshot?.sessionFile]);
+  }, [msgCount, conv?.snapshot?.isStreaming, conv?.snapshot?.sessionFile]);
 
   const handleDelete = useCallback(
     async (path: string) => {

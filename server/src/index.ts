@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { readFile, readdir, stat, unlink, writeFile, mkdir } from 'node:fs/promises';
-import { createReadStream, existsSync } from 'node:fs';
+import { createReadStream, existsSync, readdirSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { extname, join, normalize, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -211,6 +211,15 @@ const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.
 function sendJson(res: ServerResponse, status: number, data: unknown): void {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
   res.end(JSON.stringify(data));
+}
+
+/** Minimal glob matcher: supports * and ** against forward-slash paths. */
+function globMatch(pattern: string, path: string): boolean {
+  const p = pattern.split('/').map((seg) =>
+    seg === '**' ? '(?:[^/]+/)*' : seg.split('').map((c) => (c === '*' ? '[^/]*' : c.replace(/[.+?^${}()|[\]\\]/g, '\\$&'))).join(''),
+  );
+  const re = new RegExp(`^${p.join('/')}$`);
+  return re.test(path) || re.test(path.replace(/\\/g, '/'));
 }
 
 const MIME: Record<string, string> = {
@@ -498,6 +507,134 @@ async function handleApi(req: IncomingMessage, res: ServerResponse): Promise<boo
     }
     const { rm } = await import('node:fs/promises');
     await rm(dir, { recursive: true, force: true });
+    sendJson(res, 200, { ok: true });
+    return true;
+  }
+
+  // ---- package enable / disable (pi config semantics) -------------------
+  if (path === '/api/packages/config' && req.method === 'GET') {
+    const cwd = url.searchParams.get('cwd') ?? process.cwd();
+    const sm = SettingsManager.create(cwd, getAgentDir());
+    const pm = new DefaultPackageManager({ cwd, agentDir: getAgentDir(), settingsManager: sm });
+    const settingsPkgs = sm.getGlobalSettings().packages ?? [];
+    const projPkgs = sm.getProjectSettings().packages ?? [];
+    const configured = pm.listConfiguredPackages();
+
+    const KINDS = ['skills', 'extensions', 'prompts', 'themes'] as const;
+    const result = configured.map((pkg) => {
+      const entry = (pkg.scope === 'project' ? projPkgs : settingsPkgs).find((p) =>
+        (typeof p === 'string' ? p : p.source) === pkg.source,
+      );
+      const obj = typeof entry === 'object' && entry !== null ? (entry as Record<string, unknown>) : undefined;
+      const autoloadDisabled = obj?.autoload === false;
+      const filters = obj as { skills?: string[]; extensions?: string[]; prompts?: string[]; themes?: string[] } | undefined;
+
+      // scan installed package contents (convention dirs)
+      const contents: Record<string, { path: string; enabled: boolean }[]> = {};
+      const root = pkg.installedPath;
+      for (const kind of KINDS) {
+        const files: { path: string; enabled: boolean }[] = [];
+        if (root) {
+          const kindDir = join(root, kind);
+          const walk = (dir: string): void => {
+            if (!existsSync(dir)) return;
+            for (const e of readdirSync(dir, { withFileTypes: true })) {
+              const full = join(dir, e.name);
+              if (e.isDirectory()) walk(full);
+              else files.push({ path: full.slice(root.length + 1), enabled: true });
+            }
+          };
+          walk(kindDir);
+        }
+        const patterns = filters?.[kind];
+        for (const f of files) {
+          if (autoloadDisabled) {
+            // with autoload=false the patterns act as a re-enable list
+            f.enabled = patterns ? patterns.some((p) => globMatch(p, f.path)) : false;
+          } else if (patterns !== undefined) {
+            f.enabled = patterns.some((p) => globMatch(p, f.path));
+          } else {
+            f.enabled = true;
+          }
+        }
+        contents[kind] = files;
+      }
+      return { source: pkg.source, scope: pkg.scope, installedPath: pkg.installedPath, enabled: !autoloadDisabled, filters: filters ?? {}, contents };
+    });
+    sendJson(res, 200, { packages: result });
+    return true;
+  }
+
+  if (path === '/api/packages/config' && req.method === 'POST') {
+    const body = JSON.parse((await readBody(req, 2 * 1024 * 1024)).toString()) as {
+      source: string;
+      scope?: 'user' | 'project';
+      enabled?: boolean;
+      toggleKind?: 'skills' | 'extensions' | 'prompts' | 'themes';
+      togglePath?: string;
+      toggleEnabled?: boolean;
+      contents?: Record<string, { path: string; enabled: boolean }[]>;
+    };
+    if (!body.source) {
+      sendJson(res, 400, { error: 'missing source' });
+      return true;
+    }
+    const cwd = url.searchParams.get('cwd') ?? process.cwd();
+    const sm = SettingsManager.create(cwd, getAgentDir());
+    const isProject = body.scope === 'project';
+    const list = [...((isProject ? sm.getProjectSettings().packages : sm.getGlobalSettings().packages) ?? [])];
+    const idx = list.findIndex((p) => (typeof p === 'string' ? p : p.source) === body.source);
+    if (idx === -1) {
+      sendJson(res, 404, { error: 'package not configured' });
+      return true;
+    }
+    const prev = list[idx];
+    const obj: Record<string, unknown> = typeof prev === 'object' && prev !== null ? { ...prev } : { source: body.source };
+
+    if (body.enabled !== undefined) {
+      obj.autoload = body.enabled ? undefined : false;
+      if (obj.autoload === undefined) delete obj.autoload;
+    }
+
+    if (body.toggleKind && body.togglePath) {
+      const kind = body.toggleKind;
+      const all = (body.contents?.[kind] ?? []).map((f) => f.path);
+      const current: string[] | undefined = Array.isArray(obj[kind]) ? [...(obj[kind] as string[])] : undefined;
+      const autoloadDisabled = obj.autoload === false;
+
+      if (autoloadDisabled) {
+        // re-enable list semantics: add/remove the path
+        const set = new Set(current ?? []);
+        if (body.toggleEnabled) set.add(body.togglePath);
+        else set.delete(body.togglePath);
+        obj[kind] = [...set];
+      } else {
+        // allowlist semantics
+        let set: Set<string>;
+        if (current === undefined) {
+          // all currently enabled; disabling one => allowlist of the rest
+          set = new Set(all.filter((p) => p !== body.togglePath));
+          if (!body.toggleEnabled) {
+            // that's the new allowlist
+            obj[kind] = [...set];
+          } else {
+            // enabling with no filter is a no-op
+            delete obj[kind];
+          }
+        } else {
+          set = new Set(current);
+          if (body.toggleEnabled) set.add(body.togglePath);
+          else set.delete(body.togglePath);
+          // if allowlist now covers everything, drop the filter
+          if (all.length > 0 && all.every((p) => set.has(p))) delete obj[kind];
+          else obj[kind] = [...set];
+        }
+      }
+    }
+
+    list[idx] = obj as never;
+    if (isProject) sm.setProjectPackages(list);
+    else sm.setPackages(list);
     sendJson(res, 200, { ok: true });
     return true;
   }
