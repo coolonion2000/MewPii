@@ -66,6 +66,7 @@ export const IconFind = (p: IconProps) => base(p, <><circle cx="11" cy="11" r="7
 export const IconLs = (p: IconProps) => base(p, <><path d="M8 6h13M8 12h13M8 18h13" /><circle cx="3.5" cy="6" r="1" /><circle cx="3.5" cy="12" r="1" /><circle cx="3.5" cy="18" r="1" /></>);
 export const IconSparkles = (p: IconProps) => base(p, <><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1" /><circle cx="12" cy="12" r="3" /></>);
 export const IconRobot = (p: IconProps) => base(p, <><rect x="5" y="8" width="14" height="12" rx="2" /><path d="M12 8V4" /><circle cx="12" cy="3" r="1" /><circle cx="9.5" cy="13" r="1" /><circle cx="14.5" cy="13" r="1" /><path d="M9 17h6" /></>);
+export const IconWrench = (p: IconProps) => base(p, <path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18v3h3l6.3-6.3a4 4 0 0 0 5.4-5.4l-2.6 2.6-2.1-2.1z" />);
 
 export type ToolIconName = 'think' | 'bash' | 'read' | 'edit' | 'write' | 'grep' | 'find' | 'ls' | 'tool';
 

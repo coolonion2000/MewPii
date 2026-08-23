@@ -67,6 +67,7 @@ export type ClientCommand =
   | { type: 'queue_remove'; queue: 'steering' | 'followUp'; index: number }
   | { type: 'queue_move'; from: 'steering' | 'followUp'; to: 'steering' | 'followUp'; index: number }
   | { type: 'queue_clear' }
+  | { type: 'setToolMode'; mode: 'off' | 'read-only' | 'default' | 'full' }
   | { type: 'ui_response'; requestId: string; value: string | boolean | undefined };
 
 export interface WidgetState {
@@ -104,4 +105,5 @@ export interface SessionSnapshot {
   messages: PiiMessage[];
   queue: { steering: string[]; followUp: string[] };
   stats?: SessionStatsLite;
+  tools: string[];
 }

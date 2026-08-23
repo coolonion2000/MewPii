@@ -1,6 +1,14 @@
 import type { WebSocket } from 'ws';
 import {
   createAgentSessionFromServices,
+  createBashTool,
+  createCodingTools,
+  createEditTool,
+  createFindTool,
+  createGrepTool,
+  createLsTool,
+  createReadOnlyTools,
+  createWriteTool,
   createAgentSessionRuntime,
   createAgentSessionServices,
   getAgentDir,
@@ -279,6 +287,7 @@ export class SessionHost {
         followUp: [...s.getFollowUpMessages()],
       },
       stats,
+      tools: s.agent.state.tools.map((tool) => tool.name),
     };
   }
 
@@ -368,6 +377,20 @@ export class SessionHost {
             if (cmd.to === 'steering') await s.steer(m);
             else await s.followUp(m);
           }
+          this.broadcastSnapshot();
+          return { ok: true };
+        }
+        case 'setToolMode': {
+          const BUILTIN = ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls'];
+          const cwd = this.runtime.cwd;
+          let defs: { name: string }[];
+          if (cmd.mode === 'off') defs = [];
+          else if (cmd.mode === 'read-only') defs = createReadOnlyTools(cwd);
+          else if (cmd.mode === 'default') defs = createCodingTools(cwd);
+          else defs = [createBashTool(cwd), createEditTool(cwd), createWriteTool(cwd), createGrepTool(cwd), createFindTool(cwd), createLsTool(cwd), ...createCodingTools(cwd).filter((tool) => tool.name === 'read')];
+          // preserve extension/custom tools, replace the builtin set
+          const preserved = s.agent.state.tools.filter((tool) => !BUILTIN.includes(tool.name));
+          s.agent.state.tools = [...preserved, ...(defs as never[])];
           this.broadcastSnapshot();
           return { ok: true };
         }

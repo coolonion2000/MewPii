@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { Conversation } from '../api';
 import { fetchModels, type ModelsResponse } from '../api';
 import { t } from '../i18n';
-import { IconPlus, IconArrowUp, IconStop, IconThink, IconChevronDown, IconX } from '../icons';
+import { IconPlus, IconArrowUp, IconStop, IconThink, IconChevronDown, IconX, IconWrench } from '../icons';
 
 interface Props {
   conv: Conversation;
@@ -22,7 +22,7 @@ export default function Composer({ conv, draft, onDraft }: Props) {
   const [text, setText] = useState('');
   const [images, setImages] = useState<PendingImage[]>([]);
   const [models, setModels] = useState<ModelsResponse | undefined>();
-  const [menuOpen, setMenuOpen] = useState<'model' | 'thinking' | undefined>();
+  const [menuOpen, setMenuOpen] = useState<'model' | 'thinking' | 'tools' | undefined>();
   const [queueMode, setQueueMode] = useState<'steer' | 'followUp'>('steer');
   const taRef = useRef<HTMLTextAreaElement>(null);
   const imgInputRef = useRef<HTMLInputElement>(null);
@@ -101,6 +101,15 @@ export default function Composer({ conv, draft, onDraft }: Props) {
   );
   const supportsImage = currentModelInfo?.input.includes('image') ?? true;
   const isReasoning = currentModelInfo?.reasoning ?? false;
+
+  // derive tool mode from active tool names
+  const activeTools = snap?.tools ?? [];
+  const has = (n: string) => activeTools.includes(n);
+  const toolMode: 'off' | 'read-only' | 'default' | 'full' | 'custom' =
+    !has('read') && !has('bash') && !has('edit') && !has('write') ? 'off'
+    : has('grep') || has('find') || has('ls') ? 'full'
+    : has('bash') || has('edit') || has('write') ? 'default'
+    : 'read-only';
   const configuredModels = models?.models.filter((m) => m.hasAuth) ?? [];
 
   return (
@@ -222,6 +231,44 @@ export default function Composer({ conv, draft, onDraft }: Props) {
               {configuredModels.length === 0 && (
                 <div style={{ padding: 10, fontSize: 12, color: 'var(--dsw-alias-label-tertiary)' }}>{t('noConfiguredModels')}</div>
               )}
+            </div>
+          )}
+        </div>
+
+        <div className="menu-anchor">
+          <button
+            className="model-chip"
+            onClick={(e) => {
+              e.stopPropagation();
+              setMenuOpen(menuOpen === 'tools' ? undefined : 'tools');
+            }}
+          >
+            <IconWrench size={13} />
+            <span className="model-chip-qualifier">{toolMode}</span>
+            <IconChevronDown size={11} />
+          </button>
+          {menuOpen === 'tools' && (
+            <div className="menu" onClick={(e) => e.stopPropagation()}>
+              {(
+                [
+                  ['off', t('toolModeOff'), t('toolModeOffDesc')],
+                  ['read-only', t('toolModeReadOnly'), t('toolModeReadOnlyDesc')],
+                  ['default', t('toolModeDefault'), t('toolModeDefaultDesc')],
+                  ['full', t('toolModeFull'), t('toolModeFullDesc')],
+                ] as const
+              ).map(([mode, label, desc]) => (
+                <button
+                  key={mode}
+                  className={`menu-item ${toolMode === mode ? 'active' : ''}`}
+                  onClick={() => {
+                    setMenuOpen(undefined);
+                    void conv.send({ type: 'setToolMode', mode }).catch(() => undefined);
+                  }}
+                >
+                  <span>{label}</span>
+                  <span className="dim">{desc}</span>
+                </button>
+              ))}
             </div>
           )}
         </div>

@@ -6,7 +6,7 @@
 /* sidebar                                                             */
 /* ------------------------------------------------------------------ */
 .sidebar {
-  width: 272px;
+  width: 240px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
@@ -41,8 +41,8 @@
 .project-header:hover .add-btn { visibility: visible; }
 
 .session-item {
-  display: flex; align-items: center; gap: 8px;
-  padding: 7px 10px; margin: 1px 0 1px 12px; border-radius: 8px;
+  display: flex; align-items: center; gap: 7px;
+  padding: 6px 8px; margin: 1px 0 1px 8px; border-radius: 8px;
   cursor: pointer; position: relative;
 }
 .session-item:hover { background: var(--dsw-specific-sidebar-nav-item-hover); }
@@ -637,7 +637,7 @@ body[data-ds-dark-theme] .composer:focus-within { box-shadow: 0 2px 14px rgba(0,
 
 /* subagent nesting */
 .session-item.sub { margin-left: 26px; }
-.subagent-group { border-left: 1px solid var(--dsw-alias-border-l1); margin-left: 19px; padding-left: 2px; }
+.subagent-group { border-left: 1px solid var(--dsw-alias-border-l1); margin-left: 17px; padding-left: 2px; }
 .subagent-icon { color: var(--dsw-alias-label-caption); flex-shrink: 0; }
 .archived-section { margin-top: 8px; border-top: 1px solid var(--dsw-alias-border-l1); padding-top: 6px; }
 .session-item.archived .title { color: var(--dsw-alias-label-tertiary); }
@@ -712,4 +712,4 @@ body[data-ds-dark-theme] .composer:focus-within { box-shadow: 0 2px 14px rgba(0,
   background: var(--dsw-alias-bg-layer-2); border-radius: 99px;
   padding: 0 6px; margin-right: 6px; flex-shrink: 0;
 }
-.session-item.sub { margin-left: 30px; }
+.session-item.sub { margin-left: 24px; }
