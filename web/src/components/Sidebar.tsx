@@ -5,7 +5,7 @@ import { setLang, getLang, t } from '../i18n';
 import {
   IconPlus, IconSearch, IconSettings, IconTrash, IconStar, IconStarFilled,
   IconArchive, IconUnarchive, IconPencil, IconFolder, IconChevronLeft,
-  IconChevronRight, IconRefresh, IconSun, IconMoon, IconRobot, IconExport, IconChat,
+  IconChevronRight, IconRefresh, IconSun, IconMoon, IconExport, IconChat,
 } from '../icons';
 
 interface Props {
@@ -179,9 +179,7 @@ export default function Sidebar(props: Props) {
         ) : (
           <span className="sub-chevron-placeholder" />
         )}
-        {depth > 0
-          ? <IconRobot size={12} className="subagent-icon" />
-          : <span className={`status-dot ${s.running ? 'on' : ''}`} />}
+        <span className={`status-dot ${s.running ? 'on' : ''}`} />
         <span className="title">{s.name || s.firstMessage || '(空会话)'}</span>
         {kids && <span className="sub-count">{kids.count}</span>}
         <span className="time">{relTime(s.modified)}</span>
