@@ -26,10 +26,10 @@
 }
 .sidebar-scroll { flex: 1; overflow-y: auto; padding: 0 8px 12px; }
 
-.project-group { margin-bottom: 4px; }
+.project-group { margin-bottom: 2px; }
 .project-header {
   display: flex; align-items: center; gap: 7px;
-  padding: 7px 8px; border-radius: 6px;
+  padding: 5px 8px; border-radius: 6px;
   font-size: 13px; font-weight: 600;
   color: var(--dsw-alias-label-primary);
   cursor: pointer; user-select: none;
@@ -42,7 +42,7 @@
 
 .session-item {
   display: flex; align-items: center; gap: 7px;
-  padding: 6px 8px; margin: 1px 0 1px 24px; border-radius: 8px;
+  padding: 4px 8px; margin: 0 0 0 24px; border-radius: 8px;
   cursor: pointer; position: relative;
 }
 .session-item:hover { background: var(--dsw-specific-sidebar-nav-item-hover); }

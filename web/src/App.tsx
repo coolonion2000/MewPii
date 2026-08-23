@@ -182,15 +182,28 @@ export default function App() {
       e.preventDefault();
       const startX = e.clientX;
       const startW = sidebarCollapsed ? 46 : sidebarWidth;
+      // One-way transitions per drag: expanded drags may only collapse, and a
+      // collapsed rail may only expand — never oscillate around the threshold.
+      let phase: 'expanded' | 'collapsed' = sidebarCollapsed ? 'collapsed' : 'expanded';
       let width = startW;
       const onMove = (ev: MouseEvent) => {
-        width = Math.min(480, Math.max(0, startW + ev.clientX - startX));
-        if (width < 110) {
-          if (!sidebarCollapsed) toggleCollapse();
-          return;
+        const raw = startW + ev.clientX - startX;
+        if (phase === 'expanded') {
+          if (raw < 110) {
+            phase = 'collapsed';
+            toggleCollapse();
+            return;
+          }
+          width = Math.min(480, Math.max(170, raw));
+          setSidebarWidth(width);
+        } else {
+          if (raw > 170) {
+            phase = 'expanded';
+            toggleCollapse();
+            width = Math.min(480, Math.max(170, raw));
+            setSidebarWidth(width);
+          }
         }
-        if (sidebarCollapsed && width > 150) toggleCollapse();
-        if (!sidebarCollapsed || width > 150) setSidebarWidth(Math.max(170, width));
       };
       const onUp = () => {
         window.removeEventListener('mousemove', onMove);

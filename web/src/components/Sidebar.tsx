@@ -66,6 +66,14 @@ export default function Sidebar(props: Props) {
   const [renamingPath, setRenamingPath] = useState<string>();
   const [renameDraft, setRenameDraft] = useState('');
   const [showArchived, setShowArchived] = useState(false);
+  const [projectOrder, setProjectOrder] = useState<string[]>(() => {
+    try {
+      return JSON.parse(localStorage.getItem('pii-project-order') ?? '[]') as string[];
+    } catch {
+      return [];
+    }
+  });
+  const dragCwd = useRef<string | undefined>(undefined);
   const importRef = useRef<HTMLInputElement>(null);
   const [openParents, setOpenParents] = useState<Set<string>>(new Set());
   const [favs, setFavs] = useState<string[]>(() => {
@@ -105,9 +113,15 @@ export default function Sidebar(props: Props) {
   }, [projects, query]);
 
   const sorted = useMemo(() => {
-    const rank = (cwd: string) => (favs.includes(cwd) ? 0 : 1);
-    return [...filtered].sort((a, b) => rank(a.cwd) - rank(b.cwd));
-  }, [filtered, favs]);
+    const favRank = (cwd: string) => (favs.includes(cwd) ? 0 : 1);
+    const orderRank = (cwd: string) => {
+      const i = projectOrder.indexOf(cwd);
+      return i === -1 ? Number.MAX_SAFE_INTEGER : i;
+    };
+    return [...filtered].sort(
+      (a, b) => favRank(a.cwd) - favRank(b.cwd) || orderRank(a.cwd) - orderRank(b.cwd),
+    );
+  }, [filtered, favs, projectOrder]);
 
   const newSessionCwd = selection?.cwd ?? projects[0]?.cwd ?? '/';
 
@@ -174,28 +188,45 @@ export default function Sidebar(props: Props) {
     );
 
   const renderProjectSessions = (p: ProjectGroup) => {
-    const children = new Map<string, SessionSummary[]>();
+    const byParent = new Map<string, SessionSummary[]>();
     const tops: SessionSummary[] = [];
     const pathSet = new Set(p.sessions.map((s) => s.path));
     for (const s of p.sessions) {
       if (s.parentSessionPath && pathSet.has(s.parentSessionPath)) {
-        const list = children.get(s.parentSessionPath) ?? [];
+        const list = byParent.get(s.parentSessionPath) ?? [];
         list.push(s);
-        children.set(s.parentSessionPath, list);
+        byParent.set(s.parentSessionPath, list);
       } else {
         tops.push(s);
       }
     }
-    return tops.map((s) => {
-      const kids = children.get(s.path) ?? [];
-      if (kids.length === 0) return <div key={s.path}>{renderSessionRow(s, false)}</div>;
+    // auto-expand the ancestor chain of the selected session
+    if (selection?.sessionPath) {
+      let cur: SessionSummary | undefined = p.sessions.find((x) => x.path === selection.sessionPath);
+      const toOpen: string[] = [];
+      while (cur?.parentSessionPath && pathSet.has(cur.parentSessionPath)) {
+        toOpen.push(cur.parentSessionPath);
+        cur = p.sessions.find((x) => x.path === cur!.parentSessionPath);
+      }
+      const missing = toOpen.filter((x) => !openParents.has(x));
+      if (missing.length > 0) {
+        setOpenParents((prev) => {
+          const next = new Set(prev);
+          for (const x of missing) next.add(x);
+          return next;
+        });
+      }
+    }
+    const renderNode = (s: SessionSummary, depth: number): React.ReactNode => {
+      const kids = byParent.get(s.path) ?? [];
+      if (kids.length === 0) return <div key={s.path}>{renderSessionRow(s, depth > 0)}</div>;
       const open = openParents.has(s.path);
       return (
         <div key={s.path} className="parent-with-subs">
           <div className="parent-row">
             <button
               className={`sub-chevron ${open ? 'open' : ''}`}
-              title={`${kids.length} subagents`}
+              title={`${kids.length}`}
               onClick={(e) => {
                 e.stopPropagation();
                 setOpenParents((prev) => {
@@ -208,13 +239,14 @@ export default function Sidebar(props: Props) {
             >
               <IconChevronRight size={10} />
             </button>
-            <div style={{ flex: 1, minWidth: 0 }}>{renderSessionRow(s, false)}</div>
+            <div style={{ flex: 1, minWidth: 0 }}>{renderSessionRow(s, depth > 0)}</div>
             <span className="sub-count">{kids.length}</span>
           </div>
-          {open && <div className="subagent-group">{kids.map((k) => renderSessionRow(k, true))}</div>}
+          {open && <div className="subagent-group">{kids.map((k) => renderNode(k, depth + 1))}</div>}
         </div>
       );
-    });
+    };
+    return tops.map((s) => renderNode(s, 0));
   };
 
   if (collapsed) {
@@ -302,7 +334,31 @@ export default function Sidebar(props: Props) {
           const isOpen = openProjects.has(p.cwd);
           const fav = favs.includes(p.cwd);
           return (
-            <div className="project-group" key={p.cwd}>
+            <div
+              className="project-group"
+              key={p.cwd}
+              draggable
+              onDragStart={(e) => {
+                dragCwd.current = p.cwd;
+                e.dataTransfer.effectAllowed = 'move';
+              }}
+              onDragOver={(e) => {
+                e.preventDefault();
+                e.dataTransfer.dropEffect = 'move';
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                const from = dragCwd.current;
+                if (!from || from === p.cwd) return;
+                setProjectOrder((prev) => {
+                  const base = sorted.map((x) => x.cwd).filter((c) => c !== from);
+                  const idx = base.indexOf(p.cwd);
+                  base.splice(idx === -1 ? base.length : idx, 0, from);
+                  localStorage.setItem('pii-project-order', JSON.stringify(base));
+                  return base;
+                });
+              }}
+            >
               <div className="project-header" title={p.cwd} onClick={() => toggleProject(p.cwd)}>
                 {fav ? <IconStarFilled size={11} className="fav-star" /> : null}
                 <IconFolder className="folder-icon" />
