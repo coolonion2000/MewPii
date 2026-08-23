@@ -70,6 +70,7 @@ export type ClientCommand =
   | { type: 'queue_remove'; queue: 'steering' | 'followUp'; index: number }
   | { type: 'queue_move'; from: 'steering' | 'followUp'; to: 'steering' | 'followUp'; index: number }
   | { type: 'queue_clear' }
+  | { type: 'history'; before: number }
   | { type: 'setToolMode'; mode: 'off' | 'read-only' | 'default' | 'full' }
   | { type: 'ui_response'; requestId: string; value: unknown };
 
@@ -102,6 +103,7 @@ export type ServerMessage =
   | { type: 'statuses'; statuses: Record<string, string> }
   | { type: 'toast'; message: string; level: 'info' | 'warning' | 'error' }
   | { type: 'ui_request'; request: UiRequest }
+  | { type: 'history'; messages: PiiMessage[]; before: number }
   | { type: 'command_result'; id?: string; ok: boolean; error?: string; data?: Record<string, unknown> };
 
 export interface SessionSnapshot {
@@ -112,7 +114,12 @@ export interface SessionSnapshot {
   isStreaming: boolean;
   thinkingLevel: string;
   model?: { provider: string; id: string; name: string };
+  /** The most recent page of messages (older pages available via history). */
   messages: PiiMessage[];
+  /** Total messages on the current branch. */
+  totalMessages: number;
+  /** Index of the first message in `messages` within the full branch. */
+  historyFrom: number;
   queue: { steering: string[]; followUp: string[] };
   stats?: SessionStatsLite;
   /** Names of currently active tools. */

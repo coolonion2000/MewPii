@@ -157,6 +157,13 @@ export default function ChatView({ conv, onRefresh, onForked }: Props) {
       ) : (
       <div className="chat-scroll" ref={scrollRef}>
         <div className="chat-column">
+          {conv.historyFrom > 0 && (
+            <div style={{ display: 'flex', justifyContent: 'center' }}>
+              <button className="btn btn-sm" onClick={() => conv.loadOlder()}>
+                {t('loadOlder')} ({conv.historyFrom})
+              </button>
+            </div>
+          )}
           {allMessages.length === 0 && (
             <div className="empty-state" style={{ minHeight: 240 }}>
               <div className="big">{t('startChat')}</div>

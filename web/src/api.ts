@@ -112,6 +112,9 @@ export class Conversation {
   private reconnectAttempts = 0;
   runStats: RunStats = { llmMs: 0, toolMs: 0, turns: 0, steps: 0, outputChars: 0 };
   queue = { steering: [] as string[], followUp: [] as string[] };
+  /** Index of the oldest loaded message within the full branch (0 = all loaded). */
+  historyFrom = 0;
+  totalMessages = 0;
   /** Active while a context compaction is running. */
   compaction?: { reason: string };
   widgets: WidgetState[] = [];
@@ -198,6 +201,10 @@ export class Conversation {
         this.toasts = this.toasts.filter((t) => t.id !== id);
         this.emit();
       }, 5000);
+    } else if (msg.type === 'history') {
+      // prepend older page
+      this.messages = [...msg.messages, ...this.messages];
+      this.historyFrom = msg.before;
     } else if (msg.type === 'ui_request') {
       this.uiRequest = msg.request;
     } else if (msg.type === 'command_result') {
@@ -215,6 +222,8 @@ export class Conversation {
   private applySnapshot(snap: SessionSnapshot): void {
     this.snapshot = snap;
     this.messages = snap.messages;
+    this.historyFrom = snap.historyFrom ?? 0;
+    this.totalMessages = snap.totalMessages ?? snap.messages.length;
     this.queue = { steering: [...(snap.queue?.steering ?? [])], followUp: [...(snap.queue?.followUp ?? [])] };
     if (!snap.isStreaming) {
       this.streaming = undefined;
@@ -351,6 +360,10 @@ export class Conversation {
     if (!req) return;
     this.uiRequest = undefined;
     void this.send({ type: 'ui_response', requestId: req.id, value }).catch(() => undefined);
+  }
+
+  loadOlder(): void {
+    if (this.historyFrom > 0) void this.send({ type: 'history', before: this.historyFrom }).catch(() => undefined);
   }
 
   send(cmd: ClientCommand): Promise<Record<string, unknown> | undefined> {

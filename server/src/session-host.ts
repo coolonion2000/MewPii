@@ -59,6 +59,8 @@ export class SessionHost {
   private queue = { steering: [] as string[], followUp: [] as string[] };
   /** Currently executing tool calls (toolCallId → name/args), for ui.custom dialogs. */
   private activeToolCalls = new Map<string, { toolName: string; args: Record<string, unknown> }>();
+  /** Full branch message list from the latest snapshot (for history paging). */
+  private lastBranch: Record<string, unknown>[] = [];
 
   static async create(key: string, opts: SessionHostOptions): Promise<SessionHost> {
     const createRuntime = async ({ cwd, sessionManager, sessionStartEvent }: {
@@ -312,6 +314,12 @@ export class SessionHost {
       messages = JSON.parse(JSON.stringify(s.messages)) as Record<string, unknown>[];
     }
 
+    // Keep the full branch around for history paging.
+    this.lastBranch = messages;
+    const total = messages.length;
+    const from = Math.max(0, total - 150);
+    const page = messages.slice(from);
+
     let stats: SessionSnapshot['stats'];
     try {
       const st = s.getSessionStats();
@@ -339,7 +347,9 @@ export class SessionHost {
       model: model
         ? { provider: model.provider, id: model.id, name: model.name ?? model.id }
         : undefined,
-      messages: messages as SessionSnapshot['messages'],
+      messages: page as SessionSnapshot['messages'],
+      totalMessages: total,
+      historyFrom: from,
       queue: {
         steering: [...s.getSteeringMessages()],
         followUp: [...s.getFollowUpMessages()],
@@ -450,6 +460,13 @@ export class SessionHost {
           const preserved = s.agent.state.tools.filter((tool) => !BUILTIN.includes(tool.name));
           s.agent.state.tools = [...preserved, ...(defs as never[])];
           this.broadcastSnapshot();
+          return { ok: true };
+        }
+        case 'history': {
+          const before = Math.max(0, Math.min(cmd.before, this.lastBranch.length));
+          const from = Math.max(0, before - 150);
+          const page = this.lastBranch.slice(from, before);
+          this.broadcast({ type: 'history', messages: page as never, before: from });
           return { ok: true };
         }
         case 'queue_clear':
