@@ -112,7 +112,9 @@ export default function App() {
 
   useEffect(() => {
     refreshProjects();
-    const timer = setInterval(refreshProjects, 15_000);
+    const timer = setInterval(() => {
+      if (!document.hidden) refreshProjects();
+    }, 60_000);
     return () => clearInterval(timer);
   }, [refreshProjects]);
 
@@ -126,8 +128,29 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [route.view, selection?.cwd, selection?.sessionPath]);
 
-  useEffect(() => (conv ? conv.subscribe(force) : undefined), [conv]);
   useEffect(() => () => conv?.dispose(), [conv]);
+
+  // App-level conv subscription: only re-render on meaningful transitions
+  // (stream start/stop, first message, session file change) — never per delta.
+  useEffect(() => {
+    if (!conv) return;
+    let prevStreaming = conv.snapshot?.isStreaming;
+    let prevCount = conv.snapshot?.messages.length ?? conv.messages.length;
+    let prevFile = conv.snapshot?.sessionFile;
+    return conv.subscribe(() => {
+      const streaming = conv.snapshot?.isStreaming;
+      const count = conv.snapshot?.messages.length ?? conv.messages.length;
+      const file = conv.snapshot?.sessionFile;
+      if (streaming !== prevStreaming || (prevCount === 0 && count > 0) || file !== prevFile) {
+        prevStreaming = streaming;
+        prevCount = count;
+        prevFile = file;
+        force();
+      } else {
+        prevCount = count;
+      }
+    });
+  }, [conv]);
 
   // Refresh the sidebar when a run finishes, when the session file is
   // assigned, and when the first message lands (new session appears).

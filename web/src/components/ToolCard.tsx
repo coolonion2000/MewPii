@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { memo, useMemo, useState } from 'react';
 import type { PiiMessage } from '../types';
 import { stripAnsi, type ToolActivity } from '../api';
 import { t } from '../i18n';
@@ -107,7 +107,7 @@ function EditInput({ args }: { args: Record<string, unknown> }) {
   );
 }
 
-export default function ToolCard({ call, result, activity }: Props) {
+function ToolCard({ call, result, activity }: Props) {
   // auto-open while the tool is running, collapse when done (unless user toggled)
   const [userToggled, setUserToggled] = useState<boolean>();
   const name = call.name ?? activity?.toolName ?? 'tool';
@@ -156,3 +156,5 @@ export default function ToolCard({ call, result, activity }: Props) {
     </div>
   );
 }
+
+export default memo(ToolCard);

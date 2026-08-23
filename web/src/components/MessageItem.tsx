@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { memo, useState } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { PiiMessage } from '../types';
@@ -48,7 +48,7 @@ function MessageActions({ entryId, text, onFork, onBranch }: { entryId?: string;
   );
 }
 
-export default function MessageItem({ message, streaming, toolResults, tools, onFork, onBranch }: Props) {
+function MessageItem({ message, streaming, toolResults, tools, onFork, onBranch }: Props) {
   const entryId = message._entryId;
 
   if (message.role === 'user') {
@@ -129,3 +129,5 @@ export default function MessageItem({ message, streaming, toolResults, tools, on
     </div>
   );
 }
+
+export default memo(MessageItem);

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useReducer, useRef, useState } from 'react';
 import type { Conversation } from '../api';
 import MessageItem from './MessageItem';
 import Composer from './Composer';
@@ -17,6 +17,8 @@ interface Props {
 }
 
 export default function ChatView({ conv, onRefresh, onForked }: Props) {
+  const [, force] = useReducer((x: number) => x + 1, 0);
+  useEffect(() => conv.subscribe(force), [conv]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState('');
