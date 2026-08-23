@@ -43,6 +43,13 @@ export default function ChatView({ conv, onRefresh, onForked }: Props) {
 
   const title = snap?.name || firstUserText(allMessages) || '新会话';
 
+  useEffect(() => {
+    document.title = `Pii - ${title}`;
+    return () => {
+      document.title = 'Pii';
+    };
+  }, [title]);
+
   const saveTitle = () => {
     setEditingTitle(false);
     const name = titleDraft.trim();
