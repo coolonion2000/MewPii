@@ -215,7 +215,7 @@ export default function App() {
                       ? 'active'
                       : ''
                   }`}
-                  onClick={() => setRoute({ view: tab as View, selection: { cwd: defaultCwd } })}
+                  onClick={() => setRoute({ view: (tab === 'general' ? 'settings' : tab) as View, selection: { cwd: defaultCwd } })}
                 >
                   {label}
                 </button>
