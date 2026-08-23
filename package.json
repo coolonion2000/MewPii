@@ -11,9 +11,27 @@
   "scripts": {
     "dev": "concurrently -n server,web -c blue,magenta \"npm run dev -w server\" \"npm run dev -w web\"",
     "build": "npm run build -w web && npm run build -w server",
-    "start": "node server/dist/index.js"
+    "start": "node server/dist/index.js",
+    "prepack": "npm run build"
   },
   "devDependencies": {
     "concurrently": "^9.1.2"
+  },
+  "bin": {
+    "pii-web": "server/bin/pii-web.js"
+  },
+  "files": [
+    "server/dist",
+    "server/bin",
+    "web/dist",
+    "docs",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "^0.84.1",
+    "ws": "^8.18.0"
   }
 }

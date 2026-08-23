@@ -30,6 +30,15 @@ npm run build
 npm run start      # http://127.0.0.1:31041 ，后端直接伺服 web/dist
 ```
 
+## 打包与部署
+
+```bash
+npm pack              # 生成 pii-<version>.tgz（含构建产物，全局安装即用）
+docker build -t pii-web .   # 或构建 Docker 镜像
+```
+
+NAS 部署（群晖/威联通 Container Manager、compose、隧道拓扑）见 [docs/nas-deployment.md](docs/nas-deployment.md)。
+
 ## 远程访问
 
 见 [docs/remote-access.md](docs/remote-access.md)。简要版：
