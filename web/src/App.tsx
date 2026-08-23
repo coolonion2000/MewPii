@@ -50,6 +50,9 @@ export default function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(
     () => localStorage.getItem('pii-sidebar') === 'collapsed',
   );
+  const [sidebarWidth, setSidebarWidth] = useState(
+    () => Number(localStorage.getItem('pii-sidebar-w')) || 240,
+  );
   const [, force] = useReducer((x: number) => x + 1, 0);
   const lang = getLang();
 
@@ -174,6 +177,32 @@ export default function App() {
     [selection, refreshProjects, setRoute],
   );
 
+  const startSidebarDrag = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault();
+      const startX = e.clientX;
+      const startW = sidebarCollapsed ? 46 : sidebarWidth;
+      let width = startW;
+      const onMove = (ev: MouseEvent) => {
+        width = Math.min(480, Math.max(0, startW + ev.clientX - startX));
+        if (width < 110) {
+          if (!sidebarCollapsed) toggleCollapse();
+          return;
+        }
+        if (sidebarCollapsed && width > 150) toggleCollapse();
+        if (!sidebarCollapsed || width > 150) setSidebarWidth(Math.max(170, width));
+      };
+      const onUp = () => {
+        window.removeEventListener('mousemove', onMove);
+        window.removeEventListener('mouseup', onUp);
+        localStorage.setItem('pii-sidebar-w', String(Math.max(170, Math.min(480, width))));
+      };
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', onUp);
+    },
+    [sidebarCollapsed, sidebarWidth, toggleCollapse],
+  );
+
   const defaultCwd = selection?.cwd ?? projects[0]?.cwd ?? '/';
   const isSettingsish = route.view === 'settings' || route.view === 'models' || route.view === 'skills' || route.view === 'extensions';
 
@@ -185,6 +214,8 @@ export default function App() {
         selection={route.view === 'chat' ? selection : undefined}
         view={route.view}
         collapsed={sidebarCollapsed}
+        width={sidebarWidth}
+        onStartDrag={startSidebarDrag}
         onToggleCollapse={toggleCollapse}
         onNavigate={(view) =>
           setRoute({

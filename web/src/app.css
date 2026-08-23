@@ -737,3 +737,11 @@ body[data-ds-dark-theme] .composer:focus-within { box-shadow: 0 2px 14px rgba(0,
 }
 .ask-panel-body { padding: 12px 16px 14px; }
 .ask-panel-body h3 { margin: 0 0 8px; font-size: 14px; }
+
+/* sidebar drag-resize */
+.sidebar { position: relative; }
+.sidebar-resize {
+  position: absolute; top: 0; bottom: 0; right: -3px; width: 7px;
+  cursor: col-resize; z-index: 20;
+}
+.sidebar-resize:hover { background: var(--dsw-alias-state-business-primary); opacity: 0.25; }

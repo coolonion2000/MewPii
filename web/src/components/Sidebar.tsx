@@ -14,6 +14,8 @@ interface Props {
   selection?: Selection;
   view: View;
   collapsed: boolean;
+  width: number;
+  onStartDrag: (e: React.MouseEvent) => void;
   onToggleCollapse: () => void;
   onNavigate: (view: View) => void;
   onSelect: (s: Selection) => void;
@@ -54,7 +56,7 @@ function loadOpenProjects(): Set<string> {
 
 export default function Sidebar(props: Props) {
   const {
-    projects, archivedSessions, selection, view, collapsed,
+    projects, archivedSessions, selection, view, collapsed, width, onStartDrag,
     onToggleCollapse, onNavigate, onSelect, onDelete, onRename, onArchive, onRefresh, dark, onToggleTheme,
   } = props;
 
@@ -218,6 +220,7 @@ export default function Sidebar(props: Props) {
   if (collapsed) {
     return (
       <div className="sidebar sidebar-collapsed">
+        <div className="sidebar-resize" onMouseDown={onStartDrag} />
         <button className="btn btn-icon" title={t('expandSidebar')} onClick={onToggleCollapse}>
           <IconChevronRight />
         </button>
@@ -239,7 +242,8 @@ export default function Sidebar(props: Props) {
   }
 
   return (
-    <div className="sidebar">
+    <div className="sidebar" style={{ width }}>
+      <div className="sidebar-resize" onMouseDown={onStartDrag} />
       <div className="wb-header">
         <button className="btn btn-icon" title={t('collapseSidebar')} onClick={onToggleCollapse}>
           <IconChevronLeft />
