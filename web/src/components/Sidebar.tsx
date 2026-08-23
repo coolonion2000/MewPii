@@ -133,34 +133,57 @@ export default function Sidebar(props: Props) {
       return next;
     });
 
-  const renderSessionRow = (s: SessionSummary, isSub: boolean) =>
-    renamingPath === s.path ? (
-      <input
-        key={s.path}
-        autoFocus
-        className="sidebar-search"
-        style={{ margin: `2px 0 2px ${isSub ? 30 : 12}px`, padding: '5px 8px', fontSize: 12.5 }}
-        value={renameDraft}
-        onChange={(e) => setRenameDraft(e.target.value)}
-        onBlur={() => setRenamingPath(undefined)}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter') {
-            if (renameDraft.trim()) onRename(s.path, renameDraft.trim());
-            setRenamingPath(undefined);
-          }
-          if (e.key === 'Escape') setRenamingPath(undefined);
-        }}
-      />
-    ) : (
+  const renderSessionRow = (
+    s: SessionSummary,
+    depth: number,
+    kids?: { count: number; open: boolean; toggle: () => void },
+  ) => {
+    const indent = 8 + depth * 14;
+    if (renamingPath === s.path) {
+      return (
+        <input
+          key={s.path}
+          autoFocus
+          className="sidebar-search"
+          style={{ margin: `2px 0 2px ${indent + 14}px`, padding: '5px 8px', fontSize: 12.5 }}
+          value={renameDraft}
+          onChange={(e) => setRenameDraft(e.target.value)}
+          onBlur={() => setRenamingPath(undefined)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              if (renameDraft.trim()) onRename(s.path, renameDraft.trim());
+              setRenamingPath(undefined);
+            }
+            if (e.key === 'Escape') setRenamingPath(undefined);
+          }}
+        />
+      );
+    }
+    return (
       <div
         key={s.path}
-        className={`session-item ${isSub ? 'sub' : ''} ${selection?.sessionPath === s.path ? 'active' : ''}`}
+        className={`session-item ${selection?.sessionPath === s.path ? 'active' : ''}`}
+        style={{ marginLeft: indent }}
         onClick={() => onSelect({ cwd: s.cwd || '', sessionPath: s.path })}
       >
-        {isSub
+        {kids ? (
+          <button
+            className={`sub-chevron ${kids.open ? 'open' : ''}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              kids.toggle();
+            }}
+          >
+            <IconChevronRight size={10} />
+          </button>
+        ) : (
+          <span className="sub-chevron-placeholder" />
+        )}
+        {depth > 0
           ? <IconRobot size={12} className="subagent-icon" />
           : <span className={`status-dot ${s.running ? 'on' : ''}`} />}
         <span className="title">{s.name || s.firstMessage || '(空会话)'}</span>
+        {kids && <span className="sub-count">{kids.count}</span>}
         <span className="time">{relTime(s.modified)}</span>
         <span className="session-actions" onClick={(e) => e.stopPropagation()}>
           <button
@@ -186,6 +209,7 @@ export default function Sidebar(props: Props) {
         </span>
       </div>
     );
+  };
 
   const renderProjectSessions = (p: ProjectGroup) => {
     const byParent = new Map<string, SessionSummary[]>();
@@ -219,30 +243,22 @@ export default function Sidebar(props: Props) {
     }
     const renderNode = (s: SessionSummary, depth: number): React.ReactNode => {
       const kids = byParent.get(s.path) ?? [];
-      if (kids.length === 0) return <div key={s.path}>{renderSessionRow(s, depth > 0)}</div>;
       const open = openParents.has(s.path);
+      const toggle = () =>
+        setOpenParents((prev) => {
+          const next = new Set(prev);
+          if (next.has(s.path)) next.delete(s.path);
+          else next.add(s.path);
+          return next;
+        });
       return (
-        <div key={s.path} className="parent-with-subs">
-          <div className="parent-row">
-            <button
-              className={`sub-chevron ${open ? 'open' : ''}`}
-              title={`${kids.length}`}
-              onClick={(e) => {
-                e.stopPropagation();
-                setOpenParents((prev) => {
-                  const next = new Set(prev);
-                  if (next.has(s.path)) next.delete(s.path);
-                  else next.add(s.path);
-                  return next;
-                });
-              }}
-            >
-              <IconChevronRight size={10} />
-            </button>
-            <div style={{ flex: 1, minWidth: 0 }}>{renderSessionRow(s, depth > 0)}</div>
-            <span className="sub-count">{kids.length}</span>
-          </div>
-          {open && <div className="subagent-group">{kids.map((k) => renderNode(k, depth + 1))}</div>}
+        <div key={s.path}>
+          {kids.length > 0
+            ? renderSessionRow(s, depth, { count: kids.length, open, toggle })
+            : renderSessionRow(s, depth)}
+          {kids.length > 0 && open && (
+            <div className="subagent-group">{kids.map((k) => renderNode(k, depth + 1))}</div>
+          )}
         </div>
       );
     };

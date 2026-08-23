@@ -41,8 +41,8 @@
 .project-header:hover .add-btn { visibility: visible; }
 
 .session-item {
-  display: flex; align-items: center; gap: 7px;
-  padding: 4px 8px; margin: 0 0 0 24px; border-radius: 8px;
+  display: flex; align-items: center; gap: 6px;
+  padding: 4px 8px; margin: 0; border-radius: 8px;
   cursor: pointer; position: relative;
 }
 .session-item:hover { background: var(--dsw-specific-sidebar-nav-item-hover); }
@@ -636,8 +636,6 @@ body[data-ds-dark-theme] .composer:focus-within { box-shadow: 0 2px 14px rgba(0,
 .session-item .time { transition: visibility 0s; }
 
 /* subagent nesting */
-.session-item.sub { margin-left: 26px; }
-.subagent-group { border-left: 1px solid var(--dsw-alias-border-l1); margin-left: 31px; padding-left: 2px; }
 .subagent-icon { color: var(--dsw-alias-label-caption); flex-shrink: 0; }
 .archived-section { margin-top: 8px; border-top: 1px solid var(--dsw-alias-border-l1); padding-top: 6px; }
 .session-item.archived .title { color: var(--dsw-alias-label-tertiary); }
@@ -697,9 +695,6 @@ body[data-ds-dark-theme] .composer:focus-within { box-shadow: 0 2px 14px rgba(0,
   background: var(--dsw-alias-bg-layer-1); overflow: hidden;
 }
 
-/* parent session with subagents */
-.parent-row { display: flex; align-items: center; gap: 0; margin-left: 8px; }
-.parent-row .session-item { margin-left: 0; }
 .sub-chevron {
   border: none; background: transparent; cursor: pointer;
   color: var(--dsw-alias-label-caption); padding: 2px; margin-left: 0; width: 16px;
@@ -713,7 +708,6 @@ body[data-ds-dark-theme] .composer:focus-within { box-shadow: 0 2px 14px rgba(0,
   background: var(--dsw-alias-bg-layer-2); border-radius: 99px;
   padding: 0 6px; margin-right: 6px; flex-shrink: 0;
 }
-.session-item.sub { margin-left: 40px; }
 
 /* package enable/disable */
 .pkg-head { display: flex; align-items: center; gap: 8px; padding: 10px 14px; cursor: pointer; }
@@ -745,3 +739,7 @@ body[data-ds-dark-theme] .composer:focus-within { box-shadow: 0 2px 14px rgba(0,
   cursor: col-resize; z-index: 20;
 }
 .sidebar-resize:hover { background: var(--dsw-alias-state-business-primary); opacity: 0.25; }
+
+/* tree indent, fixed +14px per level */
+.sub-chevron-placeholder { width: 14px; flex-shrink: 0; }
+.subagent-group { border-left: 1px solid var(--dsw-alias-border-l1); margin-left: 21px; }
