@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { Conversation } from '../api';
 import { fetchModels, type ModelsResponse } from '../api';
 import { t } from '../i18n';
-import { IconPlus, IconArrowUp, IconStop, IconThink, IconChevronDown } from '../icons';
+import { IconPlus, IconArrowUp, IconStop, IconThink, IconChevronDown, IconX } from '../icons';
 
 interface Props {
   conv: Conversation;
@@ -114,7 +114,7 @@ export default function Composer({ conv, draft, onDraft }: Props) {
                 className="image-remove"
                 onClick={() => setImages((prev) => prev.filter((_, j) => j !== i))}
               >
-                ✕
+                <IconX size={10} />
               </button>
             </div>
           ))}

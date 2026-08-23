@@ -13,9 +13,10 @@ import { t } from '../i18n';
 interface Props {
   conv: Conversation;
   onRefresh: () => void;
+  onForked?: (cwd: string, sessionFile: string) => void;
 }
 
-export default function ChatView({ conv, onRefresh }: Props) {
+export default function ChatView({ conv, onRefresh, onForked }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState('');
@@ -144,8 +145,25 @@ export default function ChatView({ conv, onRefresh }: Props) {
               streaming={conv.streaming === m}
               toolResults={toolResults}
               tools={conv.tools}
-              onFork={(entryId) => void conv.send({ type: 'fork', entryId }).then(onRefresh).catch(() => undefined)}
-              onBranch={(entryId) => void conv.send({ type: 'branch', entryId }).catch(() => undefined)}
+              onFork={(entryId) =>
+                void conv
+                  .send({ type: 'fork', entryId })
+                  .then((data) => {
+                    onRefresh();
+                    const file = data?.sessionFile as string | undefined;
+                    if (file && onForked) onForked(conv.snapshot?.cwd ?? conv.cwd, file);
+                  })
+                  .catch(() => undefined)
+              }
+              onBranch={(entryId) =>
+                void conv
+                  .send({ type: 'branch', entryId })
+                  .then((data) => {
+                    const text = data?.editorText as string | undefined;
+                    if (text) setDraft(text);
+                  })
+                  .catch(() => undefined)
+              }
             />
           ))}
           {conv.lastError && <div className="msg-error">{conv.lastError}</div>}

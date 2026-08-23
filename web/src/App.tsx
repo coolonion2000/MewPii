@@ -232,7 +232,12 @@ export default function App() {
         {route.view === 'files' && <FilesPanel key={defaultCwd} cwd={defaultCwd} />}
         {route.view === 'chat' &&
           (conv ? (
-            <ChatView key={`${selection?.cwd}|${selection?.sessionPath ?? 'new'}`} conv={conv} onRefresh={refreshProjects} />
+            <ChatView
+              key={`${selection?.cwd}|${selection?.sessionPath ?? 'new'}`}
+              conv={conv}
+              onRefresh={refreshProjects}
+              onForked={(cwd, sessionFile) => setRoute({ view: 'chat', selection: { cwd, sessionPath: sessionFile } })}
+            />
           ) : (
             <div className="empty-state">
               <div className="big">pii</div>

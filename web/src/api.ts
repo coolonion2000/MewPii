@@ -93,7 +93,7 @@ export class Conversation {
   private ws?: WebSocket;
   private listeners = new Set<() => void>();
   private commandSeq = 0;
-  private pending = new Map<string, { resolve: (ok: boolean) => void; reject: (e: Error) => void }>();
+  private pending = new Map<string, { resolve: (data: Record<string, unknown> | undefined) => void; reject: (e: Error) => void }>();
 
   snapshot?: SessionSnapshot;
   /** Finalized messages (from snapshot / message_end). */
@@ -180,7 +180,7 @@ export class Conversation {
       if (msg.id && this.pending.has(msg.id)) {
         const p = this.pending.get(msg.id)!;
         this.pending.delete(msg.id);
-        if (msg.ok) p.resolve(true);
+        if (msg.ok) p.resolve(msg.data);
         else p.reject(new Error(msg.error ?? 'command failed'));
       }
       if (!msg.ok && msg.error) this.lastError = msg.error;
@@ -312,7 +312,7 @@ export class Conversation {
     void this.send({ type: 'ui_response', requestId: req.id, value }).catch(() => undefined);
   }
 
-  send(cmd: ClientCommand): Promise<boolean> {
+  send(cmd: ClientCommand): Promise<Record<string, unknown> | undefined> {
     const ws = this.ws;
     if (!ws || ws.readyState !== WebSocket.OPEN) return Promise.reject(new Error('not connected'));
     const id = `c${++this.commandSeq}`;

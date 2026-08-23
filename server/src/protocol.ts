@@ -95,7 +95,7 @@ export type ServerMessage =
   | { type: 'statuses'; statuses: Record<string, string> }
   | { type: 'toast'; message: string; level: 'info' | 'warning' | 'error' }
   | { type: 'ui_request'; request: UiRequest }
-  | { type: 'command_result'; id?: string; ok: boolean; error?: string };
+  | { type: 'command_result'; id?: string; ok: boolean; error?: string; data?: Record<string, unknown> };
 
 export interface SessionSnapshot {
   sessionId: string;

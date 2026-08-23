@@ -479,8 +479,10 @@ body[data-ds-dark-theme] .composer:focus-within { box-shadow: 0 2px 14px rgba(0,
   position: absolute; top: -6px; right: -6px;
   width: 18px; height: 18px; border-radius: 50%; border: none;
   background: var(--dsw-alias-toast-bg); color: var(--dsw-alias-label-primary);
-  font-size: 10px; cursor: pointer; display: grid; place-items: center;
+  cursor: pointer; display: grid; place-items: center;
+  padding: 0; line-height: 0;
 }
+.image-remove svg { display: block; }
 
 .section-title { font-size: 14px; margin: 20px 0 10px; }
 

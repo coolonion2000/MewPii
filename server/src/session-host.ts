@@ -282,7 +282,7 @@ export class SessionHost {
     };
   }
 
-  async handleCommand(cmd: ClientCommand & { id?: string }): Promise<{ ok: boolean; error?: string }> {
+  async handleCommand(cmd: ClientCommand & { id?: string }): Promise<{ ok: boolean; error?: string; data?: Record<string, unknown> }> {
     const s = this.session;
     try {
       switch (cmd.type) {
@@ -309,7 +309,11 @@ export class SessionHost {
         case 'fork': {
           const r = await this.runtime.fork(cmd.entryId, { position: cmd.position ?? 'at' });
           this.broadcastSnapshot();
-          return { ok: !r.cancelled, error: r.cancelled ? 'cancelled' : undefined };
+          return {
+            ok: !r.cancelled,
+            error: r.cancelled ? 'cancelled' : undefined,
+            data: { sessionFile: this.runtime.session.sessionFile },
+          };
         }
         case 'setModel': {
           const model = this.modelRegistry.find(cmd.provider, cmd.modelId);
@@ -328,7 +332,11 @@ export class SessionHost {
         case 'branch': {
           const r = await s.navigateTree(cmd.entryId, { summarize: cmd.summarize ?? false });
           this.broadcastSnapshot();
-          return { ok: !r.cancelled, error: r.cancelled ? 'cancelled' : undefined };
+          return {
+            ok: !r.cancelled,
+            error: r.cancelled ? 'cancelled' : undefined,
+            data: { editorText: r.editorText },
+          };
         }
         case 'compact':
           await s.compact();
