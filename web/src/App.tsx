@@ -5,7 +5,8 @@ import Sidebar from './components/Sidebar';
 import ChatView from './components/ChatView';
 import ModelsPanel from './components/ModelsPanel';
 import FilesPanel from './components/FilesPanel';
-import ResourcesPanel from './components/ResourcesPanel';
+import SkillsPanel from './components/SkillsPanel';
+import ExtensionsPanel from './components/ExtensionsPanel';
 import SettingsPanel from './components/SettingsPanel';
 import { getLang, onLangChange, t } from './i18n';
 
@@ -14,7 +15,7 @@ export interface Selection {
   sessionPath?: string;
 }
 
-export type View = 'chat' | 'files' | 'models' | 'resources' | 'settings';
+export type View = 'chat' | 'files' | 'models' | 'skills' | 'extensions' | 'settings';
 
 interface Route {
   view: View;
@@ -28,7 +29,7 @@ function parseHash(): Route {
   const cwd = params.get('cwd');
   const session = params.get('session');
   if (view === 'chat' && cwd) return { view, selection: { cwd, sessionPath: session ?? undefined } };
-  if ((view === 'files' || view === 'resources' || view === 'models') && cwd)
+  if ((view === 'files' || view === 'skills' || view === 'extensions' || view === 'models') && cwd)
     return { view, selection: { cwd } };
   return { view };
 }
@@ -166,7 +167,7 @@ export default function App() {
   );
 
   const defaultCwd = selection?.cwd ?? projects[0]?.cwd ?? '/';
-  const isSettingsish = route.view === 'settings' || route.view === 'models' || route.view === 'resources';
+  const isSettingsish = route.view === 'settings' || route.view === 'models' || route.view === 'skills' || route.view === 'extensions';
 
   return (
     <div className="app">
@@ -200,7 +201,8 @@ export default function App() {
                 [
                   ['general', t('tabGeneral')],
                   ['models', t('tabModels')],
-                  ['resources', t('tabResources')],
+                  ['skills', t('tabSkills')],
+                  ['extensions', t('tabExtensions')],
                 ] as const
               ).map(([tab, label]) => (
                 <button
@@ -208,7 +210,8 @@ export default function App() {
                   className={`us-tab ${
                     (route.view === 'settings' && tab === 'general') ||
                     (route.view === 'models' && tab === 'models') ||
-                    (route.view === 'resources' && tab === 'resources')
+                    (route.view === 'skills' && tab === 'skills') ||
+                    (route.view === 'extensions' && tab === 'extensions')
                       ? 'active'
                       : ''
                   }`}
@@ -221,7 +224,8 @@ export default function App() {
             <div className="us-panel">
               {route.view === 'settings' && <SettingsPanel dark={dark} onToggleTheme={() => setDark((d) => !d)} />}
               {route.view === 'models' && <ModelsPanel />}
-              {route.view === 'resources' && <ResourcesPanel key={defaultCwd} cwd={defaultCwd} />}
+              {route.view === 'skills' && <SkillsPanel key={defaultCwd} cwd={defaultCwd} />}
+              {route.view === 'extensions' && <ExtensionsPanel key={defaultCwd} cwd={defaultCwd} />}
             </div>
           </div>
         )}
