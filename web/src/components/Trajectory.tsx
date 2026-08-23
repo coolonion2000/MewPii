@@ -99,7 +99,7 @@ export default function Trajectory({ conv }: { conv: Conversation }) {
       {steps.map((s) => (
         <div key={s.key} className={`traj-row traj-${s.kind}`}>
           <span className="traj-time mono">{fmtOffset(s.at - t0)}</span>
-          <span className={`traj-tag tag-${s.kind}`}>{s.label}</span>
+          <span className={`traj-tag tag-${s.kind}`} title={s.label}>{s.label}</span>
           <span className="traj-detail">{s.detail}</span>
           <span className="traj-dur mono">{s.durationMs !== undefined ? fmtDur(s.durationMs) : '…'}</span>
         </div>
