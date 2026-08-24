@@ -189,7 +189,10 @@ export default function Sidebar(props: Props) {
         key={s.path}
         className={`session-item ${selection?.sessionPath === s.path ? 'active' : ''}`}
         style={{ marginLeft: indent }}
-        onClick={() => onSelect({ cwd: s.cwd || '', sessionPath: s.path })}
+        onClick={() => {
+          onSelect({ cwd: s.cwd || '', sessionPath: s.path });
+          if (kids && !kids.open) kids.toggle();
+        }}
       >
         {kids ? (
           <button
@@ -238,8 +241,13 @@ export default function Sidebar(props: Props) {
     const byParent = new Map<string, SessionSummary[]>();
     const tops: SessionSummary[] = [];
     const pathSet = new Set(p.sessions.map((s) => s.path));
+    const isSubagent = (s: SessionSummary) => {
+      const label = (s.name || s.firstMessage || '').toLowerCase();
+      return label.startsWith('subagent');
+    };
     for (const s of p.sessions) {
-      if (s.parentSessionPath && pathSet.has(s.parentSessionPath)) {
+      // Only true subagent sessions nest; forks/clones stay top-level siblings.
+      if (s.parentSessionPath && pathSet.has(s.parentSessionPath) && isSubagent(s)) {
         const list = byParent.get(s.parentSessionPath) ?? [];
         list.push(s);
         byParent.set(s.parentSessionPath, list);
