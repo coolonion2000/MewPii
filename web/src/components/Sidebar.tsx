@@ -304,6 +304,7 @@ export default function Sidebar(props: Props) {
     return (
       <div className="sidebar sidebar-collapsed">
         <div className="sidebar-resize" onMouseDown={onStartDrag} />
+        <img className="brand-logo" src="/favicon.svg" alt="Pii" style={{ margin: '2px auto 8px' }} />
         <button className="btn btn-icon" title={t('expandSidebar')} onClick={onToggleCollapse}>
           <IconChevronRight />
         </button>
@@ -327,10 +328,21 @@ export default function Sidebar(props: Props) {
   return (
     <div className="sidebar" style={{ width }}>
       <div className="sidebar-resize" onMouseDown={onStartDrag} />
-      <div className="wb-header">
+      <div className="brand-row">
+        <img className="brand-logo" src="/favicon.svg" alt="Pii" />
+        <span className="brand-name">Pii</span>
+        <span className="spacer" />
         <button className="btn btn-icon" title={t('collapseSidebar')} onClick={onToggleCollapse}>
           <IconChevronLeft />
         </button>
+      </div>
+      <div style={{ padding: '0 12px 10px' }}>
+        <button className="new-session-btn" onClick={() => onSelect({ cwd: newSessionCwd })}>
+          <IconPlus size={15} />
+          <span>{t('newSession')}</span>
+        </button>
+      </div>
+      <div className="wb-header">
         <span className="wb-title">{t('workspace')}</span>
         <span className="spacer" />
         <button className="btn btn-icon" title={t('searchSessions')} onClick={() => setSearchOpen((o) => !o)}>
