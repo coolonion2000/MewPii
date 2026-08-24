@@ -6,6 +6,13 @@
 import http from 'node:http';
 import WebSocket, { type RawData } from 'ws';
 
+/** WS close codes 1005/1006 are reserved and must not be sent; map them to 1000. */
+function closeCode(code: unknown): number {
+  return typeof code === 'number' && Number.isInteger(code) && code >= 1000 && code < 5000 && code !== 1005 && code !== 1006
+    ? code
+    : 1000;
+}
+
 export interface TunnelMsg {
   type: string;
   id?: string;
@@ -83,7 +90,7 @@ export class TunnelHub {
       const c = this.channels.get(msg.channel);
       if (c) {
         this.channels.delete(msg.channel);
-        c.clientWs.close(msg.code ?? 1000, msg.reason ?? '');
+        c.clientWs.close(closeCode(msg.code), msg.reason ?? '');
       }
     }
   }
@@ -118,7 +125,7 @@ export class TunnelHub {
     clientWs.on('close', (code, reason) => {
       this.channels.delete(channel);
       if (agent.readyState === agent.OPEN) {
-        agent.send(JSON.stringify({ type: 'ws_close', channel, code, reason: String(reason) } satisfies TunnelMsg));
+        agent.send(JSON.stringify({ type: 'ws_close', channel, code: closeCode(code), reason: String(reason) } satisfies TunnelMsg));
       }
     });
     return true;
@@ -162,7 +169,7 @@ export function runTunnelAgent(opts: {
         const c = channels.get(msg.channel);
         if (c) {
           channels.delete(msg.channel);
-          c.close(msg.code ?? 1000, msg.reason ?? '');
+          c.close(closeCode(msg.code), msg.reason ?? '');
         }
       }
     });
@@ -210,7 +217,7 @@ export function runTunnelAgent(opts: {
       local.on('close', (code, reason) => {
         channels.delete(channel);
         if (ws.readyState === ws.OPEN) {
-          ws.send(JSON.stringify({ type: 'ws_close', channel, code, reason: String(reason) } satisfies TunnelMsg));
+          ws.send(JSON.stringify({ type: 'ws_close', channel, code: closeCode(code), reason: String(reason) } satisfies TunnelMsg));
         }
       });
       local.on('error', () => {
