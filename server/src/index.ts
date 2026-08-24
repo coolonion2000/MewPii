@@ -113,12 +113,17 @@ function passwordOk(candidate: string): boolean {
   return diff === 0;
 }
 
+/** Cookie session only — used for browser page views (login flow owns these). */
+function checkCookieAuth(req: IncomingMessage): boolean {
+  if (!options.password) return true;
+  const token = parseCookies(req).pii_session;
+  return Boolean(token && sessions.has(token));
+}
+
+/** Cookie OR HTTP Basic — used for /api, /ws, /tunnel (browsers send cookie, agents send Basic). */
 function checkAuth(req: IncomingMessage): boolean {
   if (!options.password) return true;
-  // session cookie
-  const token = parseCookies(req).pii_session;
-  if (token && sessions.has(token)) return true;
-  // HTTP Basic (agents, curl, tunnel)
+  if (checkCookieAuth(req)) return true;
   const header = req.headers.authorization;
   if (!header?.startsWith('Basic ')) return false;
   const [user, pass] = Buffer.from(header.slice(6), 'base64').toString().split(':', 2);
@@ -126,18 +131,26 @@ function checkAuth(req: IncomingMessage): boolean {
 }
 
 function requireAuth(req: IncomingMessage, res: ServerResponse): boolean {
-  if (checkAuth(req)) return true;
   const url = req.url ?? '/';
   const isApi = url.startsWith('/api/') || url === '/ws' || url === '/tunnel';
-  if (!isApi && (req.method === 'GET' || req.method === 'HEAD')) {
-    // browser page request → pretty login page
+  if (isApi) {
+    if (checkAuth(req)) return true;
+    res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="pii", charset="UTF-8"' });
+    res.end('Authentication required');
+    return false;
+  }
+  // browser page views must have a cookie session — cached Basic credentials
+  // (which users cannot clear from the client) must not bypass the login page,
+  // otherwise logout can never take effect.
+  if (checkCookieAuth(req)) return true;
+  if (req.method === 'GET' || req.method === 'HEAD') {
     const next = encodeURIComponent(url);
     res.writeHead(302, { Location: `/login?next=${next}` });
     res.end();
     return false;
   }
-  res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="pii", charset="UTF-8"' });
-  res.end('Authentication required');
+  res.writeHead(401, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ error: 'authentication required' }));
   return false;
 }
 
@@ -1108,7 +1121,7 @@ const server = createServer((req, res) => {
         return;
       }
       if (url0.pathname === '/login') {
-        if (!options.password || checkAuth(req)) {
+        if (!options.password || checkCookieAuth(req)) {
           const next = url0.searchParams.get('next') || '/';
           res.writeHead(302, { Location: next });
           res.end();
