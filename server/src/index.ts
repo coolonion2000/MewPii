@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { randomBytes } from 'node:crypto';
 import { readFile, readdir, stat, unlink, writeFile, mkdir } from 'node:fs/promises';
-import { createReadStream, existsSync, readdirSync } from 'node:fs';
+import { createReadStream, existsSync, readdirSync, watch } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { extname, join, normalize, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -210,6 +210,25 @@ interface OAuthFlow {
 const oauthFlows = new Map<string, OAuthFlow>();
 
 // ---------------------------------------------------------------------------
+// sessions dir watcher: CLI-side changes bump a version the UI polls
+// ---------------------------------------------------------------------------
+let sessionsVersion = 0;
+{
+  const sessionsDir = join(getAgentDir(), 'sessions');
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    watch(sessionsDir, { recursive: true }, () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        sessionsVersion += 1;
+      }, 500);
+    });
+  } catch {
+    // sessions dir may not exist yet on fresh installs
+  }
+}
+
+// ---------------------------------------------------------------------------
 // pii-web state (archive list etc.), stored next to pi's own config
 // ---------------------------------------------------------------------------
 const STATE_PATH = join(getAgentDir(), 'pii-web-state.json');
@@ -354,6 +373,11 @@ async function handleApi(req: IncomingMessage, res: ServerResponse): Promise<boo
       return true;
     }
     sendJson(res, 200, { cwd: match.cwd, path: match.path, id: match.id });
+    return true;
+  }
+
+  if (path === '/api/sessions/version' && req.method === 'GET') {
+    sendJson(res, 200, { version: sessionsVersion });
     return true;
   }
 

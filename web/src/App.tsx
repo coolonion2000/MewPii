@@ -133,10 +133,35 @@ export default function App() {
   useEffect(() => {
     fetch('/api/auth/state').then((r) => r.json()).then((d: { authRequired?: boolean }) => setAuthRequired(Boolean(d.authRequired))).catch(() => undefined);
     refreshProjects();
-    const timer = setInterval(() => {
-      if (!document.hidden) refreshProjects();
-    }, 60_000);
-    return () => clearInterval(timer);
+    // poll a cheap version counter; refetch only when the sessions dir changed
+    let lastVersion = -1;
+    const poll = async () => {
+      if (document.hidden) return;
+      try {
+        const r = await fetch('/api/sessions/version');
+        const d = (await r.json()) as { version: number };
+        if (lastVersion !== -1 && d.version !== lastVersion) refreshProjects();
+        lastVersion = d.version;
+      } catch {
+        // ignore
+      }
+    };
+    void poll();
+    const timer = setInterval(poll, 8_000);
+    // also refresh immediately when the tab regains focus (you may have used pi CLI)
+    const onVisible = () => {
+      if (!document.hidden) {
+        void poll();
+        refreshProjects();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('focus', onVisible);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('focus', onVisible);
+    };
   }, [refreshProjects]);
 
   const selection = route.selection;

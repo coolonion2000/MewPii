@@ -1,3 +1,4 @@
+import { statSync, watch, type FSWatcher } from 'node:fs';
 import type { WebSocket } from 'ws';
 import {
   createAgentSessionFromServices,
@@ -25,6 +26,31 @@ function serializeEvent(event: AgentSessionEvent): Record<string, unknown> {
   return JSON.parse(
     JSON.stringify(event, (key, value) => (key === 'partial' ? undefined : value)),
   ) as Record<string, unknown>;
+}
+
+
+/** Read the last JSONL entry's id without loading the whole file. */
+async function lastEntryId(file: string): Promise<string | undefined> {
+  const { open } = await import('node:fs/promises');
+  const fh = await open(file, 'r');
+  try {
+    const { size } = await fh.stat();
+    const len = Math.min(size, 8192);
+    const buf = Buffer.alloc(len);
+    await fh.read(buf, 0, len, size - len);
+    const lines = buf.toString('utf-8').split('\n').filter((l) => l.trim());
+    for (let i = lines.length - 1; i >= 0; i--) {
+      try {
+        const e = JSON.parse(lines[i]) as { id?: string };
+        if (e.id) return e.id;
+      } catch {
+        // partial tail line; keep looking
+      }
+    }
+    return undefined;
+  } finally {
+    await fh.close();
+  }
 }
 
 export interface SessionHostOptions {
@@ -61,6 +87,10 @@ export class SessionHost {
   private activeToolCalls = new Map<string, { toolName: string; args: Record<string, unknown> }>();
   /** Full branch message list from the latest snapshot (for history paging). */
   private lastBranch: Record<string, unknown>[] = [];
+  private fileWatcher?: FSWatcher;
+  private settledMtime = 0;
+  private reloading = false;
+  private cooldownUntil = 0;
 
   static async create(key: string, opts: SessionHostOptions): Promise<SessionHost> {
     const createRuntime = async ({ cwd, sessionManager, sessionStartEvent }: {
@@ -94,7 +124,60 @@ export class SessionHost {
     });
     host.bindSession();
     await host.bindExtensionUi(runtime.session);
+    host.startFileWatch();
     return host;
+  }
+
+  /** Reload from disk when an external process (e.g. pi CLI) writes our file. */
+  private startFileWatch(): void {
+    const file = this.runtime.session.sessionFile;
+    if (!file) return;
+    try {
+      // Baseline is the file's current mtime — anything newer is external.
+      const { mtimeMs } = statSync(file);
+      this.settledMtime = mtimeMs;
+      let timer: NodeJS.Timeout | undefined;
+      this.fileWatcher = watch(file, () => {
+        clearTimeout(timer);
+        timer = setTimeout(() => {
+          void this.reloadIfExternal();
+        }, 1500);
+      });
+    } catch {
+      // file may not exist yet (brand-new session)
+    }
+  }
+
+  private async reloadIfExternal(): Promise<void> {
+    const file = this.runtime.session.sessionFile;
+    if (!file || this.runtime.session.isStreaming || this.reloading) return;
+    if (Date.now() < this.cooldownUntil) return;
+    this.reloading = true;
+    try {
+      const { mtimeMs } = await import('node:fs/promises').then((fs) => fs.stat(file));
+      // isStreaming already covers our own writes; any newer mtime is external.
+      if (mtimeMs <= this.settledMtime + 10) return;
+      // Content check: the file's last entry must be one we don't already have.
+      // Our own reload/append side-effects share our known leaf id — skip those.
+      const tailId = await lastEntryId(file);
+      const knownLeaf = this.runtime.session.sessionManager.getLeafId();
+      if (tailId && tailId === knownLeaf) {
+        this.settledMtime = mtimeMs;
+        return;
+      }
+      console.log('[watch] external change detected, reloading', file);
+      await this.runtime.switchSession(file);
+      const after = await import('node:fs/promises').then((fs) => fs.stat(file));
+      this.settledMtime = Math.max(after.mtimeMs, Date.now());
+      // blind window: the reload's own side-effects settle here; external bursts
+      // (e.g. a pi CLI run) debounce to one reload per burst.
+      this.cooldownUntil = Date.now() + 2000;
+      this.broadcastSnapshot();
+    } catch (err) {
+      console.log('[watch] reload failed:', err instanceof Error ? err.message : String(err));
+    } finally {
+      this.reloading = false;
+    }
   }
 
   /** Bridge pi's extension UI surface (widgets, status, dialogs, toasts) to web clients. */
@@ -216,7 +299,10 @@ export class SessionHost {
       // so defer the snapshot slightly; agent_settled marks full quiescence.
       if (event.type === 'agent_end') {
         clearTimeout(pendingSnapshot);
-        pendingSnapshot = setTimeout(() => this.broadcastSnapshot(), 120);
+        pendingSnapshot = setTimeout(() => {
+          this.settledMtime = Date.now();
+          this.broadcastSnapshot();
+        }, 150);
       } else if (
         event.type === 'agent_settled' ||
         event.type === 'session_info_changed' ||
@@ -502,6 +588,7 @@ export class SessionHost {
 
   async dispose(): Promise<void> {
     clearTimeout(this.idleTimer);
+    this.fileWatcher?.close();
     this.unsubscribe?.();
     await this.runtime.dispose();
     for (const ws of this.sockets) ws.close(1000, 'session disposed');
