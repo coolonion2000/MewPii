@@ -277,11 +277,16 @@ export default function Composer({ conv, draft, onDraft }: Props) {
         {streaming && (() => {
           const run = conv.runStats;
           const estTokens = Math.round(run.outputChars / 3.5);
+          // before the first token lands (or during tool-only phases) there is
+          // nothing meaningful to count — show a quiet waiting state instead
+          if (estTokens <= 0) {
+            return <span className="live-counter waiting" title={t('liveCounter')}>…</span>;
+          }
           const genSec = Math.max(0.5, (Date.now() - (run.firstDeltaAt ?? Date.now())) / 1000);
-          const tps = estTokens > 0 ? (estTokens / genSec).toFixed(1) : '…';
+          const tps = (estTokens / genSec).toFixed(1);
           return (
             <span className="live-counter" title={t('liveCounter')}>
-              ↓{estTokens > 0 ? estTokens : ''}
+              ↓{estTokens}
               <span className="live-tps">{tps} t/s</span>
             </span>
           );

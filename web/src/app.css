@@ -817,3 +817,5 @@ body[data-ds-dark-theme] .composer:focus-within { box-shadow: 0 2px 14px rgba(0,
   background: var(--dsw-alias-state-success-tertiary);
   border-radius: 5px; padding: 1px 6px;
 }
+
+.live-counter.waiting { background: transparent; color: var(--dsw-alias-label-caption); }
