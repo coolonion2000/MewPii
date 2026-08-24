@@ -421,6 +421,8 @@ export default function App() {
               conv={conv}
               onRefresh={refreshProjects}
               onForked={(cwd, sessionFile) => setRoute({ view: 'chat', selection: { cwd, sessionPath: sessionFile } })}
+              projects={projects}
+              onSelectProject={(cwd) => setSelection({ cwd })}
             />
           ) : (
             <div className="empty-state">
