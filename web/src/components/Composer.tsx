@@ -276,14 +276,20 @@ export default function Composer({ conv, draft, onDraft }: Props) {
         {/* live stream counter: ↓tokens · t/s (pi-web style) */}
         {streaming && (() => {
           const run = conv.runStats;
-          const estTokens = Math.round(run.outputChars / 3.5);
-          // before the first token lands (or during tool-only phases) there is
-          // nothing meaningful to count — show a quiet waiting state instead
-          if (estTokens <= 0) {
-            return <span className="live-counter waiting" title={t('liveCounter')}>…</span>;
-          }
-          const genSec = Math.max(0.5, (Date.now() - (run.firstDeltaAt ?? Date.now())) / 1000);
-          const tps = (estTokens / genSec).toFixed(1);
+          // count from the streaming partial itself so mid-run attaches show
+          // the real amount, not just what arrived after we attached
+          const partial = conv.streaming?.content;
+          const partialLen = Array.isArray(partial)
+            ? (partial as Record<string, unknown>[]).reduce(
+                (n, b) => n + String(b.text ?? b.thinking ?? '').length,
+                0,
+              )
+            : 0;
+          const estTokens = Math.round(Math.max(partialLen, run.outputChars) / 3.5);
+          // pi-web style: always visible while streaming, even at zero
+          const tps = run.firstDeltaAt
+            ? (estTokens / Math.max(0.5, (Date.now() - run.firstDeltaAt) / 1000)).toFixed(1)
+            : '0.0';
           return (
             <span className="live-counter" title={t('liveCounter')}>
               ↓{estTokens}
