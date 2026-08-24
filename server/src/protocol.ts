@@ -113,6 +113,8 @@ export interface SessionSnapshot {
   cwd: string;
   isStreaming: boolean;
   thinkingLevel: string;
+  /** Thinking levels the current model actually supports (pi thinkingLevelMap). */
+  availableThinkingLevels?: string[];
   model?: { provider: string; id: string; name: string };
   /** The most recent page of messages (older pages available via history). */
   messages: PiiMessage[];

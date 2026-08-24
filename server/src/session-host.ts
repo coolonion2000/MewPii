@@ -446,6 +446,13 @@ export class SessionHost {
       cwd: this.runtime.cwd,
       isStreaming: s.isStreaming,
       thinkingLevel: s.thinkingLevel,
+      availableThinkingLevels: (() => {
+        try {
+          return s.getAvailableThinkingLevels();
+        } catch {
+          return undefined;
+        }
+      })(),
       model: model
         ? { provider: model.provider, id: model.id, name: model.name ?? model.id }
         : undefined,

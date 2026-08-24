@@ -304,17 +304,23 @@ export default function Composer({ conv, draft, onDraft }: Props) {
               {isReasoning && (
                 <div className="menu-section">
                   <div className="menu-section-label">{t('thinkingLevel')}</div>
-                  {THINKING_LEVELS.map((level) => (
-                    <button
-                      key={level}
-                      className={`menu-item ${snap?.thinkingLevel === level ? 'active' : ''}`}
-                      onClick={() => {
-                        void conv.send({ type: 'setThinkingLevel', level }).catch(() => undefined);
-                      }}
-                    >
-                      {level}
-                    </button>
-                  ))}
+                  {(() => {
+                    const avail = snap?.availableThinkingLevels;
+                    const levels = avail && avail.length > 0
+                      ? ['off', ...avail.filter((l) => l !== 'off')]
+                      : THINKING_LEVELS;
+                    return levels.map((level) => (
+                      <button
+                        key={level}
+                        className={`menu-item ${snap?.thinkingLevel === level ? 'active' : ''}`}
+                        onClick={() => {
+                          void conv.send({ type: 'setThinkingLevel', level }).catch(() => undefined);
+                        }}
+                      >
+                        {level}
+                      </button>
+                    ));
+                  })()}
                 </div>
               )}
             </div>

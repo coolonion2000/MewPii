@@ -108,6 +108,7 @@ export interface SessionSnapshot {
   cwd: string;
   isStreaming: boolean;
   thinkingLevel: string;
+  availableThinkingLevels?: string[];
   model?: { provider: string; id: string; name: string };
   messages: PiiMessage[];
   totalMessages: number;
