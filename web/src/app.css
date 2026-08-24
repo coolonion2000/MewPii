@@ -819,3 +819,16 @@ body[data-ds-dark-theme] .composer:focus-within { box-shadow: 0 2px 14px rgba(0,
 }
 
 .live-counter.waiting { background: transparent; color: var(--dsw-alias-label-caption); }
+
+/* streaming message header (pi-web style live counter) */
+.msg-live-header {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 11px; color: var(--dsw-alias-label-tertiary);
+  margin-bottom: 4px;
+}
+.msg-live-model { font-weight: 500; }
+.msg-live-tokens { display: inline-flex; align-items: center; gap: 2px; font-variant-numeric: tabular-nums; }
+.msg-live-tps {
+  margin-left: 4px; padding: 1px 6px; border-radius: 4px;
+  color: #fff; font-weight: 400; font-variant-numeric: tabular-nums;
+}

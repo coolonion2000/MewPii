@@ -1,4 +1,4 @@
-import { useEffect, useReducer, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { Conversation } from '../api';
 import { fetchModels, type ModelsResponse } from '../api';
 import { t } from '../i18n';
@@ -30,13 +30,6 @@ export default function Composer({ conv, draft, onDraft }: Props) {
   useEffect(() => {
     fetchModels().then(setModels).catch(() => undefined);
   }, []);
-
-  const [, force] = useReducer((x: number) => x + 1, 0);
-  useEffect(() => {
-    if (!conv.snapshot?.isStreaming) return;
-    const timer = setInterval(force, 1000);
-    return () => clearInterval(timer);
-  }, [conv.snapshot?.isStreaming]);
 
   // slash commands (skills + prompt templates) for autocomplete
   const [slashItems, setSlashItems] = useState<{ cmd: string; desc: string }[]>([]);
@@ -272,37 +265,6 @@ export default function Composer({ conv, draft, onDraft }: Props) {
         )}
 
         <span style={{ flex: 1 }} />
-
-        {/* live stream counter: ↓tokens · t/s (pi-web style) */}
-        {streaming && (() => {
-          const run = conv.runStats;
-          // count from the streaming partial itself so mid-run attaches show
-          // the real amount, not just what arrived after we attached
-          const partial = conv.streaming?.content;
-          const partialLen = Array.isArray(partial)
-            ? (partial as Record<string, unknown>[]).reduce(
-                (n, b) => n + String(b.text ?? b.thinking ?? '').length,
-                0,
-              )
-            : 0;
-          const estTokens = Math.round(Math.max(partialLen, run.outputChars) / 3.5);
-          // pi-web style: always visible while streaming, even at zero
-          // recent-window rate (last 5s of deltas), like pi-web's live t/s
-          const nowMs = Date.now();
-          const windowMs = 5000;
-          const recentChars = conv.deltaSamples
-            .filter((d) => nowMs - d.t <= windowMs)
-            .reduce((sum, d) => sum + d.n, 0);
-          const tps = run.firstDeltaAt
-            ? (recentChars / 3.5 / (windowMs / 1000)).toFixed(1)
-            : '0.0';
-          return (
-            <span className="live-counter" title={t('liveCounter')}>
-              ↓{estTokens}
-              <span className="live-tps">{tps} t/s</span>
-            </span>
-          );
-        })()}
 
         {/* model + thinking combined chip, pi-web style */}
         <div className="menu-anchor">

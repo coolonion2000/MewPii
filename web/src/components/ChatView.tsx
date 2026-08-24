@@ -20,6 +20,12 @@ interface Props {
 export default function ChatView({ conv, onRefresh, onForked }: Props) {
   const [, force] = useReducer((x: number) => x + 1, 0);
   useEffect(() => conv.subscribe(force), [conv]);
+  // 1s ticker while streaming so the live t/s decays smoothly between deltas
+  useEffect(() => {
+    if (!conv.snapshot?.isStreaming) return;
+    const timer = setInterval(force, 1000);
+    return () => clearInterval(timer);
+  }, [conv.snapshot?.isStreaming]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState('');
@@ -201,6 +207,27 @@ export default function ChatView({ conv, onRefresh, onForked }: Props) {
               key={`${m._entryId ?? (m as { timestamp?: number }).timestamp ?? i}-${i}`}
               message={m}
               streaming={conv.streaming === m}
+              live={
+                conv.streaming === m
+                  ? (() => {
+                      const run = conv.runStats;
+                      const partial = m.content;
+                      const partialLen = Array.isArray(partial)
+                        ? (partial as Record<string, unknown>[]).reduce(
+                            (n, b) => n + String(b.text ?? b.thinking ?? '').length,
+                            0,
+                          )
+                        : 0;
+                      const tokens = Math.round(Math.max(partialLen, run.outputChars) / 3.5);
+                      const nowMs = Date.now();
+                      const recentChars = conv.deltaSamples
+                        .filter((d) => nowMs - d.t <= 5000)
+                        .reduce((sum, d) => sum + d.n, 0);
+                      const tps = run.firstDeltaAt ? recentChars / 3.5 / 5 : 0;
+                      return { model: snap?.model?.name, tokens, tps };
+                    })()
+                  : undefined
+              }
               toolResults={toolResults}
               tools={conv.tools}
               onFork={(entryId) =>
