@@ -92,7 +92,7 @@ export default function ChatView({ conv, onRefresh, onForked }: Props) {
               {title}
             </div>
           )}
-          <div className="sub">{snap?.cwd ?? conv.cwd}</div>
+          <div className="sub" title={snap?.cwd ?? conv.cwd}>{(snap?.cwd ?? conv.cwd).split('/').filter(Boolean).pop()}</div>
         </div>
         <div className="spacer" />
         {snap?.isStreaming && (
