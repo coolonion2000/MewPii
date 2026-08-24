@@ -3,21 +3,24 @@ import type { Conversation } from '../api';
 import MessageItem from './MessageItem';
 import Composer from './Composer';
 import StatsBar from './StatsBar';
+import { IconFolder, IconChevronDown } from '../icons';
 import Trajectory from './Trajectory';
 import ExtensionUI, { InlineQuestions } from './ExtensionUI';
 import FilePreview from './FilePreview';
 import { IconTrash, IconPencil, IconX } from '../icons';
 import { exportHtml } from '../export';
-import type { PiiMessage } from '../types';
+import type { PiiMessage, ProjectGroup } from '../types';
 import { t } from '../i18n';
 
 interface Props {
   conv: Conversation;
   onRefresh: () => void;
   onForked?: (cwd: string, sessionFile: string) => void;
+  projects?: ProjectGroup[];
+  onSelectProject?: (cwd: string) => void;
 }
 
-export default function ChatView({ conv, onRefresh, onForked }: Props) {
+export default function ChatView({ conv, onRefresh, onForked, projects, onSelectProject }: Props) {
   const [, force] = useReducer((x: number) => x + 1, 0);
   useEffect(() => conv.subscribe(force), [conv]);
   // 1s ticker while streaming so the live t/s decays smoothly between deltas
@@ -40,6 +43,7 @@ export default function ChatView({ conv, onRefresh, onForked }: Props) {
   const [showTraj, setShowTraj] = useState(false);
   const [draft, setDraft] = useState<string>();
   const [previewPath, setPreviewPath] = useState<string>();
+  const [projMenuOpen, setProjMenuOpen] = useState(false);
   const [previewWidth, setPreviewWidth] = useState(() => Number(localStorage.getItem('pii-preview-w')) || 480);
 
   const startPreviewDrag = (e: React.MouseEvent) => {
@@ -98,6 +102,45 @@ export default function ChatView({ conv, onRefresh, onForked }: Props) {
       void conv.send({ type: 'setSessionName', name }).then(onRefresh).catch(() => undefined);
     }
   };
+
+  if (allMessages.length === 0 && !conv.snapshot?.isStreaming) {
+    return (
+      <>
+        <div className="hero">
+          <img className="hero-logo" src="/favicon.svg" alt="Pii" />
+          <h1 className="hero-title">Pii</h1>
+          <div className="hero-sub">{t('heroTagline')}</div>
+          <div className="hero-chips">
+            <div className="menu-anchor">
+              <button className="model-chip" onClick={(e) => { e.stopPropagation(); setProjMenuOpen(!projMenuOpen); }}>
+                <IconFolder size={13} />
+                <span className="model-chip-name">{(conv.cwd || projects?.[0]?.cwd || '/').split('/').filter(Boolean).pop()}</span>
+                <IconChevronDown size={11} />
+              </button>
+              {projMenuOpen && (
+                <div className="menu" onClick={(e) => e.stopPropagation()}>
+                  {(projects ?? []).map((p) => (
+                    <button
+                      key={p.cwd}
+                      className={`menu-item ${conv.cwd === p.cwd ? 'active' : ''}`}
+                      onClick={() => { setProjMenuOpen(false); onSelectProject?.(p.cwd); }}
+                    >
+                      <span>{p.cwd.split('/').filter(Boolean).pop()}</span>
+                      <span className="dim mono" style={{ fontSize: 10.5 }}>{p.cwd}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+          <div className="hero-composer">
+            <Composer conv={conv} draft={draft} onDraft={setDraft} />
+          </div>
+        </div>
+        <ExtensionUI conv={conv} />
+      </>
+    );
+  }
 
   return (
     <>
