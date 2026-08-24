@@ -1102,6 +1102,11 @@ const server = createServer((req, res) => {
   void (async () => {
     try {
       const url0 = new URL(req.url ?? '/', 'http://localhost');
+      // public assets (favicon etc.) must load even before login
+      if (/^\/(favicon\.svg|apple-touch-icon\.png|icon-512\.png|manifest\.webmanifest)$/.test(url0.pathname)) {
+        await serveStatic(req, res);
+        return;
+      }
       if (url0.pathname === '/login') {
         if (!options.password || checkAuth(req)) {
           const next = url0.searchParams.get('next') || '/';

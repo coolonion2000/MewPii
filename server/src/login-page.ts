@@ -26,12 +26,10 @@ export function loginPageHtml(error = false): string {
     box-shadow: 0 12px 40px rgba(0,0,0,0.4);
   }
   .logo {
-    width: 44px; height: 44px; border-radius: 12px;
-    background: #f9fafb; color: #0f1115;
-    display: grid; place-items: center;
-    font-size: 26px; font-weight: 700;
+    width: 52px; height: 52px; border-radius: 13px;
     margin: 0 auto 14px;
-    font-family: Georgia, serif;
+    display: block;
+    box-shadow: 0 6px 20px rgba(110,49,232,0.45);
   }
   h1 { font-size: 18px; font-weight: 600; text-align: center; margin: 0 0 4px; }
   .sub { text-align: center; font-size: 13px; color: #81858c; margin-bottom: 22px; }
@@ -63,7 +61,7 @@ export function loginPageHtml(error = false): string {
 </head>
 <body>
   <form class="card" id="form">
-    <div class="logo">π</div>
+    <img class="logo" src="/favicon.svg" alt="Pii" />
     <h1>Pii</h1>
     <div class="sub">pi coding agent 的 Web 控制台</div>
     <div class="error" id="error">密码错误，请重试</div>
