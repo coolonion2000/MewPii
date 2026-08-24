@@ -200,6 +200,21 @@ export default function App() {
 
   useEffect(() => () => conv?.dispose(), [conv]);
 
+  // When the host switches session files (newSession / fork / import), follow it:
+  // otherwise navigating away and back would reconnect to the OLD session.
+  useEffect(() => {
+    const file = conv?.snapshot?.sessionFile;
+    if (!file || !selection) return;
+    if (selection.sessionPath && selection.sessionPath !== file) {
+      setRouteState((prev) =>
+        prev.view === 'chat' && prev.selection
+          ? { view: 'chat', selection: { cwd: prev.selection.cwd, sessionPath: file } }
+          : prev,
+      );
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conv?.snapshot?.sessionFile]);
+
   // Keep the address bar clean: /chat/<sessionId> once the file is known.
   useEffect(() => {
     if (route.view !== 'chat') return;

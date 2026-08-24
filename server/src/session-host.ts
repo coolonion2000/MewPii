@@ -130,6 +130,7 @@ export class SessionHost {
 
   /** Reload from disk when an external process (e.g. pi CLI) writes our file. */
   private startFileWatch(): void {
+    if (this.fileWatcher) return; // never attach twice
     const file = this.runtime.session.sessionFile;
     if (!file) return;
     try {
@@ -434,6 +435,10 @@ export class SessionHost {
       stats = undefined;
     }
 
+    // brand-new sessions have no file at host creation; attach the watcher
+    // lazily once the file exists
+    if (!this.fileWatcher && s.sessionFile) this.startFileWatch();
+
     return {
       sessionId: s.sessionId,
       sessionFile: s.sessionFile,
@@ -515,33 +520,25 @@ export class SessionHost {
         case 'compact':
           await s.compact();
           return { ok: true };
-        case 'queue_remove': {
-          const current = [...(cmd.queue === 'steering' ? s.getSteeringMessages() : s.getFollowUpMessages())];
-          if (cmd.index < 0 || cmd.index >= current.length) return { ok: false, error: 'index out of range' };
-          current.splice(cmd.index, 1);
-          s.clearQueue();
-          for (const m of current) {
-            if (cmd.queue === 'steering') await s.steer(m);
-            else await s.followUp(m);
-          }
-          this.broadcastSnapshot();
-          return { ok: true };
-        }
+        case 'queue_remove':
         case 'queue_move': {
-          const src = [...(cmd.from === 'steering' ? s.getSteeringMessages() : s.getFollowUpMessages())];
-          if (cmd.index < 0 || cmd.index >= src.length) return { ok: false, error: 'index out of range' };
-          const [moved] = src.splice(cmd.index, 1);
-          const dst = [...(cmd.to === 'steering' ? s.getSteeringMessages() : s.getFollowUpMessages())];
-          dst.push(moved);
+          // clearQueue() wipes BOTH queues — always restore both.
+          const steering = [...s.getSteeringMessages()];
+          const followUp = [...s.getFollowUpMessages()];
+          if (cmd.type === 'queue_remove') {
+            const list = cmd.queue === 'steering' ? steering : followUp;
+            if (cmd.index < 0 || cmd.index >= list.length) return { ok: false, error: 'index out of range' };
+            list.splice(cmd.index, 1);
+          } else {
+            const src = cmd.from === 'steering' ? steering : followUp;
+            const dst = cmd.to === 'steering' ? steering : followUp;
+            if (cmd.index < 0 || cmd.index >= src.length) return { ok: false, error: 'index out of range' };
+            const [moved] = src.splice(cmd.index, 1);
+            dst.push(moved);
+          }
           s.clearQueue();
-          for (const m of src) {
-            if (cmd.from === 'steering') await s.steer(m);
-            else await s.followUp(m);
-          }
-          for (const m of dst) {
-            if (cmd.to === 'steering') await s.steer(m);
-            else await s.followUp(m);
-          }
+          for (const m of steering) await s.steer(m);
+          for (const m of followUp) await s.followUp(m);
           this.broadcastSnapshot();
           return { ok: true };
         }

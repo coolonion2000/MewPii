@@ -41,18 +41,22 @@ export class TunnelHub {
   }
 
   handleAgentConnection(ws: WebSocket): void {
-    if (this.agent) {
+    const prev = this.agent;
+    if (prev) {
       try {
-        this.agent.close(1000, 'replaced by new agent');
+        prev.close(1000, 'replaced by new agent');
       } catch {
         // ignore
       }
-      this.dropAgent();
+      if (this.agent === prev) this.dropAgent();
     }
     this.agent = ws;
     console.log('[tunnel] agent connected');
     ws.on('message', (raw) => this.onAgentMessage(raw));
-    ws.on('close', () => this.dropAgent());
+    // identity check: the OLD connection's late close must not evict the NEW agent
+    ws.on('close', () => {
+      if (this.agent === ws) this.dropAgent();
+    });
     ws.on('error', () => undefined);
   }
 

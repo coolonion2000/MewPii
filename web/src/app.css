@@ -845,3 +845,16 @@ body[data-ds-dark-theme] .composer:focus-within { box-shadow: 0 2px 14px rgba(0,
 }
 .jump-bottom:hover { background: var(--dsw-alias-bg-layer-3); }
 .chat-body { position: relative; }
+
+/* waiting-for-model indicator */
+.working-indicator {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 13px; color: var(--dsw-alias-label-tertiary);
+  padding: 2px 0;
+}
+.working-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--dsw-alias-state-business-primary);
+  animation: pulse 1s ease-in-out infinite;
+}
+.working-elapsed { font-variant-numeric: tabular-nums; color: var(--dsw-alias-label-caption); }

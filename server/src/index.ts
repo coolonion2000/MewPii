@@ -1234,7 +1234,26 @@ const server = createServer((req, res) => {
 
 const wss = new WebSocketServer({ noServer: true });
 
+/** Browsers must not open cross-site WebSockets to us (CSWSH). Node agents
+ * (no Origin header) and same-host origins are allowed. */
+function originOk(req: IncomingMessage): boolean {
+  const origin = req.headers.origin;
+  if (!origin) return true; // non-browser clients (node ws, curl)
+  try {
+    const o = new URL(origin);
+    const host = req.headers.host ?? '';
+    return o.host === host;
+  } catch {
+    return false;
+  }
+}
+
 server.on('upgrade', (req, socket, head) => {
+  if (!originOk(req)) {
+    socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+    socket.destroy();
+    return;
+  }
   if (!checkAuth(req)) {
     socket.write('HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm="pii"\r\n\r\n');
     socket.destroy();
