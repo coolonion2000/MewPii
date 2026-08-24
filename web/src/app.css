@@ -896,3 +896,11 @@ body:not([data-ds-dark-theme]) .hljs .hljs-attr, body:not([data-ds-dark-theme]) 
   background: var(--dsw-alias-state-warn-tertiary);
   border-radius: 8px; padding: 6px 12px;
 }
+
+/* agent selector */
+.agent-select {
+  border: 1px solid var(--dsw-alias-border-l2); border-radius: 6px;
+  background: var(--dsw-alias-bg-base); color: var(--dsw-alias-label-secondary);
+  font-size: 11.5px; font-family: inherit;
+  padding: 3px 6px; max-width: 110px; outline: none;
+}

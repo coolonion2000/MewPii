@@ -8,6 +8,38 @@ import type {
   WidgetState,
 } from './types';
 
+// ---------------------------------------------------------------------------
+// multi-agent routing: when an agent is selected, all /api and /ws traffic is
+// proxied to it by the hub
+// ---------------------------------------------------------------------------
+const AGENT_KEY = 'pii-agent';
+
+export function getAgent(): string | undefined {
+  return localStorage.getItem(AGENT_KEY) || undefined;
+}
+
+export function setAgent(name?: string): void {
+  if (name) localStorage.setItem(AGENT_KEY, name);
+  else localStorage.removeItem(AGENT_KEY);
+  location.reload();
+}
+
+export function withAgent(url: string): string {
+  const agent = getAgent();
+  if (!agent || url.includes('agent=')) return url;
+  return url + (url.includes('?') ? '&' : '?') + 'agent=' + encodeURIComponent(agent);
+}
+
+{
+  const origFetch = window.fetch.bind(window);
+  window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
+    if (typeof input === 'string' && input.startsWith('/api/')) {
+      input = withAgent(input);
+    }
+    return origFetch(input, init);
+  };
+}
+
 export async function fetchProjects(): Promise<ProjectGroup[]> {
   const res = await fetch('/api/sessions');
   if (!res.ok) throw new Error(`sessions: ${res.status}`);
@@ -145,9 +177,10 @@ export class Conversation {
     if (this.closedIntentionally) return;
     clearTimeout(this.reconnectTimer);
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    const url = `${proto}://${location.host}/ws?cwd=${encodeURIComponent(this.cwd)}${
+    let url = `${proto}://${location.host}/ws?cwd=${encodeURIComponent(this.cwd)}${
       this.sessionPath ? `&session=${encodeURIComponent(this.sessionPath)}` : ''
     }`;
+    url = withAgent(url);
     const ws = new WebSocket(url);
     this.ws = ws;
     ws.onopen = () => {

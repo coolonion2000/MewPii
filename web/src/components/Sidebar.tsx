@@ -26,6 +26,9 @@ interface Props {
   dark: boolean;
   onToggleTheme: () => void;
   authRequired?: boolean;
+  agents?: string[];
+  currentAgent?: string;
+  onSelectAgent?: (name: string) => void;
 }
 
 function basename(cwd: string): string {
@@ -59,6 +62,7 @@ export default function Sidebar(props: Props) {
   const {
     projects, archivedSessions, selection, view, collapsed, width, onStartDrag,
     onToggleCollapse, onNavigate, onSelect, onDelete, onRename, onArchive, onRefresh, dark, onToggleTheme, authRequired,
+    agents, currentAgent, onSelectAgent,
   } = props;
 
   const [query, setQuery] = useState('');
@@ -460,6 +464,19 @@ export default function Sidebar(props: Props) {
         <button className={`btn btn-sm ${view === 'files' ? 'tab-active' : ''}`} onClick={() => onNavigate('files')}>{t('navFiles')}</button>
         <button className={`btn btn-sm ${view !== 'chat' && view !== 'files' ? 'tab-active' : ''}`} onClick={() => onNavigate('settings')}>{t('navSettings')}</button>
         <span style={{ flex: 1 }} />
+        {(agents?.length ?? 0) > 0 && (
+          <select
+            className="agent-select"
+            title={t('agentSelect')}
+            value={currentAgent ?? ''}
+            onChange={(e) => onSelectAgent?.(e.target.value)}
+          >
+            <option value="">{t('agentLocal')}</option>
+            {agents!.map((a) => (
+              <option key={a} value={a}>{a}</option>
+            ))}
+          </select>
+        )}
         <button className="btn btn-icon" title={t('refresh')} onClick={onRefresh}><IconRefresh size={14} /></button>
         <button className="btn btn-icon" title="Language" onClick={() => setLang(getLang() === 'zh' ? 'en' : 'zh')} style={{ fontSize: 12 }}>
           {getLang() === 'zh' ? 'EN' : '中'}

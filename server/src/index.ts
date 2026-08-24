@@ -1203,18 +1203,24 @@ const server = createServer((req, res) => {
       }
       if (!requireAuth(req, res)) return;
       if (req.url === '/api/agents') {
-        sendJson(res, 200, { connected: hub.connected });
+        sendJson(res, 200, { connected: hub.connected, agents: hub.agentNames() });
         return;
       }
       if (req.url?.startsWith('/api/') && hub.connected) {
         const body = await readBody(req);
         const headers: Record<string, string> = {};
         if (req.headers['content-type']) headers['content-type'] = String(req.headers['content-type']);
-        const result = await hub.proxyHttp(req.method ?? 'GET', req.url, headers, body);
+        const agentParam = url0.searchParams.get('agent');
+        const result = await hub.proxyHttp(agentParam ?? undefined, req.method ?? 'GET', req.url, headers, body);
         if (result) {
           const outHeaders: Record<string, string> = result.headers ?? {};
           res.writeHead(result.status ?? 502, outHeaders);
           res.end(Buffer.from(result.bodyB64 ?? '', 'base64'));
+          return;
+        }
+        if (agentParam) {
+          // explicit agent requested but not connected — never silently fall back
+          sendJson(res, 502, { error: `agent not connected: ${agentParam}` });
           return;
         }
       }
@@ -1261,7 +1267,7 @@ server.on('upgrade', (req, socket, head) => {
   }
   const url = new URL(req.url ?? '/', 'http://localhost');
   if (url.pathname === '/tunnel') {
-    wss.handleUpgrade(req, socket, head, (ws) => hub.handleAgentConnection(ws));
+    wss.handleUpgrade(req, socket, head, (ws) => hub.handleAgentConnection(ws, url.searchParams.get('name') ?? 'agent'));
     return;
   }
   if (url.pathname !== '/ws') {
@@ -1269,9 +1275,9 @@ server.on('upgrade', (req, socket, head) => {
     return;
   }
   if (hub.connected) {
-    // proxy the conversation socket to the connected agent
+    // proxy the conversation socket to the selected agent
     wss.handleUpgrade(req, socket, head, (ws) => {
-      if (!hub.proxyWs(ws, req.url ?? '/ws')) ws.close(1001, 'agent unavailable');
+      if (!hub.proxyWs(url.searchParams.get('agent') ?? undefined, ws, req.url ?? '/ws')) ws.close(1001, 'agent unavailable');
     });
     return;
   }

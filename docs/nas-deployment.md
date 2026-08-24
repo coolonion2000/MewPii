@@ -90,3 +90,20 @@ node server/bin/pii-web.js \
 - 浏览器侧无感知：所有 `/api` 与 `/ws` 流量经隧道转发到 agent 的本地 pii 服务执行
 - `curl http://<NAS-IP>:31041/api/agents`（带认证）可查看 agent 连接状态
 - 安全性：隧道复用 Basic Auth；公网场景 NAS 前照常叠 HTTPS（见 remote-access.md）
+
+
+## 多 agent（一个 UI 控制多台机器）
+
+hub 支持任意数量的 agent 同时在线，界面上可切换控制对象：
+
+```bash
+# Mac 上
+node server/bin/pii-web.js --agent ws://<NAS>:31041/tunnel --token '密码' --name my-mac
+# 办公机上
+node server/bin/pii-web.js --agent ws://<NAS>:31041/tunnel --token '密码' --name office-pc
+```
+
+- 侧边栏底部出现 agent 选择器：本机（hub 自己）+ 所有在线 agent
+- 切换后整个界面（会话、文件、模型、Git）都切到那台机器，选择记忆在浏览器
+- 同名重连自动顶替旧连接；显式选择了一个不在线的 agent 会报 502 而不是静默回退
+- `GET /api/agents`（带认证）查看在线列表

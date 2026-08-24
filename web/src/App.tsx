@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
-import { Conversation, deleteSession, fetchProjects } from './api';
+import { Conversation, deleteSession, fetchProjects, getAgent, setAgent } from './api';
 import type { ProjectGroup, SessionSummary } from './types';
 import Sidebar from './components/Sidebar';
 import ChatView from './components/ChatView';
@@ -62,6 +62,7 @@ function toPath(route: Route, sessionId?: string): string {
 export default function App() {
   const [projects, setProjects] = useState<ProjectGroup[]>([]);
   const [authRequired, setAuthRequired] = useState(false);
+  const [agents, setAgents] = useState<string[]>([]);
   const [archivedSessions, setArchivedSessions] = useState<SessionSummary[]>([]);
   const [route, setRouteState] = useState<Route>(parsePath);
   const [dark, setDark] = useState(() => localStorage.getItem('pii-theme') !== 'light');
@@ -132,6 +133,13 @@ export default function App() {
 
   useEffect(() => {
     fetch('/api/auth/state').then((r) => r.json()).then((d: { authRequired?: boolean }) => setAuthRequired(Boolean(d.authRequired))).catch(() => undefined);
+    const loadAgents = () =>
+      fetch('/api/agents')
+        .then((r) => r.json())
+        .then((d: { agents?: string[] }) => setAgents(d.agents ?? []))
+        .catch(() => undefined);
+    loadAgents();
+    const agentTimer = setInterval(loadAgents, 15_000);
     refreshProjects();
     // poll a cheap version counter; refetch only when the sessions dir changed
     let lastVersion = -1;
@@ -364,6 +372,9 @@ export default function App() {
         dark={dark}
         onToggleTheme={() => setDark((d) => !d)}
         authRequired={authRequired}
+        agents={agents}
+        currentAgent={getAgent()}
+        onSelectAgent={(name) => setAgent(name || undefined)}
       />
       <div className="main">
         {isSettingsish && (
