@@ -285,6 +285,14 @@ export default function ChatView({ conv, onRefresh, onForked }: Props) {
         <Composer conv={conv} draft={draft} onDraft={setDraft} />
       </div>
 
+      {Object.keys(conv.statuses).length > 0 && (
+        <div className="status-strip">
+          {Object.entries(conv.statuses).map(([key, value]) => (
+            <span key={key} className="status-item" title={key}>{value}</span>
+          ))}
+        </div>
+      )}
+
       <ExtensionUI conv={conv} />
     </>
   );
