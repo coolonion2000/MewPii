@@ -119,6 +119,8 @@ export class Conversation {
   totalMessages = 0;
   /** Active while a context compaction is running. */
   compaction?: { reason: string };
+  /** Active while the provider request is being retried. */
+  retry?: { attempt: number; maxAttempts: number; delayMs: number; errorMessage: string; since: number };
   widgets: WidgetState[] = [];
   statuses: Record<string, string> = {};
   uiRequest?: UiRequest;
@@ -237,6 +239,18 @@ export class Conversation {
     const type = event.type as string;
     const now = Date.now();
     switch (type) {
+      case 'auto_retry_start':
+        this.retry = {
+          attempt: Number(event.attempt ?? 1),
+          maxAttempts: Number(event.maxAttempts ?? 0),
+          delayMs: Number(event.delayMs ?? 0),
+          errorMessage: String(event.errorMessage ?? ''),
+          since: now,
+        };
+        break;
+      case 'auto_retry_end':
+        this.retry = undefined;
+        break;
       case 'compaction_start':
         this.compaction = { reason: String(event.reason ?? 'manual') };
         break;

@@ -292,6 +292,16 @@ export default function ChatView({ conv, onRefresh, onForked }: Props) {
               </div>
             );
           })()}
+          {conv.retry && (
+            <div className="retry-banner">
+              <span className="working-dot" style={{ background: 'var(--dsw-alias-state-warn-primary)' }} />
+              <span>
+                {t('retrying', { attempt: String(conv.retry.attempt), max: String(conv.retry.maxAttempts) })}
+                {conv.retry.delayMs > 0 && ` · ${Math.round(conv.retry.delayMs / 1000)}s`}
+                {conv.retry.errorMessage && <span className="dim"> · {conv.retry.errorMessage.slice(0, 80)}</span>}
+              </span>
+            </div>
+          )}
           {conv.lastError && <div className="msg-error">{conv.lastError}</div>}
           {conv.reconnecting && <div className="msg-error">{t('reconnecting')}</div>}
           {!conv.reconnecting && !conv.connected && <div className="msg-error">{t('disconnected')}</div>}
