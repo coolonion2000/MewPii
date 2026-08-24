@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ProjectGroup, SessionSummary } from '../types';
 import type { Selection, View } from '../App';
 import { setLang, getLang, t } from '../i18n';
@@ -67,23 +67,47 @@ export default function Sidebar(props: Props) {
   const [renamingPath, setRenamingPath] = useState<string>();
   const [renameDraft, setRenameDraft] = useState('');
   const [showArchived, setShowArchived] = useState(false);
-  const [projectOrder, setProjectOrder] = useState<string[]>(() => {
-    try {
-      return JSON.parse(localStorage.getItem('pii-project-order') ?? '[]') as string[];
-    } catch {
-      return [];
-    }
-  });
+  const [projectOrder, setProjectOrder] = useState<string[]>([]);
   const dragCwd = useRef<string | undefined>(undefined);
   const importRef = useRef<HTMLInputElement>(null);
   const [openParents, setOpenParents] = useState<Set<string>>(new Set());
-  const [favs, setFavs] = useState<string[]>(() => {
-    try {
-      return JSON.parse(localStorage.getItem('pii-favs') ?? '[]') as string[];
-    } catch {
-      return [];
-    }
-  });
+  const [favs, setFavs] = useState<string[]>([]);
+  const stateLoaded = useRef(false);
+
+  useEffect(() => {
+    fetch('/api/state')
+      .then((r) => r.json())
+      .then((d: { favorites?: string[]; projectOrder?: string[] }) => {
+        const serverFavs = d.favorites ?? [];
+        const serverOrder = d.projectOrder ?? [];
+        // migrate legacy localStorage values if the server has none
+        const legacyFavs = JSON.parse(localStorage.getItem('pii-favs') ?? '[]') as string[];
+        const legacyOrder = JSON.parse(localStorage.getItem('pii-project-order') ?? '[]') as string[];
+        const mergedFavs = serverFavs.length ? serverFavs : legacyFavs;
+        const mergedOrder = serverOrder.length ? serverOrder : legacyOrder;
+        setFavs(mergedFavs);
+        setProjectOrder(mergedOrder);
+        stateLoaded.current = true;
+        if (!serverFavs.length && (legacyFavs.length || legacyOrder.length)) {
+          void fetch('/api/state', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ favorites: mergedFavs, projectOrder: mergedOrder }),
+          }).catch(() => undefined);
+        }
+      })
+      .catch(() => {
+        stateLoaded.current = true;
+      });
+  }, []);
+
+  const persistState = useCallback((favorites: string[], order: string[]) => {
+    void fetch('/api/state', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ favorites, projectOrder: order }),
+    }).catch(() => undefined);
+  }, []);
 
   useEffect(() => {
     localStorage.setItem(OPEN_KEY, JSON.stringify([...openProjects]));
@@ -92,7 +116,7 @@ export default function Sidebar(props: Props) {
   const toggleFav = (cwd: string) => {
     setFavs((prev) => {
       const next = prev.includes(cwd) ? prev.filter((c) => c !== cwd) : [...prev, cwd];
-      localStorage.setItem('pii-favs', JSON.stringify(next));
+      persistState(next, projectOrder);
       return next;
     });
   };
@@ -369,7 +393,7 @@ export default function Sidebar(props: Props) {
                   const base = sorted.map((x) => x.cwd).filter((c) => c !== from);
                   const idx = base.indexOf(p.cwd);
                   base.splice(idx === -1 ? base.length : idx, 0, from);
-                  localStorage.setItem('pii-project-order', JSON.stringify(base));
+                  persistState(favs, base);
                   return base;
                 });
               }}

@@ -201,16 +201,26 @@ const oauthFlows = new Map<string, OAuthFlow>();
 // ---------------------------------------------------------------------------
 const STATE_PATH = join(getAgentDir(), 'pii-web-state.json');
 
-async function readState(): Promise<{ archived: string[] }> {
+interface PiiState {
+  archived: string[];
+  favorites: string[];
+  projectOrder: string[];
+}
+
+async function readState(): Promise<PiiState> {
   try {
-    const doc = JSON.parse(await readFile(STATE_PATH, 'utf-8')) as { archived?: string[] };
-    return { archived: Array.isArray(doc.archived) ? doc.archived : [] };
+    const doc = JSON.parse(await readFile(STATE_PATH, 'utf-8')) as Partial<PiiState>;
+    return {
+      archived: Array.isArray(doc.archived) ? doc.archived : [],
+      favorites: Array.isArray(doc.favorites) ? doc.favorites : [],
+      projectOrder: Array.isArray(doc.projectOrder) ? doc.projectOrder : [],
+    };
   } catch {
-    return { archived: [] };
+    return { archived: [], favorites: [], projectOrder: [] };
   }
 }
 
-async function writeState(state: { archived: string[] }): Promise<void> {
+async function writeState(state: PiiState): Promise<void> {
   await writeFile(STATE_PATH, JSON.stringify(state, null, 2) + '\n');
 }
 
@@ -369,7 +379,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse): Promise<boo
     const set = new Set(state.archived);
     if (body.archived) set.add(body.path);
     else set.delete(body.path);
-    await writeState({ archived: [...set] });
+    await writeState({ ...state, archived: [...set] });
     sendJson(res, 200, { ok: true });
     return true;
   }
@@ -408,6 +418,22 @@ async function handleApi(req: IncomingMessage, res: ServerResponse): Promise<boo
       content.push(JSON.stringify(entry));
       await writeFile(body.path, content.join('\n') + '\n');
     }
+    sendJson(res, 200, { ok: true });
+    return true;
+  }
+
+  if (path === '/api/state' && req.method === 'GET') {
+    const state = await readState();
+    sendJson(res, 200, { favorites: state.favorites, projectOrder: state.projectOrder });
+    return true;
+  }
+
+  if (path === '/api/state' && req.method === 'POST') {
+    const body = JSON.parse((await readBody(req, 1024 * 1024)).toString()) as { favorites?: string[]; projectOrder?: string[] };
+    const state = await readState();
+    if (Array.isArray(body.favorites)) state.favorites = body.favorites.filter((x) => typeof x === 'string');
+    if (Array.isArray(body.projectOrder)) state.projectOrder = body.projectOrder.filter((x) => typeof x === 'string');
+    await writeState(state);
     sendJson(res, 200, { ok: true });
     return true;
   }
