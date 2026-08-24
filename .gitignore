@@ -4,3 +4,4 @@ dist/
 .DS_Store
 tsconfig.tsbuildinfo
 *.tgz
+pii-web-0.1.0-docker.tar.gz
