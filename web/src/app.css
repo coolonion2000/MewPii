@@ -630,7 +630,13 @@ body[data-ds-dark-theme] .composer:focus-within { box-shadow: 0 2px 14px rgba(0,
 
 /* favorites / project & session actions */
 .fav-star { color: var(--dsw-static-amber-500); flex-shrink: 0; }
-.project-actions { display: none; align-items: center; }
+.project-header { position: relative; }
+.project-actions {
+  display: none; align-items: center;
+  position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
+  background: var(--dsw-specific-sidebar-nav-item-hover);
+  border-radius: 6px;
+}
 .project-header:hover .project-actions { display: flex; }
 .project-header .path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
 .session-actions { display: none; align-items: center; flex-shrink: 0; }
