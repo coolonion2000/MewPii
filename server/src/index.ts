@@ -1021,7 +1021,8 @@ async function handleApi(req: IncomingMessage, res: ServerResponse): Promise<boo
       sendJson(res, 400, { error: 'missing cwd' });
       return true;
     }
-    const dir = jail(cwd, rel);
+    // read-only listing: absolute paths are allowed (agent reads beyond cwd too)
+    const dir = resolve(cwd, rel);
     const entries = await readdir(dir, { withFileTypes: true });
     const items = await Promise.all(
       entries.map(async (e) => {
@@ -1046,7 +1047,8 @@ async function handleApi(req: IncomingMessage, res: ServerResponse): Promise<boo
       sendJson(res, 400, { error: 'missing cwd or path' });
       return true;
     }
-    const file = jail(cwd, rel);
+    // read-only preview: absolute paths are allowed
+    const file = resolve(cwd, rel);
     const st = await stat(file);
     const ext = extname(file).toLowerCase();
     if (IMAGE_EXTS.has(ext)) {
