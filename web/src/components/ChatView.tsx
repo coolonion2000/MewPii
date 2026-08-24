@@ -220,26 +220,6 @@ export default function ChatView({ conv, onRefresh, onForked }: Props) {
               <div>{t('piWorksIn')} {snap?.cwd ?? conv.cwd}</div>
             </div>
           )}
-          {conv.snapshot?.isStreaming && (() => {
-            const c = conv.streaming?.content;
-            const hasContent = Array.isArray(c) && c.some(
-              (b: Record<string, unknown>) =>
-                (b.type === 'text' && String(b.text ?? '').trim()) ||
-                (b.type === 'thinking' && String(b.thinking ?? '').trim()) ||
-                b.type === 'toolCall',
-            );
-            if (hasContent) return null;
-            const elapsed = conv.runStats.agentStartedAt
-              ? Math.max(0, Math.floor((Date.now() - conv.runStats.agentStartedAt) / 1000))
-              : 0;
-            return (
-              <div className="working-indicator">
-                <span className="working-dot" />
-                <span>{t('waitingModel')}</span>
-                <span className="working-elapsed">{elapsed}秒</span>
-              </div>
-            );
-          })()}
           {allMessages.map((m, i) => (
             <MessageItem
               key={`${m._entryId ?? (m as { timestamp?: number }).timestamp ?? i}-${i}`}
@@ -292,6 +272,26 @@ export default function ChatView({ conv, onRefresh, onForked }: Props) {
               }
             />
           ))}
+          {conv.snapshot?.isStreaming && (() => {
+            const c = conv.streaming?.content;
+            const hasContent = Array.isArray(c) && c.some(
+              (b: Record<string, unknown>) =>
+                (b.type === 'text' && String(b.text ?? '').trim()) ||
+                (b.type === 'thinking' && String(b.thinking ?? '').trim()) ||
+                b.type === 'toolCall',
+            );
+            if (hasContent) return null;
+            const elapsed = conv.runStats.agentStartedAt
+              ? Math.max(0, Math.floor((Date.now() - conv.runStats.agentStartedAt) / 1000))
+              : 0;
+            return (
+              <div className="working-indicator">
+                <span className="working-dot" />
+                <span>{t('waitingModel')}</span>
+                <span className="working-elapsed">{elapsed}秒</span>
+              </div>
+            );
+          })()}
           {conv.lastError && <div className="msg-error">{conv.lastError}</div>}
           {conv.reconnecting && <div className="msg-error">{t('reconnecting')}</div>}
           {!conv.reconnecting && !conv.connected && <div className="msg-error">{t('disconnected')}</div>}
