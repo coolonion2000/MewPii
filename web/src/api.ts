@@ -111,6 +111,8 @@ export class Conversation {
   private reconnectTimer?: ReturnType<typeof setTimeout>;
   private reconnectAttempts = 0;
   runStats: RunStats = { llmMs: 0, toolMs: 0, turns: 0, steps: 0, outputChars: 0 };
+  /** Rolling delta samples {t, chars} for a recent-window rate. */
+  deltaSamples: { t: number; n: number }[] = [];
   queue = { steering: [] as string[], followUp: [] as string[] };
   /** Index of the oldest loaded message within the full branch (0 = all loaded). */
   historyFrom = 0;
@@ -249,6 +251,7 @@ export class Conversation {
         break;
       case 'agent_start':
         this.runStats = { agentStartedAt: now, llmMs: 0, toolMs: 0, turns: 0, steps: 0, outputChars: 0 };
+        this.deltaSamples = [];
         break;
       case 'turn_start':
         this.runStats.turns += 1;
@@ -275,6 +278,8 @@ export class Conversation {
           if (block) block[key] = String(block[key] ?? '') + (sub.delta ?? '');
           if (!this.runStats.firstDeltaAt) this.runStats.firstDeltaAt = now;
           this.runStats.outputChars += (sub.delta ?? '').length;
+          this.deltaSamples.push({ t: now, n: (sub.delta ?? '').length });
+          if (this.deltaSamples.length > 400) this.deltaSamples.splice(0, this.deltaSamples.length - 400);
         } else if (sub.type === 'toolcall_start') {
           content[idx] = { type: 'toolCall', id: `pending-${idx}`, name: '', arguments: {} };
         } else if (sub.type === 'toolcall_end' && sub.toolCall) {

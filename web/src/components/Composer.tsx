@@ -287,8 +287,14 @@ export default function Composer({ conv, draft, onDraft }: Props) {
             : 0;
           const estTokens = Math.round(Math.max(partialLen, run.outputChars) / 3.5);
           // pi-web style: always visible while streaming, even at zero
+          // recent-window rate (last 5s of deltas), like pi-web's live t/s
+          const nowMs = Date.now();
+          const windowMs = 5000;
+          const recentChars = conv.deltaSamples
+            .filter((d) => nowMs - d.t <= windowMs)
+            .reduce((sum, d) => sum + d.n, 0);
           const tps = run.firstDeltaAt
-            ? (estTokens / Math.max(0.5, (Date.now() - run.firstDeltaAt) / 1000)).toFixed(1)
+            ? (recentChars / 3.5 / (windowMs / 1000)).toFixed(1)
             : '0.0';
           return (
             <span className="live-counter" title={t('liveCounter')}>
