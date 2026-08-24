@@ -187,6 +187,17 @@ export class SessionHost {
       await session.bindExtensions({
         mode: 'tui',
         uiContext: {
+          // pass-through theme: extensions build status/widget text with
+          // theme.fg()/bg() etc.; on web we render plain text
+          theme: {
+            fg: (_c: string, text: string) => text,
+            bg: (_c: string, text: string) => text,
+            bold: (text: string) => text,
+            inverse: (text: string) => text,
+            italic: (text: string) => text,
+            underline: (text: string) => text,
+            strikethrough: (text: string) => text,
+          },
           custom: async () => {
             // Tool-aware custom dialog: the extension tool executing right now
             // tells us its args; render the matching web dialog and answer with

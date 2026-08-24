@@ -1,5 +1,6 @@
 import { useEffect, useReducer } from 'react';
 import type { Conversation } from '../api';
+import { stripAnsi } from '../api';
 import { t } from '../i18n';
 
 function fmtNum(n: number): string {
@@ -69,5 +70,15 @@ export default function StatsBar({ conv }: { conv: Conversation }) {
 
   if (stats?.contextPercent != null) parts.push(`${t('context')} ${Math.round(stats.contextPercent)}%`);
 
-  return <div className="stats-bar">{parts.map((p, i) => <span key={i} className="stats-seg">{p}</span>)}</div>;
+  // extension-published statuses (MCP, ADHD, LSP, ...) join the same line
+  const statusItems = Object.entries(conv.statuses).map(([key, value]) => (
+    <span key={key} className="stats-seg status-seg" title={key}>{stripAnsi(value)}</span>
+  ));
+
+  return (
+    <div className="stats-bar">
+      {parts.map((p, i) => <span key={i} className="stats-seg">{p}</span>)}
+      {statusItems}
+    </div>
+  );
 }
