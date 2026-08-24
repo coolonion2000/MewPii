@@ -282,22 +282,40 @@ export default function Composer({ conv, draft, onDraft }: Props) {
 <IconChevronDown size={12} />
           </button>
           {menuOpen === 'model' && (
-            <div className="menu" onClick={(e) => e.stopPropagation()}>
-              {configuredModels.map((m) => (
-                <button
-                  key={`${m.provider}/${m.id}`}
-                  className={`menu-item ${currentModel?.provider === m.provider && currentModel.id === m.id ? 'active' : ''}`}
-                  onClick={() => {
-                    setMenuOpen(undefined);
-                    void conv.send({ type: 'setModel', provider: m.provider, modelId: m.id }).catch(() => undefined);
-                  }}
-                >
-                  <span>{m.name}</span>
-                  <span className="dim">{m.provider}</span>
-                </button>
-              ))}
-              {configuredModels.length === 0 && (
-                <div style={{ padding: 10, fontSize: 12, color: 'var(--dsw-alias-label-tertiary)' }}>{t('noConfiguredModels')}</div>
+            <div className="menu combined-menu" onClick={(e) => e.stopPropagation()}>
+              <div className="menu-section">
+                <div className="menu-section-label">{t('selectModel')}</div>
+                {configuredModels.map((m) => (
+                  <button
+                    key={`${m.provider}/${m.id}`}
+                    className={`menu-item ${currentModel?.provider === m.provider && currentModel.id === m.id ? 'active' : ''}`}
+                    onClick={() => {
+                      void conv.send({ type: 'setModel', provider: m.provider, modelId: m.id }).catch(() => undefined);
+                    }}
+                  >
+                    <span>{m.name}</span>
+                    <span className="dim">{m.provider}</span>
+                  </button>
+                ))}
+                {configuredModels.length === 0 && (
+                  <div style={{ padding: 10, fontSize: 12, color: 'var(--dsw-alias-label-tertiary)' }}>{t('noConfiguredModels')}</div>
+                )}
+              </div>
+              {isReasoning && (
+                <div className="menu-section">
+                  <div className="menu-section-label">{t('thinkingLevel')}</div>
+                  {THINKING_LEVELS.map((level) => (
+                    <button
+                      key={level}
+                      className={`menu-item ${snap?.thinkingLevel === level ? 'active' : ''}`}
+                      onClick={() => {
+                        void conv.send({ type: 'setThinkingLevel', level }).catch(() => undefined);
+                      }}
+                    >
+                      {level}
+                    </button>
+                  ))}
+                </div>
               )}
             </div>
           )}
@@ -340,38 +358,6 @@ export default function Composer({ conv, draft, onDraft }: Props) {
             </div>
           )}
         </div>
-
-        {isReasoning && (
-          <div className="menu-anchor">
-            <button
-              className="model-chip"
-              onClick={(e) => {
-                e.stopPropagation();
-                setMenuOpen(menuOpen === 'thinking' ? undefined : 'thinking');
-              }}
-            >
-<IconThink size={14} />
-              <span className="model-chip-qualifier">{snap?.thinkingLevel ?? 'off'}</span>
-<IconChevronDown size={11} />
-            </button>
-            {menuOpen === 'thinking' && (
-              <div className="menu" onClick={(e) => e.stopPropagation()}>
-                {THINKING_LEVELS.map((level) => (
-                  <button
-                    key={level}
-                    className={`menu-item ${snap?.thinkingLevel === level ? 'active' : ''}`}
-                    onClick={() => {
-                      setMenuOpen(undefined);
-                      void conv.send({ type: 'setThinkingLevel', level }).catch(() => undefined);
-                    }}
-                  >
-                    {level}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
 
         {streaming && <span className="composer-spinner" />}
 

@@ -878,3 +878,13 @@ body:not([data-ds-dark-theme]) .hljs .hljs-number, body:not([data-ds-dark-theme]
 body:not([data-ds-dark-theme]) .hljs .hljs-title, body:not([data-ds-dark-theme]) .hljs .hljs-section, body:not([data-ds-dark-theme]) .hljs .hljs-name { color: #2563eb; }
 body:not([data-ds-dark-theme]) .hljs .hljs-built_in, body:not([data-ds-dark-theme]) .hljs .hljs-type, body:not([data-ds-dark-theme]) .hljs .hljs-class { color: #b76b01; }
 body:not([data-ds-dark-theme]) .hljs .hljs-attr, body:not([data-ds-dark-theme]) .hljs .hljs-attribute, body:not([data-ds-dark-theme]) .hljs .hljs-variable { color: #0e3074; }
+
+/* combined model+level menu */
+.combined-menu { display: flex; gap: 4px; min-width: 420px; max-width: 70vw; }
+.combined-menu .menu-section { flex: 1; min-width: 0; overflow-y: auto; max-height: 320px; }
+.combined-menu .menu-section + .menu-section { border-left: 1px solid var(--dsw-alias-border-l1); padding-left: 4px; }
+.menu-section-label {
+  font-size: 11px; font-weight: 600; color: var(--dsw-alias-label-caption);
+  padding: 6px 10px 4px; text-transform: uppercase; letter-spacing: 0.04em;
+  position: sticky; top: 0; background: var(--dsw-specific-menu);
+}
