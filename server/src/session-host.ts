@@ -309,6 +309,11 @@ export class SessionHost {
       // Keep late-joining clients consistent after meaningful state changes.
       // agent_end fires before the session manager finishes appending entries,
       // so defer the snapshot slightly; agent_settled marks full quiescence.
+      if (event.type === 'agent_start') {
+        // isStreaming must flip live: the composer stop button, queue-mode
+        // chips and the waiting-for-model indicator all read snapshot state
+        this.broadcastSnapshot();
+      }
       if (event.type === 'agent_end') {
         clearTimeout(pendingSnapshot);
         pendingSnapshot = setTimeout(() => {
