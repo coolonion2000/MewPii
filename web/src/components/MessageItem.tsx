@@ -77,8 +77,9 @@ function MessageItem({ message, streaming, toolResults, tools, onFork, onBranch,
     );
   }
 
-  if (message.role === 'toolResult') {
-    // Rendered inside the matching ToolCard.
+  if (message.role === 'toolResult' || message.role === 'custom') {
+    // toolResults render inside their ToolCard; custom entries (extension
+    // context injections like ADHD rules) are not conversation content.
     return null;
   }
 

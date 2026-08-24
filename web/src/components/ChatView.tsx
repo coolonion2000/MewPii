@@ -103,7 +103,9 @@ export default function ChatView({ conv, onRefresh, onForked, projects, onSelect
     }
   };
 
-  if (allMessages.length === 0 && !conv.snapshot?.isStreaming) {
+  // custom/system injections (e.g. ADHD ruleset) don't count as conversation
+  const hasUserMessage = allMessages.some((m) => m.role === 'user');
+  if (!hasUserMessage && !conv.snapshot?.isStreaming) {
     return (
       <>
         <div className="hero">
