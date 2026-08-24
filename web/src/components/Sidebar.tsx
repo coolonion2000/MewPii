@@ -5,7 +5,7 @@ import { setLang, getLang, t } from '../i18n';
 import {
   IconPlus, IconSearch, IconSettings, IconTrash, IconStar, IconStarFilled,
   IconArchive, IconUnarchive, IconPencil, IconFolder, IconChevronLeft,
-  IconChevronRight, IconRefresh, IconSun, IconMoon, IconExport, IconChat,
+  IconChevronRight, IconRefresh, IconSun, IconMoon, IconExport, IconChat, IconLogout,
 } from '../icons';
 
 interface Props {
@@ -25,6 +25,7 @@ interface Props {
   onRefresh: () => void;
   dark: boolean;
   onToggleTheme: () => void;
+  authRequired?: boolean;
 }
 
 function basename(cwd: string): string {
@@ -57,7 +58,7 @@ function loadOpenProjects(): Set<string> {
 export default function Sidebar(props: Props) {
   const {
     projects, archivedSessions, selection, view, collapsed, width, onStartDrag,
-    onToggleCollapse, onNavigate, onSelect, onDelete, onRename, onArchive, onRefresh, dark, onToggleTheme,
+    onToggleCollapse, onNavigate, onSelect, onDelete, onRename, onArchive, onRefresh, dark, onToggleTheme, authRequired,
   } = props;
 
   const [query, setQuery] = useState('');
@@ -434,6 +435,17 @@ export default function Sidebar(props: Props) {
         <button className="btn btn-icon" title={dark ? t('toLight') : t('toDark')} onClick={onToggleTheme}>
           {dark ? <IconSun size={14} /> : <IconMoon size={14} />}
         </button>
+        {authRequired && (
+          <button
+            className="btn btn-icon"
+            title={t('logout')}
+            onClick={() => {
+              void fetch('/api/auth/logout', { method: 'POST' }).then(() => location.assign('/login'));
+            }}
+          >
+            <IconLogout size={13} />
+          </button>
+        )}
       </div>
     </div>
   );

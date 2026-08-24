@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { randomBytes } from 'node:crypto';
 import { readFile, readdir, stat, unlink, writeFile, mkdir } from 'node:fs/promises';
 import { createReadStream, existsSync, readdirSync } from 'node:fs';
 import { execFile } from 'node:child_process';
@@ -9,6 +10,7 @@ import { DefaultPackageManager, ModelRegistry, ModelRuntime, SessionManager, Set
 import type { ClientCommand, ProjectGroup, ServerMessage } from './protocol.js';
 import { SessionHost } from './session-host.js';
 import { TunnelHub, runTunnelAgent } from './tunnel.js';
+import { loginPageHtml } from './login-page.js';
 
 // ---------------------------------------------------------------------------
 // CLI options
@@ -90,22 +92,50 @@ if (!isLoopback && !options.password) {
 // ---------------------------------------------------------------------------
 // Auth (HTTP Basic, user "pi"; browsers reuse cached credentials for WS too)
 // ---------------------------------------------------------------------------
+const sessions = new Set<string>();
+
+function parseCookies(req: IncomingMessage): Record<string, string> {
+  const out: Record<string, string> = {};
+  const header = req.headers.cookie;
+  if (!header) return out;
+  for (const part of header.split(';')) {
+    const [k, ...v] = part.trim().split('=');
+    if (k) out[k] = decodeURIComponent(v.join('='));
+  }
+  return out;
+}
+
+function passwordOk(candidate: string): boolean {
+  const expected = options.password ?? '';
+  if (candidate.length !== expected.length) return false;
+  let diff = 0;
+  for (let i = 0; i < candidate.length; i++) diff |= candidate.charCodeAt(i) ^ expected.charCodeAt(i);
+  return diff === 0;
+}
+
 function checkAuth(req: IncomingMessage): boolean {
   if (!options.password) return true;
+  // session cookie
+  const token = parseCookies(req).pii_session;
+  if (token && sessions.has(token)) return true;
+  // HTTP Basic (agents, curl, tunnel)
   const header = req.headers.authorization;
   if (!header?.startsWith('Basic ')) return false;
   const [user, pass] = Buffer.from(header.slice(6), 'base64').toString().split(':', 2);
-  // Constant-time-ish comparison without leaking length timing.
-  const expected = `pi:${options.password}`;
-  const actual = `${user}:${pass}`;
-  if (actual.length !== expected.length) return false;
-  let diff = 0;
-  for (let i = 0; i < actual.length; i++) diff |= actual.charCodeAt(i) ^ expected.charCodeAt(i);
-  return diff === 0;
+  return user === 'pi' && passwordOk(pass ?? '');
 }
 
 function requireAuth(req: IncomingMessage, res: ServerResponse): boolean {
   if (checkAuth(req)) return true;
+  const url = req.url ?? '/';
+  const isApi = url.startsWith('/api/') || url === '/ws' || url === '/tunnel';
+  if (!isApi && (req.method === 'GET' || req.method === 'HEAD')) {
+    // browser page request → pretty login page
+    const next = encodeURIComponent(url);
+    res.writeHead(302, { Location: `/login?next=${next}` });
+    res.end();
+    return false;
+  }
   res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="pii", charset="UTF-8"' });
   res.end('Authentication required');
   return false;
@@ -1045,6 +1075,46 @@ const hub = new TunnelHub();
 const server = createServer((req, res) => {
   void (async () => {
     try {
+      const url0 = new URL(req.url ?? '/', 'http://localhost');
+      if (url0.pathname === '/login') {
+        if (!options.password || checkAuth(req)) {
+          const next = url0.searchParams.get('next') || '/';
+          res.writeHead(302, { Location: next });
+          res.end();
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(loginPageHtml(url0.searchParams.get('error') === '1'));
+        return;
+      }
+      if (url0.pathname === '/api/auth/login' && req.method === 'POST') {
+        const body = JSON.parse((await readBody(req, 64 * 1024)).toString()) as { password?: string };
+        if (options.password && passwordOk(body.password ?? '')) {
+          const token = randomBytes(24).toString('hex');
+          sessions.add(token);
+          const secure = req.headers['x-forwarded-proto'] === 'https' || Boolean((req.socket as { encrypted?: boolean }).encrypted);
+          res.writeHead(200, {
+            'Content-Type': 'application/json',
+            'Set-Cookie': `pii_session=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${30 * 86400}${secure ? '; Secure' : ''}`,
+          });
+          res.end(JSON.stringify({ ok: true }));
+        } else {
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false }));
+        }
+        return;
+      }
+      if (url0.pathname === '/api/auth/logout' && req.method === 'POST') {
+        const token = parseCookies(req).pii_session;
+        if (token) sessions.delete(token);
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Set-Cookie': 'pii_session=; Path=/; HttpOnly; Max-Age=0' });
+        res.end(JSON.stringify({ ok: true }));
+        return;
+      }
+      if (url0.pathname === '/api/auth/state') {
+        sendJson(res, 200, { authRequired: Boolean(options.password), authenticated: checkAuth(req) });
+        return;
+      }
       if (!requireAuth(req, res)) return;
       if (req.url === '/api/agents') {
         sendJson(res, 200, { connected: hub.connected });

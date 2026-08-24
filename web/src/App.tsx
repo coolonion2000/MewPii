@@ -44,6 +44,7 @@ function toHash(route: Route): string {
 
 export default function App() {
   const [projects, setProjects] = useState<ProjectGroup[]>([]);
+  const [authRequired, setAuthRequired] = useState(false);
   const [archivedSessions, setArchivedSessions] = useState<SessionSummary[]>([]);
   const [route, setRouteState] = useState<Route>(parseHash);
   const [dark, setDark] = useState(() => localStorage.getItem('pii-theme') !== 'light');
@@ -111,6 +112,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    fetch('/api/auth/state').then((r) => r.json()).then((d: { authRequired?: boolean }) => setAuthRequired(Boolean(d.authRequired))).catch(() => undefined);
     refreshProjects();
     const timer = setInterval(() => {
       if (!document.hidden) refreshProjects();
@@ -266,6 +268,7 @@ export default function App() {
         onRefresh={refreshProjects}
         dark={dark}
         onToggleTheme={() => setDark((d) => !d)}
+        authRequired={authRequired}
       />
       <div className="main">
         {isSettingsish && (
