@@ -5,6 +5,7 @@ import Composer from './Composer';
 import StatsBar from './StatsBar';
 import Trajectory from './Trajectory';
 import ExtensionUI, { InlineQuestions } from './ExtensionUI';
+import FilePreview from './FilePreview';
 import { IconTrash, IconPencil, IconX } from '../icons';
 import { exportHtml } from '../export';
 import type { PiiMessage } from '../types';
@@ -24,6 +25,7 @@ export default function ChatView({ conv, onRefresh, onForked }: Props) {
   const [titleDraft, setTitleDraft] = useState('');
   const [showTraj, setShowTraj] = useState(false);
   const [draft, setDraft] = useState<string>();
+  const [previewPath, setPreviewPath] = useState<string>();
   const snap = conv.snapshot;
 
   const allMessages: PiiMessage[] = conv.streaming
@@ -152,6 +154,7 @@ export default function ChatView({ conv, onRefresh, onForked }: Props) {
         </div>
       )}
 
+      <div className="chat-body">
       {showTraj ? (
         <div className="chat-scroll">
           <Trajectory conv={conv} />
@@ -190,6 +193,7 @@ export default function ChatView({ conv, onRefresh, onForked }: Props) {
                   })
                   .catch((err) => conv.reportError(err instanceof Error ? err.message : String(err)))
               }
+              onOpenFile={(p) => setPreviewPath(p)}
               onBranch={(entryId) =>
                 void conv
                   .send({ type: 'branch', entryId })
@@ -208,6 +212,14 @@ export default function ChatView({ conv, onRefresh, onForked }: Props) {
         </div>
       </div>
       )}
+      {previewPath && (
+        <FilePreview
+          cwd={snap?.cwd ?? conv.cwd}
+          path={previewPath}
+          onClose={() => setPreviewPath(undefined)}
+        />
+      )}
+      </div>
 
       {(conv.queue.steering.length > 0 || conv.queue.followUp.length > 0) && (
         <div className="queue-strip">

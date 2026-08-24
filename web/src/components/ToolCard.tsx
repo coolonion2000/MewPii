@@ -15,6 +15,7 @@ interface Props {
   call: ToolCallBlock;
   result?: PiiMessage;
   activity?: ToolActivity;
+  onOpenFile?: (path: string) => void;
 }
 
 
@@ -107,7 +108,7 @@ function EditInput({ args }: { args: Record<string, unknown> }) {
   );
 }
 
-function ToolCard({ call, result, activity }: Props) {
+function ToolCard({ call, result, activity, onOpenFile }: Props) {
   // auto-open while the tool is running, collapse when done (unless user toggled)
   const [userToggled, setUserToggled] = useState<boolean>();
   const name = call.name ?? activity?.toolName ?? 'tool';
@@ -131,7 +132,20 @@ function ToolCard({ call, result, activity }: Props) {
       <div className="tool-card-header" onClick={() => setUserToggled(!open)}>
         <span className="tool-icon"><ToolIcon name={(name as ToolIconName) ?? 'tool'} /></span>
         <span className="tool-name">{name}</span>
-        <span className="tool-arg">{headlineArg(name, args)}</span>
+        {onOpenFile && ['read', 'write', 'edit'].includes(name) && headlineArg(name, args) ? (
+          <button
+            className="tool-arg tool-arg-link"
+            title={t('openFile')}
+            onClick={(e) => {
+              e.stopPropagation();
+              onOpenFile(headlineArg(name, args));
+            }}
+          >
+            {headlineArg(name, args)}
+          </button>
+        ) : (
+          <span className="tool-arg">{headlineArg(name, args)}</span>
+        )}
         <span className={`tool-status ${running ? 'running' : error ? 'error' : 'ok'}`} />
         <span className={`tool-chevron ${open ? 'open' : ''}`}><IconChevronRight size={11} /></span>
       </div>

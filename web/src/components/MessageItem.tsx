@@ -24,6 +24,7 @@ interface Props {
   tools: Map<string, ToolActivity>;
   onFork: (entryId: string) => void;
   onBranch: (entryId: string) => void;
+  onOpenFile?: (path: string) => void;
 }
 
 function MessageActions({ entryId, text, onFork, onBranch }: { entryId?: string; text: string; onFork: (id: string) => void; onBranch: (id: string) => void }) {
@@ -48,7 +49,7 @@ function MessageActions({ entryId, text, onFork, onBranch }: { entryId?: string;
   );
 }
 
-function MessageItem({ message, streaming, toolResults, tools, onFork, onBranch }: Props) {
+function MessageItem({ message, streaming, toolResults, tools, onFork, onBranch, onOpenFile }: Props) {
   const entryId = message._entryId;
 
   if (message.role === 'user') {
@@ -112,7 +113,7 @@ function MessageItem({ message, streaming, toolResults, tools, onFork, onBranch 
         if (b.type === 'toolCall') {
           const result = b.id ? toolResults.get(b.id) : undefined;
           const activity = b.id ? tools.get(b.id) : undefined;
-          return <ToolCard key={b.id ?? i} call={b as ToolCallBlock} result={result} activity={activity} />;
+          return <ToolCard key={b.id ?? i} call={b as ToolCallBlock} result={result} activity={activity} onOpenFile={onOpenFile} />;
         }
         return null;
       })}
