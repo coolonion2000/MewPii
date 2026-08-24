@@ -374,11 +374,10 @@ export default function Sidebar(props: Props) {
               }}
             >
               <div className="project-header" title={p.cwd} onClick={() => toggleProject(p.cwd)}>
-                {fav ? <IconStarFilled size={11} className="fav-star" /> : null}
-                <IconFolder className="folder-icon" />
+                <IconFolder className={`folder-icon ${fav ? 'fav' : ''}`} />
                 <span className="path">{basename(p.cwd)}</span>
                 <span className="project-actions" onClick={(e) => e.stopPropagation()}>
-                  <button className="btn btn-icon add-btn" title={t('pinTop')} onClick={() => toggleFav(p.cwd)}>
+                  <button className="btn btn-icon add-btn" title={fav ? t('unpin') : t('pinTop')} onClick={() => toggleFav(p.cwd)}>
                     {fav ? <IconStarFilled size={12} /> : <IconStar size={12} />}
                   </button>
                   <button className="btn btn-icon add-btn" title={t('newSession')} onClick={() => onSelect({ cwd: p.cwd })}>

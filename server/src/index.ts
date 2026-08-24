@@ -8,6 +8,7 @@ import { WebSocketServer, type WebSocket } from 'ws';
 import { DefaultPackageManager, ModelRegistry, ModelRuntime, SessionManager, SettingsManager, createAgentSessionServices, getAgentDir } from '@earendil-works/pi-coding-agent';
 import type { ClientCommand, ProjectGroup, ServerMessage } from './protocol.js';
 import { SessionHost } from './session-host.js';
+import { TunnelHub, runTunnelAgent } from './tunnel.js';
 
 // ---------------------------------------------------------------------------
 // CLI options
@@ -16,6 +17,10 @@ interface ServerOptions {
   host: string;
   port: number;
   password?: string;
+  /** Tunnel mode: URL of the hub (NAS) to dial out to, e.g. ws://nas:31041/tunnel */
+  agent?: string;
+  agentName?: string;
+  agentToken?: string;
 }
 
 function parseOptions(argv: string[]): ServerOptions {
@@ -30,6 +35,9 @@ function parseOptions(argv: string[]): ServerOptions {
     if (arg === '--host' || arg === '-H') opts.host = next();
     else if (arg === '--port' || arg === '-p') opts.port = Number(next());
     else if (arg === '--password') opts.password = next();
+    else if (arg === '--agent') opts.agent = next();
+    else if (arg === '--name') opts.agentName = next();
+    else if (arg === '--token') opts.agentToken = next();
     else if (arg === '--help' || arg === '-h') {
       console.log(`pii web — dsh-styled web UI for the pi coding agent
 
@@ -39,6 +47,9 @@ Options:
   --host, -H <host>        Listen host (default 127.0.0.1, env PII_HOST)
   --port, -p <port>        Listen port (default 31041, env PII_PORT)
   --password <password>    Basic Auth password, user "pi" (env PII_PASSWORD)
+  --agent <url>            Tunnel mode: dial out to a pii hub, e.g. ws://nas:31041/tunnel
+  --name <name>            Agent display name (tunnel mode)
+  --token <token>          Hub auth token (env PII_AGENT_TOKEN; defaults to PII_PASSWORD)
   --help, -h               Show this help
 
 Remote access: binding a non-loopback host exposes a full coding agent.
@@ -51,6 +62,16 @@ Always set a password, and prefer an HTTPS tunnel or reverse proxy
 }
 
 const options = parseOptions(process.argv.slice(2));
+options.agent = options.agent ?? process.env.PII_AGENT_SERVER;
+options.agentName = options.agentName ?? process.env.PII_AGENT_NAME;
+options.agentToken = options.agentToken ?? process.env.PII_AGENT_TOKEN ?? options.password;
+if (options.agent) {
+  // Tunnel (agent) mode: serve locally on an ephemeral loopback port and pipe
+  // all traffic through the outbound tunnel connection.
+  options.host = '127.0.0.1';
+  options.port = 0;
+  options.password = undefined;
+}
 
 // A long-running server must never die from a stray rejection (e.g. an SDK
 // edge case); log it and keep serving.
@@ -1014,12 +1035,33 @@ async function handleApi(req: IncomingMessage, res: ServerResponse): Promise<boo
 }
 
 // ---------------------------------------------------------------------------
+// Tunnel hub (agents dial in here; /api and /ws proxy to the connected agent)
+// ---------------------------------------------------------------------------
+const hub = new TunnelHub();
+
+// ---------------------------------------------------------------------------
 // HTTP + WS server
 // ---------------------------------------------------------------------------
 const server = createServer((req, res) => {
   void (async () => {
     try {
       if (!requireAuth(req, res)) return;
+      if (req.url === '/api/agents') {
+        sendJson(res, 200, { connected: hub.connected });
+        return;
+      }
+      if (req.url?.startsWith('/api/') && hub.connected) {
+        const body = await readBody(req);
+        const headers: Record<string, string> = {};
+        if (req.headers['content-type']) headers['content-type'] = String(req.headers['content-type']);
+        const result = await hub.proxyHttp(req.method ?? 'GET', req.url, headers, body);
+        if (result) {
+          const outHeaders: Record<string, string> = result.headers ?? {};
+          res.writeHead(result.status ?? 502, outHeaders);
+          res.end(Buffer.from(result.bodyB64 ?? '', 'base64'));
+          return;
+        }
+      }
       if (req.url?.startsWith('/api/')) {
         const handled = await handleApi(req, res);
         if (!handled) sendJson(res, 404, { error: 'not found' });
@@ -1043,8 +1085,19 @@ server.on('upgrade', (req, socket, head) => {
     return;
   }
   const url = new URL(req.url ?? '/', 'http://localhost');
+  if (url.pathname === '/tunnel') {
+    wss.handleUpgrade(req, socket, head, (ws) => hub.handleAgentConnection(ws));
+    return;
+  }
   if (url.pathname !== '/ws') {
     socket.destroy();
+    return;
+  }
+  if (hub.connected) {
+    // proxy the conversation socket to the connected agent
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      if (!hub.proxyWs(ws, req.url ?? '/ws')) ws.close(1001, 'agent unavailable');
+    });
     return;
   }
   wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req, url));
@@ -1094,6 +1147,18 @@ wss.on('connection', (ws: WebSocket, _req: IncomingMessage, url: URL) => {
 });
 
 server.listen(options.port, options.host, () => {
-  console.log(`pii web listening on http://${options.host}:${options.port}`);
+  const addr = server.address();
+  const port = typeof addr === 'object' && addr ? addr.port : options.port;
+  if (options.agent) {
+    console.log(`pii agent local server on 127.0.0.1:${port}, dialing hub ${options.agent}…`);
+    runTunnelAgent({
+      hubUrl: options.agent,
+      token: options.agentToken,
+      localPort: port,
+      name: options.agentName ?? process.env.HOSTNAME,
+    });
+    return;
+  }
+  console.log(`pii web listening on http://${options.host}:${port}`);
   if (!options.password) console.log('Warning: no password set (loopback-only mode).');
 });

@@ -36,6 +36,7 @@
 }
 .project-header:hover { background: var(--dsw-specific-sidebar-nav-item-hover); }
 .project-header .folder-icon { color: var(--dsw-alias-state-business-primary); flex-shrink: 0; }
+.folder-icon.fav { color: var(--dsw-static-amber-500); }
 .project-header .path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
 .project-header .add-btn { visibility: hidden; }
 .project-header:hover .add-btn { visibility: visible; }
@@ -642,6 +643,7 @@ body[data-ds-dark-theme] .composer:focus-within { box-shadow: 0 2px 14px rgba(0,
 .archived-section { margin-top: 8px; border-top: 1px solid var(--dsw-alias-border-l1); padding-top: 6px; }
 .session-item.archived .title { color: var(--dsw-alias-label-tertiary); }
 .folder-icon { color: var(--dsw-alias-state-business-primary); flex-shrink: 0; }
+.folder-icon.fav { color: var(--dsw-static-amber-500); }
 .folder-icon.dimmed { color: var(--dsw-alias-label-caption); }
 
 /* queue ops */
