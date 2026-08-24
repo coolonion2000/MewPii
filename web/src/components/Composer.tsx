@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useReducer, useRef, useState } from 'react';
 import type { Conversation } from '../api';
 import { fetchModels, type ModelsResponse } from '../api';
 import { t } from '../i18n';
@@ -30,6 +30,13 @@ export default function Composer({ conv, draft, onDraft }: Props) {
   useEffect(() => {
     fetchModels().then(setModels).catch(() => undefined);
   }, []);
+
+  const [, force] = useReducer((x: number) => x + 1, 0);
+  useEffect(() => {
+    if (!conv.snapshot?.isStreaming) return;
+    const timer = setInterval(force, 1000);
+    return () => clearInterval(timer);
+  }, [conv.snapshot?.isStreaming]);
 
   // slash commands (skills + prompt templates) for autocomplete
   const [slashItems, setSlashItems] = useState<{ cmd: string; desc: string }[]>([]);
@@ -265,6 +272,20 @@ export default function Composer({ conv, draft, onDraft }: Props) {
         )}
 
         <span style={{ flex: 1 }} />
+
+        {/* live stream counter: ↓tokens · t/s (pi-web style) */}
+        {streaming && (() => {
+          const run = conv.runStats;
+          const estTokens = Math.round(run.outputChars / 3.5);
+          const genSec = Math.max(0.5, (Date.now() - (run.firstDeltaAt ?? Date.now())) / 1000);
+          const tps = estTokens > 0 ? (estTokens / genSec).toFixed(1) : '…';
+          return (
+            <span className="live-counter" title={t('liveCounter')}>
+              ↓{estTokens > 0 ? estTokens : ''}
+              <span className="live-tps">{tps} t/s</span>
+            </span>
+          );
+        })()}
 
         {/* model + thinking combined chip, pi-web style */}
         <div className="menu-anchor">

@@ -802,3 +802,18 @@ body[data-ds-dark-theme] .composer:focus-within { box-shadow: 0 2px 14px rgba(0,
   font-size: 11.5px; color: var(--dsw-alias-label-tertiary);
 }
 .status-item { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 300px; }
+
+/* live stream counter chip */
+.live-counter {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12.5px; color: var(--dsw-alias-label-tertiary);
+  font-variant-numeric: tabular-nums;
+  padding: 4px 8px; border-radius: 8px;
+  background: var(--dsw-alias-bg-layer-2);
+}
+.live-tps {
+  font-size: 11px; font-weight: 600;
+  color: var(--dsw-alias-state-success-primary);
+  background: var(--dsw-alias-state-success-tertiary);
+  border-radius: 5px; padding: 1px 6px;
+}
