@@ -1,0 +1,60 @@
+{
+    "cap_add": [],
+    "cap_drop": [],
+    "cmd": [],
+    "cpu_priority": 50,
+    "devices": [],
+    "enable_publish_all_ports": false,
+    "enable_restart_policy": true,
+    "enabled": true,
+    "env_variables": [
+        {
+            "key": "PII_PASSWORD",
+            "value": "请改成你的强密码"
+        }
+    ],
+    "exporting": false,
+    "image": "pii-web:0.1.0",
+    "is_ddsm": false,
+    "is_package": false,
+    "links": [],
+    "memory_limit": 0,
+    "name": "pii",
+    "network": [
+        {
+            "driver": "bridge",
+            "name": "bridge"
+        }
+    ],
+    "network_mode": "bridge",
+    "port_bindings": {
+        "31041/tcp": [
+            {
+                "container_port": 31041,
+                "host_port": 31041,
+                "type": "default"
+            }
+        ]
+    },
+    "privileged": false,
+    "shortcut": {
+        "enable_shortcut": false,
+        "enable_url": false,
+        "type": "default",
+        "url": ""
+    },
+    "use_host_network": false,
+    "volume_bindings": [
+        {
+            "host_volume_file": "/pii",
+            "mount_point": "/root/.pi",
+            "type": "volume"
+        },
+        {
+            "host_volume_file": "/code",
+            "mount_point": "/code",
+            "type": "volume"
+        }
+    ],
+    "volumes_from": []
+}

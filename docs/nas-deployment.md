@@ -107,3 +107,26 @@ node server/bin/pii-web.js --agent ws://<NAS>:31041/tunnel --token '密码' --na
 - 切换后整个界面（会话、文件、模型、Git）都切到那台机器，选择记忆在浏览器
 - 同名重连自动顶替旧连接；显式选择了一个不在线的 agent 会报 502 而不是静默回退
 - `GET /api/agents`（带认证）查看在线列表
+
+
+## 群晖 Container Manager 图形界面导入
+
+镜像包 `pii-web-0.1.0-docker.tar.gz` 需要先经 SSH 装入（Container Manager 的
+导入入口只收容器配置 JSON，不收镜像）：
+
+```bash
+# SSH 到 NAS 后
+sudo docker load -i /volume1/public/pii-web-0.1.0-docker.tar.gz
+sudo docker images | grep pii-web   # 确认 pii-web:0.1.0 出现
+```
+
+然后在 Container Manager 里：
+
+1. 先建两个文件夹（File Station）：`docker/pii` 和 `docker/code`
+2. 容器 → 新增/导入，选择仓库里的 `deploy/pii-synology.json`
+3. 把环境变量里的 `请改成你的强密码` 换成真实密码
+4. 确认卷映射：`pii → /root/.pi`、`code → /code`
+5. 启动，浏览器开 `http://<NAS-IP>:31041`
+
+> 不同 DSM 版本的 JSON 字段略有差异：若导入报错，按界面提示修正，
+> 或直接用上面的 SSH `docker run` 命令（最稳）。
