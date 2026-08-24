@@ -130,3 +130,15 @@ sudo docker images | grep pii-web   # 确认 pii-web:0.1.0 出现
 
 > 不同 DSM 版本的 JSON 字段略有差异：若导入报错，按界面提示修正，
 > 或直接用上面的 SSH `docker run` 命令（最稳）。
+
+
+## 绿联 UGOS 部署
+
+1. **导入镜像**：Docker 应用 → 镜像管理 → 本地导入（上传 `pii-web-0.1.0-docker.tar.gz`）
+2. **建目录**：文件管理里建两个文件夹，如 `/docker/pii` 和 `/docker/code`
+3. **跑容器**（二选一）：
+   - **Compose 部署**（UGOS Pro 支持）：新建项目，粘贴仓库里的 `docker-compose.yml`，把 `PII_PASSWORD` 改成强密码，卷路径按上一步改
+   - **手动建容器**：镜像选 `pii-web:0.1.0`，端口 `31041→31041`，环境变量 `PII_PASSWORD=强密码`，挂载 `/docker/pii → /root/.pi`、`/docker/code → /code`
+4. 浏览器开 `http://<NAS-IP>:31041`，用户 `pi` + 密码登录
+
+> agent 的 bash 操作发生在容器文件系统里；要操作 NAS 上的真实项目就把项目目录挂进 `/code`。
