@@ -929,7 +929,11 @@ body:not([data-ds-dark-theme]) .hljs .hljs-attr, body:not([data-ds-dark-theme]) 
 .hero-logo { width: 56px; height: 56px; border-radius: 14px; box-shadow: 0 8px 28px rgba(110,49,232,0.4); }
 .hero-title { font-size: 26px; font-weight: 700; margin: 16px 0 4px; letter-spacing: -0.01em; }
 .hero-sub { font-size: 13px; color: var(--dsw-alias-label-tertiary); margin-bottom: 22px; }
-.hero-chips { display: flex; align-items: center; gap: 10px; margin-bottom: -18px; z-index: 5; }
+.hero-chips {
+  width: 720px; max-width: 92vw;
+  display: flex; align-items: center; gap: 10px;
+  margin: 0 0 8px; justify-content: flex-start;
+}
 .hero-chips .model-chip { background: var(--dsw-alias-bg-layer-1); border: 1px solid var(--dsw-alias-border-l1); }
 .hero-composer { width: 720px; max-width: 92vw; }
 .hero-composer .composer { box-shadow: 0 8px 32px rgba(0,0,0,0.10); }
