@@ -1,0 +1,32 @@
+# Third-Party Notices
+
+Pii 参考或使用了以下开源项目的成果，遵循其许可证要求保留声明：
+
+## DeepSeek Harness (dsh) — MIT License
+
+Copyright (c) 2026 DeepSeek
+
+本项目的界面设计语言（颜色色板、alias 设计 token 体系、字体字阶）提取自 dsh
+的公开主题资源（MIT）。dsh 的 LICENSE 原文见：
+https://www.npmjs.com/package/@deepseek-ai/dsh
+
+## pi coding agent — MIT License
+
+Copyright (c) earendil-works
+
+本项目通过其公开的 SDK（@earendil-works/pi-coding-agent，MIT）驱动 pi agent，
+SDK 以 npm 依赖形式使用，未复制其源码。
+
+## pi-web (@agegr/pi-web) — MIT License
+
+Copyright (c) 2026 agegr
+
+本项目的产品形态与交互设计（工作区侧边栏、子代理嵌套、扩展 widget、文件预览等）
+参考了 pi-web（MIT），未复制其源码。
+
+## Lucide Icons — ISC License
+
+Copyright (c) Lucide Contributors
+
+web/src/icons.tsx 中的部分 SVG 图标路径参考/改编自 Lucide 图标集（ISC License）。
+Lucide 许可证全文：https://lucide.dev/license

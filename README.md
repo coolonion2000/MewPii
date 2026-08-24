@@ -65,3 +65,7 @@ pi agent（与本机 pi CLI 共享 ~/.pi 配置、凭证和会话文件）
 - `server/src/index.ts` — REST（会话/模型/认证/文件/Git/资源）+ WS + 静态托管 + Basic Auth
 - `web/src/theme.css` — 完整 dsh 设计 token（static 色板 + 明暗 alias 层）
 - 与 pi CLI **共享同一份会话与配置**：在 pii 里的对话可以直接 `pi --resume` 继续，反之亦然
+
+## 许可证
+
+MIT，见 [LICENSE](LICENSE)。第三方声明见 [NOTICE](NOTICE)。

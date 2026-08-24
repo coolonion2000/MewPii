@@ -33,5 +33,6 @@
   "dependencies": {
     "@earendil-works/pi-coding-agent": "^0.84.1",
     "ws": "^8.18.0"
-  }
+  },
+  "license": "MIT"
 }
