@@ -192,6 +192,7 @@ export default function ChatView({ conv, onRefresh, onForked }: Props) {
       )}
 
       <div className="chat-body">
+      <div className="chat-main">
       {showTraj ? (
         <div className="chat-scroll">
           <Trajectory conv={conv} />
@@ -297,32 +298,6 @@ export default function ChatView({ conv, onRefresh, onForked }: Props) {
         </div>
       </div>
       )}
-      {showJump && (
-        <button
-          className="jump-bottom"
-          onClick={() => {
-            const el = scrollRef.current;
-            if (el) el.scrollTop = el.scrollHeight;
-            atBottomRef.current = true;
-            setShowJump(false);
-          }}
-        >
-          ↓ {t('jumpToBottom')}
-        </button>
-      )}
-      {previewPath && (
-        <>
-          <div className="preview-resize" onMouseDown={startPreviewDrag} />
-          <FilePreview
-            cwd={snap?.cwd ?? conv.cwd}
-            path={previewPath}
-            width={previewWidth}
-            onClose={() => setPreviewPath(undefined)}
-          />
-        </>
-      )}
-      </div>
-
       {(conv.queue.steering.length > 0 || conv.queue.followUp.length > 0) && (
         <div className="queue-strip">
           <div className="queue-header">
@@ -361,7 +336,32 @@ export default function ChatView({ conv, onRefresh, onForked }: Props) {
         <InlineQuestions conv={conv} />
         <Composer conv={conv} draft={draft} onDraft={setDraft} />
       </div>
-
+      </div>
+      {showJump && (
+        <button
+          className="jump-bottom"
+          onClick={() => {
+            const el = scrollRef.current;
+            if (el) el.scrollTop = el.scrollHeight;
+            atBottomRef.current = true;
+            setShowJump(false);
+          }}
+        >
+          ↓ {t('jumpToBottom')}
+        </button>
+      )}
+      {previewPath && (
+        <>
+          <div className="preview-resize" onMouseDown={startPreviewDrag} />
+          <FilePreview
+            cwd={snap?.cwd ?? conv.cwd}
+            path={previewPath}
+            width={previewWidth}
+            onClose={() => setPreviewPath(undefined)}
+          />
+        </>
+      )}
+      </div>
 
       <ExtensionUI conv={conv} />
     </>

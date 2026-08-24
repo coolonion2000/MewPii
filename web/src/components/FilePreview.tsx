@@ -1,8 +1,23 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import hljs from 'highlight.js/lib/common';
 import { IconX } from '../icons';
 import { t } from '../i18n';
+
+const EXT_LANG: Record<string, string> = {
+  '.js': 'javascript', '.jsx': 'javascript', '.mjs': 'javascript', '.cjs': 'javascript',
+  '.ts': 'typescript', '.tsx': 'typescript', '.mts': 'typescript',
+  '.py': 'python', '.rb': 'ruby', '.go': 'go', '.rs': 'rust',
+  '.java': 'java', '.kt': 'kotlin', '.c': 'c', '.h': 'c', '.cpp': 'cpp', '.hpp': 'cpp', '.cs': 'csharp',
+  '.sh': 'bash', '.bash': 'bash', '.zsh': 'bash',
+  '.html': 'xml', '.xml': 'xml', '.vue': 'xml', '.svg': 'xml',
+  '.css': 'css', '.scss': 'scss', '.less': 'less',
+  '.json': 'json', '.jsonl': 'json', '.ipynb': 'json',
+  '.yml': 'yaml', '.yaml': 'yaml', '.toml': 'ini', '.ini': 'ini',
+  '.sql': 'sql', '.lua': 'lua', '.swift': 'swift', '.php': 'php',
+  '.md': 'markdown', '.markdown': 'markdown',
+};
 
 interface Props {
   cwd: string;
@@ -98,16 +113,48 @@ export default function FilePreview({ cwd, path, width, onClose }: Props) {
           </div>
         )}
         {content !== undefined && (showRaw || !isMd) && (
-          <pre className="tool-pre fpp-pre">
-            {(isJson && !showRaw ? formatJson(content, ext) : content).split('\n').map((line, i) => (
-              <div key={i} className="fpp-line">
-                <span className="fpp-lineno">{i + 1}</span>
-                <span>{line || ' '}</span>
-              </div>
-            ))}
-          </pre>
+          <CodeView text={isJson && !showRaw ? formatJson(content, ext) : content} ext={ext} />
         )}
       </div>
     </div>
+  );
+}
+
+
+function CodeView({ text, ext }: { text: string; ext: string }) {
+  const html = useMemo(() => {
+    const lang = EXT_LANG[ext];
+    try {
+      if (lang && hljs.getLanguage(lang)) {
+        return hljs.highlight(text, { language: lang }).value;
+      }
+      return hljs.highlightAuto(text).value;
+    } catch {
+      return undefined;
+    }
+  }, [text, ext]);
+
+  if (html === undefined) {
+    return (
+      <pre className="tool-pre fpp-pre">
+        {text.split('\n').map((line, i) => (
+          <div key={i} className="fpp-line">
+            <span className="fpp-lineno">{i + 1}</span>
+            <span>{line || ' '}</span>
+          </div>
+        ))}
+      </pre>
+    );
+  }
+  const lines = html.split('\n');
+  return (
+    <pre className="tool-pre fpp-pre hljs">
+      {lines.map((line, i) => (
+        <div key={i} className="fpp-line">
+          <span className="fpp-lineno">{i + 1}</span>
+          <span dangerouslySetInnerHTML={{ __html: line || ' ' }} />
+        </div>
+      ))}
+    </pre>
   );
 }
