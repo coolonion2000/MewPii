@@ -142,3 +142,28 @@ sudo docker images | grep pii-web   # 确认 pii-web:0.1.0 出现
 4. 浏览器开 `http://<NAS-IP>:31041`，用户 `pi` + 密码登录
 
 > agent 的 bash 操作发生在容器文件系统里；要操作 NAS 上的真实项目就把项目目录挂进 `/code`。
+
+
+## 如果镜像管理只收 JSON（绿联/群晖新版）
+
+这些 UI 的「导入」只认容器配置 JSON，镜像本体用以下任一方式装入：
+
+**方式 A：SSH docker load（最稳）**
+
+```bash
+# UGOS：系统设置 → 其他设置 → SSH → 开启
+scp pii-web-0.1.0-docker.tar.gz 用户@<NAS-IP>:/tmp/
+ssh 用户@<NAS-IP> "sudo docker load -i /tmp/pii-web-0.1.0-docker.tar.gz"
+```
+
+然后回 UI：镜像已存在 → 用 JSON 或手动建容器。
+
+**方式 B：从仓库拉取**
+
+镜像已推 GHCR（需要有 write:packages 权限的 PAT 才能更新）：
+
+```
+ghcr.io/coolonion2000/pii-web:0.1.0
+```
+
+私有包需在 UI 里填 GHCR 用户名 + PAT。
