@@ -784,3 +784,12 @@ body[data-ds-dark-theme] .composer:focus-within { box-shadow: 0 2px 14px rgba(0,
   flex: 1; min-width: 0; text-align: left; padding: 0;
 }
 .tool-arg-link:hover { text-decoration: underline; }
+
+/* preview pane resize handle + md body */
+.preview-resize {
+  width: 7px; flex-shrink: 0; cursor: col-resize;
+  border-left: 1px solid var(--dsw-alias-border-l1);
+}
+.preview-resize:hover { background: var(--dsw-alias-state-business-primary); opacity: 0.25; }
+.file-preview-pane { border-left: none; }
+.fpp-md { padding: 4px 16px 16px; font-size: 14px; }

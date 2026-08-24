@@ -26,6 +26,27 @@ export default function ChatView({ conv, onRefresh, onForked }: Props) {
   const [showTraj, setShowTraj] = useState(false);
   const [draft, setDraft] = useState<string>();
   const [previewPath, setPreviewPath] = useState<string>();
+  const [previewWidth, setPreviewWidth] = useState(() => Number(localStorage.getItem('pii-preview-w')) || 480);
+
+  const startPreviewDrag = (e: React.MouseEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = previewWidth;
+    const onMove = (ev: MouseEvent) => {
+      const w = Math.min(window.innerWidth * 0.75, Math.max(280, startW + (startX - ev.clientX)));
+      setPreviewWidth(w);
+    };
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+      setPreviewWidth((w) => {
+        localStorage.setItem('pii-preview-w', String(Math.round(w)));
+        return w;
+      });
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  };
   const snap = conv.snapshot;
 
   const allMessages: PiiMessage[] = conv.streaming
@@ -213,11 +234,15 @@ export default function ChatView({ conv, onRefresh, onForked }: Props) {
       </div>
       )}
       {previewPath && (
-        <FilePreview
-          cwd={snap?.cwd ?? conv.cwd}
-          path={previewPath}
-          onClose={() => setPreviewPath(undefined)}
-        />
+        <>
+          <div className="preview-resize" onMouseDown={startPreviewDrag} />
+          <FilePreview
+            cwd={snap?.cwd ?? conv.cwd}
+            path={previewPath}
+            width={previewWidth}
+            onClose={() => setPreviewPath(undefined)}
+          />
+        </>
       )}
       </div>
 
