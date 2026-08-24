@@ -27,6 +27,14 @@ export default function ChatView({ conv, onRefresh, onForked }: Props) {
     return () => clearInterval(timer);
   }, [conv.snapshot?.isStreaming]);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const atBottomRef = useRef(true);
+  const [showJump, setShowJump] = useState(false);
+
+  const isNearBottom = () => {
+    const el = scrollRef.current;
+    if (!el) return true;
+    return el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+  };
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState('');
   const [showTraj, setShowTraj] = useState(false);
@@ -65,12 +73,14 @@ export default function ChatView({ conv, onRefresh, onForked }: Props) {
     if (m.role === 'toolResult') toolResults.set(String(m.toolCallId), m);
   }
 
-  // auto-scroll while streaming
+  // auto-scroll while streaming — ONLY when the user is already at the bottom;
+  // scrolling up to read history must never yank them back down
   const lastMsg = allMessages[allMessages.length - 1];
   useEffect(() => {
     const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [lastMsg, conv.streaming, conv.tools]);
+    if (el && atBottomRef.current) el.scrollTop = el.scrollHeight;
+    setShowJump(!atBottomRef.current && Boolean(conv.snapshot?.isStreaming));
+  }, [lastMsg, conv.streaming, conv.tools, conv.snapshot?.isStreaming]);
 
   const title = snap?.name || firstUserText(allMessages) || '新会话';
 
@@ -187,7 +197,14 @@ export default function ChatView({ conv, onRefresh, onForked }: Props) {
           <Trajectory conv={conv} />
         </div>
       ) : (
-      <div className="chat-scroll" ref={scrollRef}>
+      <div
+        className="chat-scroll"
+        ref={scrollRef}
+        onScroll={() => {
+          atBottomRef.current = isNearBottom();
+          if (atBottomRef.current) setShowJump(false);
+        }}
+      >
         <div className="chat-column">
           {conv.historyFrom > 0 && (
             <div style={{ display: 'flex', justifyContent: 'center' }}>
@@ -259,6 +276,19 @@ export default function ChatView({ conv, onRefresh, onForked }: Props) {
           {!conv.reconnecting && !conv.connected && <div className="msg-error">{t('disconnected')}</div>}
         </div>
       </div>
+      )}
+      {showJump && (
+        <button
+          className="jump-bottom"
+          onClick={() => {
+            const el = scrollRef.current;
+            if (el) el.scrollTop = el.scrollHeight;
+            atBottomRef.current = true;
+            setShowJump(false);
+          }}
+        >
+          ↓ {t('jumpToBottom')}
+        </button>
       )}
       {previewPath && (
         <>

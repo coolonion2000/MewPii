@@ -832,3 +832,16 @@ body[data-ds-dark-theme] .composer:focus-within { box-shadow: 0 2px 14px rgba(0,
   margin-left: 4px; padding: 1px 6px; border-radius: 4px;
   color: #fff; font-weight: 400; font-variant-numeric: tabular-nums;
 }
+
+/* jump-to-bottom pill */
+.jump-bottom {
+  position: absolute; left: 50%; bottom: 120px; transform: translateX(-50%);
+  z-index: 40;
+  border: 1px solid var(--dsw-alias-border-l2); border-radius: 99px;
+  background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary);
+  font-size: 12px; font-family: inherit;
+  padding: 6px 14px; cursor: pointer;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.18);
+}
+.jump-bottom:hover { background: var(--dsw-alias-bg-layer-3); }
+.chat-body { position: relative; }
