@@ -20,33 +20,50 @@ export type View = 'chat' | 'files' | 'models' | 'skills' | 'extensions' | 'sett
 interface Route {
   view: View;
   selection?: Selection;
+  /** Set when landing on /chat/<id> before the id is resolved to a file. */
+  pendingSessionId?: string;
 }
 
-function parseHash(): Route {
-  const m = location.hash.match(/^#\/([a-z]+)(?:\?(.+))?$/);
-  const view = (m?.[1] as View) || 'chat';
-  const params = new URLSearchParams(m?.[2] ?? '');
-  const cwd = params.get('cwd');
-  const session = params.get('session');
-  if (view === 'chat' && cwd) return { view, selection: { cwd, sessionPath: session ?? undefined } };
-  if ((view === 'files' || view === 'skills' || view === 'extensions' || view === 'models') && cwd)
-    return { view, selection: { cwd } };
-  return { view };
+const LAST_CWD_KEY = 'pii-last-cwd';
+
+/** Clean path routes: /chat/<sessionId>, /chat, /files, /settings|models|skills|extensions. */
+function parsePath(): Route {
+  const path = location.pathname;
+  // legacy hash links → translate once
+  const legacy = location.hash.match(/^#\/([a-z]+)(?:\?(.+))?$/);
+  if (legacy) {
+    const view = (legacy[1] as View) || 'chat';
+    const params = new URLSearchParams(legacy[2] ?? '');
+    const cwd = params.get('cwd');
+    const session = params.get('session');
+    history.replaceState(null, '', '/');
+    if (view === 'chat' && cwd) return { view, selection: { cwd, sessionPath: session ?? undefined } };
+    return { view: view === 'chat' ? 'chat' : view, selection: cwd ? { cwd } : undefined };
+  }
+  const m = path.match(/^\/chat\/([0-9a-f-]{8,})$/);
+  if (m) return { view: 'chat', selection: { cwd: '', sessionPath: undefined }, pendingSessionId: m[1] } as Route;
+  if (path === '/chat') return { view: 'chat' };
+  if (path === '/files') return { view: 'files' };
+  if (path === '/models') return { view: 'models' };
+  if (path === '/skills') return { view: 'skills' };
+  if (path === '/extensions') return { view: 'extensions' };
+  if (path === '/settings') return { view: 'settings' };
+  return { view: 'chat' };
 }
 
-function toHash(route: Route): string {
-  const params = new URLSearchParams();
-  if (route.selection?.cwd) params.set('cwd', route.selection.cwd);
-  if (route.selection?.sessionPath) params.set('session', route.selection.sessionPath);
-  const qs = params.toString();
-  return `#/${route.view}${qs ? `?${qs}` : ''}`;
+function toPath(route: Route, sessionId?: string): string {
+  if (route.view === 'chat') {
+    if (sessionId) return `/chat/${sessionId}`;
+    return '/chat';
+  }
+  return `/${route.view}`;
 }
 
 export default function App() {
   const [projects, setProjects] = useState<ProjectGroup[]>([]);
   const [authRequired, setAuthRequired] = useState(false);
   const [archivedSessions, setArchivedSessions] = useState<SessionSummary[]>([]);
-  const [route, setRouteState] = useState<Route>(parseHash);
+  const [route, setRouteState] = useState<Route>(parsePath);
   const [dark, setDark] = useState(() => localStorage.getItem('pii-theme') !== 'light');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(
     () => localStorage.getItem('pii-sidebar') === 'collapsed',
@@ -74,7 +91,9 @@ export default function App() {
 
   const setRoute = useCallback((r: Route) => {
     setRouteState(r);
-    history.replaceState(null, '', toHash(r));
+    if (r.selection?.cwd) localStorage.setItem(LAST_CWD_KEY, r.selection.cwd);
+    // session id is appended once the session file is known (see effect below)
+    history.replaceState(null, '', toPath(r));
   }, []);
 
   const setSelection = useCallback(
@@ -83,9 +102,9 @@ export default function App() {
   );
 
   useEffect(() => {
-    const onHash = () => setRouteState(parseHash());
-    window.addEventListener('hashchange', onHash);
-    return () => window.removeEventListener('hashchange', onHash);
+    const onPop = () => setRouteState(parsePath());
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
   }, []);
 
   const refreshProjects = useCallback(() => {
@@ -121,16 +140,52 @@ export default function App() {
   }, [refreshProjects]);
 
   const selection = route.selection;
+
+  // Resolve /chat/<id> links to a concrete session file.
+  useEffect(() => {
+    const id = route.pendingSessionId;
+    if (!id) return;
+    fetch(`/api/sessions/resolve?id=${encodeURIComponent(id)}`)
+      .then((r) => r.json())
+      .then((d: { cwd?: string; path?: string }) => {
+        if (d.cwd && d.path) {
+          setRouteState({ view: 'chat', selection: { cwd: d.cwd, sessionPath: d.path } });
+        } else {
+          setRouteState({ view: 'chat' });
+        }
+      })
+      .catch(() => setRouteState({ view: 'chat' }));
+  }, [route.pendingSessionId]);
+
+  // New sessions start in the last used directory.
+  const effectiveSelection: Selection | undefined = selection?.cwd
+    ? selection
+    : selection && route.view === 'chat'
+      ? { ...selection, cwd: localStorage.getItem(LAST_CWD_KEY) ?? projects[0]?.cwd ?? '/' }
+      : selection;
+
   // One Conversation per selection; keep the instance stable while selected.
   const conv = useMemo(() => {
-    if (route.view !== 'chat' || !selection) return undefined;
-    const c = new Conversation(selection.cwd, selection.sessionPath);
+    if (route.view !== 'chat' || !effectiveSelection?.cwd) return undefined;
+    const c = new Conversation(effectiveSelection.cwd, effectiveSelection.sessionPath);
     c.connect();
     return c;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [route.view, selection?.cwd, selection?.sessionPath]);
+  }, [route.view, effectiveSelection?.cwd, effectiveSelection?.sessionPath]);
 
   useEffect(() => () => conv?.dispose(), [conv]);
+
+  // Keep the address bar clean: /chat/<sessionId> once the file is known.
+  useEffect(() => {
+    if (route.view !== 'chat') return;
+    const file = conv?.snapshot?.sessionFile;
+    if (!file) return;
+    const m = file.match(/_([0-9a-f]{8}-[0-9a-f-]{27,})\.jsonl$/);
+    const id = m?.[1] ?? conv?.snapshot?.sessionId;
+    if (id && !location.pathname.endsWith(`/${id}`)) {
+      history.replaceState(null, '', `/chat/${id}`);
+    }
+  }, [route.view, conv?.snapshot?.sessionFile, conv?.snapshot?.sessionId]);
 
   // App-level conv subscription: only re-render on meaningful transitions
   // (stream start/stop, first message, session file change) — never per delta.
@@ -241,7 +296,7 @@ export default function App() {
     [sidebarCollapsed, sidebarWidth, toggleCollapse],
   );
 
-  const defaultCwd = selection?.cwd ?? projects[0]?.cwd ?? '/';
+  const defaultCwd = effectiveSelection?.cwd ?? projects[0]?.cwd ?? '/';
   const isSettingsish = route.view === 'settings' || route.view === 'models' || route.view === 'skills' || route.view === 'extensions';
 
   return (
@@ -311,7 +366,7 @@ export default function App() {
         {route.view === 'chat' &&
           (conv ? (
             <ChatView
-              key={`${selection?.cwd}|${selection?.sessionPath ?? 'new'}`}
+              key={`${effectiveSelection?.cwd}|${effectiveSelection?.sessionPath ?? 'new'}`}
               conv={conv}
               onRefresh={refreshProjects}
               onForked={(cwd, sessionFile) => setRoute({ view: 'chat', selection: { cwd, sessionPath: sessionFile } })}

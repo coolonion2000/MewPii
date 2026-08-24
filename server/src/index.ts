@@ -341,6 +341,22 @@ async function handleApi(req: IncomingMessage, res: ServerResponse): Promise<boo
     return true;
   }
 
+  if (path === '/api/sessions/resolve' && req.method === 'GET') {
+    const id = url.searchParams.get('id');
+    if (!id) {
+      sendJson(res, 400, { error: 'missing id' });
+      return true;
+    }
+    const all = await SessionManager.listAll();
+    const match = all.find((s) => s.id === id || s.id.startsWith(id) || id.startsWith(s.id));
+    if (!match) {
+      sendJson(res, 404, { error: 'session not found' });
+      return true;
+    }
+    sendJson(res, 200, { cwd: match.cwd, path: match.path, id: match.id });
+    return true;
+  }
+
   if (path === '/api/sessions' && req.method === 'GET') {
     const includeArchived = url.searchParams.get('includeArchived') === '1';
     const running = new Set(
