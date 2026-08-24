@@ -934,3 +934,6 @@ body:not([data-ds-dark-theme]) .hljs .hljs-attr, body:not([data-ds-dark-theme]) 
 .hero-composer { width: 720px; max-width: 92vw; }
 .hero-composer .composer { box-shadow: 0 8px 32px rgba(0,0,0,0.10); }
 body[data-ds-dark-theme] .hero-composer .composer { box-shadow: 0 8px 32px rgba(0,0,0,0.4); }
+
+/* downward-opening menu variant (hero chips) */
+.menu.menu-down { top: calc(100% + 6px); bottom: auto; }

@@ -44,6 +44,12 @@ export default function ChatView({ conv, onRefresh, onForked, projects, onSelect
   const [draft, setDraft] = useState<string>();
   const [previewPath, setPreviewPath] = useState<string>();
   const [projMenuOpen, setProjMenuOpen] = useState(false);
+  useEffect(() => {
+    if (!projMenuOpen) return;
+    const close = () => setProjMenuOpen(false);
+    window.addEventListener('click', close);
+    return () => window.removeEventListener('click', close);
+  }, [projMenuOpen]);
   const [previewWidth, setPreviewWidth] = useState(() => Number(localStorage.getItem('pii-preview-w')) || 480);
 
   const startPreviewDrag = (e: React.MouseEvent) => {
@@ -120,7 +126,7 @@ export default function ChatView({ conv, onRefresh, onForked, projects, onSelect
                 <IconChevronDown size={11} />
               </button>
               {projMenuOpen && (
-                <div className="menu" onClick={(e) => e.stopPropagation()}>
+                <div className="menu menu-down" onClick={(e) => e.stopPropagation()}>
                   {(projects ?? []).map((p) => (
                     <button
                       key={p.cwd}
