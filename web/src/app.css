@@ -944,7 +944,7 @@ body[data-ds-dark-theme] .hero-composer .composer { box-shadow: 0 8px 32px rgba(
 
 /* MewPii brand image */
 .brand-logo-wide { height: 30px; width: auto; display: block; }
-.hero-logo-wide { width: 240px; max-width: 60vw; height: auto; }
+.hero-logo-wide { width: 340px; max-width: 72vw; height: auto; }
 
 /* theme-adaptive logo (white on dark, black on light) */
 .logo-on-light { display: none; }

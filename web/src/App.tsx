@@ -425,12 +425,22 @@ export default function App() {
               onSelectProject={(cwd) => setSelection({ cwd })}
             />
           ) : (
-            <div className="empty-state">
-              <div className="big">pii</div>
-              <div>{t('selectOrNew')}</div>
-            </div>
+            <HeroLanding projects={projects} onSelect={setSelection} />
           ))}
       </div>
     </div>
   );
+}
+
+
+/** Landing view after login: jump straight into a new session (hero), no picker. */
+function HeroLanding({ projects, onSelect }: { projects: ProjectGroup[]; onSelect: (s: Selection) => void }) {
+  const done = useRef(false);
+  useEffect(() => {
+    if (done.current || projects.length === 0) return;
+    done.current = true;
+    const cwd = localStorage.getItem(LAST_CWD_KEY) ?? projects[0]?.cwd ?? '/';
+    onSelect({ cwd });
+  }, [projects, onSelect]);
+  return null;
 }
