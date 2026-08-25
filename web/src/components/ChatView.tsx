@@ -4,7 +4,7 @@ import MessageItem from './MessageItem';
 import Composer from './Composer';
 import StatsBar from './StatsBar';
 import RunsChip, { type RunInfo } from './RunsChip';
-import { addUsedSession as _u, getUsedSessions, subscribeUsedSessions } from '../used-sessions';
+import { getUsedSessions, subscribeUsedSessions } from '../used-sessions';
 import { IconFolder, IconChevronDown } from '../icons';
 import Trajectory from './Trajectory';
 import ExtensionUI, { InlineQuestions } from './ExtensionUI';

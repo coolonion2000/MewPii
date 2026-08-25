@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { Conversation } from '../api';
 import { fetchModels, type ModelsResponse } from '../api';
-import { addUsedSession } from '../used-sessions';
 import { t } from '../i18n';
 import { IconPlus, IconArrowUp, IconStop, IconThink, IconChevronDown, IconX, IconWrench } from '../icons';
 
@@ -91,12 +90,6 @@ export default function Composer({ conv, draft, onDraft }: Props) {
         message: value,
         images: imgs.length ? imgs.map(({ data, mimeType }) => ({ data, mimeType })) : undefined,
         streamingBehavior: streaming ? queueMode : undefined,
-      });
-      // record this tab's used sessions (messaged) for quick switching
-      addUsedSession({
-        cwd: conv.cwd,
-        sessionPath: conv.snapshot?.sessionFile ?? conv.sessionPath,
-        title: conv.snapshot?.name || value.slice(0, 40),
       });
     } catch (err) {
       conv.removeOptimistic(optKey);

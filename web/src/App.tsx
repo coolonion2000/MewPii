@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { Conversation, deleteSession, fetchProjects, getAgent, setAgent } from './api';
+import { addUsedSession } from './used-sessions';
 import type { ProjectGroup, SessionSummary } from './types';
 import Sidebar from './components/Sidebar';
 import ChatView from './components/ChatView';
@@ -246,6 +247,24 @@ export default function App() {
       const streaming = conv.snapshot?.isStreaming;
       const count = conv.snapshot?.messages.length ?? conv.messages.length;
       const file = conv.snapshot?.sessionFile;
+      // record "used in this tab" when a user message lands (title from the
+      // session itself: name or first user text, never the latest message)
+      const msgs = conv.messages;
+      if (count > 0 && msgs.some((m) => m.role === 'user')) {
+        const firstUser = msgs.find((m) => m.role === 'user');
+        const firstText = firstUser
+          ? typeof firstUser.content === 'string'
+            ? firstUser.content
+            : Array.isArray(firstUser.content)
+              ? (firstUser.content as { type?: string; text?: string }[]).find((b) => b.type === 'text')?.text ?? ''
+              : ''
+          : '';
+        addUsedSession({
+          cwd: conv.snapshot?.cwd ?? conv.cwd,
+          sessionPath: file ?? conv.sessionPath,
+          title: conv.snapshot?.name || firstText.slice(0, 40) || '(新会话)',
+        });
+      }
       if (streaming !== prevStreaming || (prevCount === 0 && count > 0) || file !== prevFile) {
         prevStreaming = streaming;
         prevCount = count;
