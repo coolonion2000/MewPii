@@ -293,7 +293,7 @@ export default function Composer({ conv, draft, onDraft }: Props) {
                     key={`${m.provider}/${m.id}`}
                     className={`menu-item ${currentModel?.provider === m.provider && currentModel.id === m.id ? 'active' : ''}`}
                     onClick={() => {
-                      setMenuOpen(undefined);
+                      // keep open: user usually picks the level right after
                       void conv.send({ type: 'setModel', provider: m.provider, modelId: m.id }).catch(() => undefined);
                     }}
                   >
