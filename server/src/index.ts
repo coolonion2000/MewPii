@@ -1246,7 +1246,7 @@ const server = createServer((req, res) => {
         sendJson(res, 501, { error: 'ui-only mode: no local pi runtime — connect an agent' });
         return;
       }
-      if (req.url === '/api/agents') {
+      if (url0.pathname === '/api/agents') {
         sendJson(res, 200, { connected: hub.connected, agents: hub.agentNames() });
         return;
       }
