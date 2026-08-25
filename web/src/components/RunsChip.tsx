@@ -65,7 +65,8 @@ export default function RunsChip({ onOpenRun }: { onOpenRun: (run: RunInfo) => v
   }, [open]);
 
   const active = runs.filter((r) => r.isStreaming).length;
-  if (runs.length === 0) return null;
+  // only surface the chip when something is actually running; idle hosts are noise
+  if (active === 0) return null;
   const now = Date.now();
 
   return (
