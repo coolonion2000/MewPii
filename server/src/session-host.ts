@@ -103,6 +103,8 @@ export class SessionHost {
   private activeToolCalls = new Map<string, { toolName: string; args: Record<string, unknown>; startedAt: number }>();
   /** Hook (set by index.ts) invoked on every tool execution start/end. */
   onToolExecution?: (toolName: string, phase: 'start' | 'end') => void;
+  /** Cached snapshot; invalidated by entry-changing events. */
+  private snapCache?: SessionSnapshot;
   /** Full branch message list from the latest snapshot (for history paging). */
   private lastBranch: Record<string, unknown>[] = [];
   private fileWatcher?: FSWatcher;
@@ -346,6 +348,19 @@ export class SessionHost {
     let pendingSnapshot: NodeJS.Timeout | undefined;
     this.unsubscribe = session.subscribe((event) => {
       this.broadcast({ type: 'event', event: serializeEvent(event) });
+      // entry-changing events invalidate the cached snapshot
+      if (
+        event.type === 'message_start' ||
+        event.type === 'message_end' ||
+        event.type === 'agent_start' ||
+        event.type === 'agent_end' ||
+        event.type === 'compaction_start' ||
+        event.type === 'compaction_end' ||
+        event.type === 'entry_appended' ||
+        event.type === 'queue_update'
+      ) {
+        this.snapCache = undefined;
+      }
       // Keep late-joining clients consistent after meaningful state changes.
       // agent_end fires before the session manager finishes appending entries,
       // so defer the snapshot slightly; agent_settled marks full quiescence.

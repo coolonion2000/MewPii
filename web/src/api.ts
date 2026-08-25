@@ -127,6 +127,10 @@ interface StreamSub {
   message?: PiiMessage;
 }
 
+// Last-known snapshot per conversation, shown instantly on revisit while the
+// fresh snapshot streams in (stale-while-revalidate).
+const snapshotCache = new Map<string, SessionSnapshot>();
+
 export class Conversation {
   private ws?: WebSocket;
   private listeners = new Set<() => void>();
@@ -171,7 +175,11 @@ export class Conversation {
   constructor(
     public readonly cwd: string,
     public readonly sessionPath?: string,
-  ) {}
+  ) {
+    // instant render from cache; the fresh snapshot replaces it on attach
+    const cached = snapshotCache.get(`${cwd}|${sessionPath ?? ''}`);
+    if (cached) this.applySnapshot(cached);
+  }
 
   subscribe = (fn: () => void): (() => void) => {
     this.listeners.add(fn);
@@ -233,6 +241,10 @@ export class Conversation {
 
   private handleMessage(msg: ServerMessage): void {
     if (msg.type === 'snapshot') {
+      snapshotCache.set(`${this.cwd}|${this.sessionPath ?? ''}`, msg.snapshot);
+      if (msg.snapshot.sessionFile) {
+        snapshotCache.set(`${this.cwd}|${msg.snapshot.sessionFile}`, msg.snapshot);
+      }
       this.applySnapshot(msg.snapshot);
     } else if (msg.type === 'event') {
       this.applyEvent(msg.event);
