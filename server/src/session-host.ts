@@ -281,6 +281,20 @@ export class SessionHost {
           setWorkingVisible() {},
           setWorkingIndicator() {},
           setHiddenThinkingLabel() {},
+          // remaining ExtensionUIContext members (no-ops on web; some extensions
+          // like pi-subagents call these unconditionally)
+          pasteToEditor() {},
+          setEditorText() {},
+          getEditorText() { return ''; },
+          editor() { return Promise.resolve(undefined); },
+          addAutocompleteProvider() {},
+          setEditorComponent() {},
+          getEditorComponent() { return undefined; },
+          getAllThemes() { return []; },
+          getTheme() { return undefined; },
+          setTheme() { return { success: false }; },
+          getToolsExpanded() { return false; },
+          setToolsExpanded() {},
           setWidget(key: string, content: unknown, options?: { placement?: 'aboveEditor' | 'belowEditor' }) {
             if (Array.isArray(content) && content.every((l) => typeof l === 'string')) {
               host.widgets.set(key, { key, lines: content as string[], placement: options?.placement ?? 'aboveEditor' });
