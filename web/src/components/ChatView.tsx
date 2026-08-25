@@ -216,14 +216,14 @@ export default function ChatView({ conv, onRefresh, onForked, projects, onSelect
                   {usedList.map((u) => (
                     <button
                       key={(u.sessionPath ?? '') + u.cwd}
-                      className={`menu-item ${u.sessionPath === snap?.sessionFile ? 'active' : ''}`}
+                      className={`menu-item used-item ${u.sessionPath === snap?.sessionFile ? 'active' : ''}`}
                       onClick={() => {
                         setUsedMenuOpen(false);
                         if (onForked && u.sessionPath) onForked(u.cwd, u.sessionPath);
                       }}
                     >
-                      <span>{u.title}</span>
-                      <span className="dim">{u.cwd.split('/').filter(Boolean).pop()}</span>
+                      <span className="used-title">{u.title}</span>
+                      <span className="dim used-proj">{u.cwd.split('/').filter(Boolean).pop()}</span>
                     </button>
                   ))}
                 </div>
