@@ -951,3 +951,6 @@ body[data-ds-dark-theme] .hero-composer .composer { box-shadow: 0 8px 32px rgba(
 .logo-on-dark { display: block; }
 body:not([data-ds-dark-theme]) .logo-on-dark { display: none; }
 body:not([data-ds-dark-theme]) .logo-on-light { display: block; }
+
+/* right-anchored menus: position never shifts with chip width */
+.menu.menu-right { left: auto; right: 0; }

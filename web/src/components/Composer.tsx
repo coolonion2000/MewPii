@@ -282,7 +282,7 @@ export default function Composer({ conv, draft, onDraft }: Props) {
 <IconChevronDown size={12} />
           </button>
           {menuOpen === 'model' && (
-            <div className="menu combined-menu" onClick={(e) => e.stopPropagation()}>
+            <div className="menu combined-menu menu-right" onClick={(e) => e.stopPropagation()}>
               <div className="menu-section">
                 <div className="menu-section-label">{t('selectModel')}</div>
                 {configuredModels.map((m) => (
@@ -290,6 +290,7 @@ export default function Composer({ conv, draft, onDraft }: Props) {
                     key={`${m.provider}/${m.id}`}
                     className={`menu-item ${currentModel?.provider === m.provider && currentModel.id === m.id ? 'active' : ''}`}
                     onClick={() => {
+                      setMenuOpen(undefined);
                       void conv.send({ type: 'setModel', provider: m.provider, modelId: m.id }).catch(() => undefined);
                     }}
                   >
@@ -314,6 +315,7 @@ export default function Composer({ conv, draft, onDraft }: Props) {
                         key={level}
                         className={`menu-item ${snap?.thinkingLevel === level ? 'active' : ''}`}
                         onClick={() => {
+                          setMenuOpen(undefined);
                           void conv.send({ type: 'setThinkingLevel', level }).catch(() => undefined);
                         }}
                       >
@@ -340,7 +342,7 @@ export default function Composer({ conv, draft, onDraft }: Props) {
             <IconChevronDown size={11} />
           </button>
           {menuOpen === 'tools' && (
-            <div className="menu" onClick={(e) => e.stopPropagation()}>
+            <div className="menu menu-right" onClick={(e) => e.stopPropagation()}>
               {(
                 [
                   ['off', t('toolModeOff'), t('toolModeOffDesc')],
