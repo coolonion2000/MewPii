@@ -513,28 +513,37 @@ export default function Sidebar(props: Props) {
       </div>
 
       <div className="sidebar-footer">
-        <button className={`btn btn-sm ${view === 'chat' ? 'tab-active' : ''}`} onClick={() => onNavigate('chat')}>{t('navChat')}</button>
-        <button className={`btn btn-sm ${view === 'files' ? 'tab-active' : ''}`} onClick={() => onNavigate('files')}>{t('navFiles')}</button>
-        <button className={`btn btn-sm ${view !== 'chat' && view !== 'files' ? 'tab-active' : ''}`} onClick={() => onNavigate('settings')}>{t('navSettings')}</button>
-        <span style={{ flex: 1 }} />
-        <button className="btn btn-icon" title={t('refresh')} onClick={onRefresh}><IconRefresh size={14} /></button>
-        <button className="btn btn-icon" title="Language" onClick={() => setLang(getLang() === 'zh' ? 'en' : 'zh')} style={{ fontSize: 12 }}>
-          {getLang() === 'zh' ? 'EN' : '中'}
-        </button>
-        <button className="btn btn-icon" title={dark ? t('toLight') : t('toDark')} onClick={onToggleTheme}>
-          {dark ? <IconSun size={14} /> : <IconMoon size={14} />}
-        </button>
-        {authRequired && (
-          <button
-            className="btn btn-icon"
-            title={t('logout')}
-            onClick={() => {
-              void fetch('/api/auth/logout', { method: 'POST' }).then(() => location.assign('/login'));
-            }}
-          >
-            <IconLogout size={13} />
+        <div className="footer-row">
+          <button className={`btn btn-icon ${view === 'chat' ? 'tab-active' : ''}`} title={t('navChat')} onClick={() => onNavigate('chat')}>
+            <IconChat size={15} />
           </button>
-        )}
+          <button className={`btn btn-icon ${view === 'files' ? 'tab-active' : ''}`} title={t('navFiles')} onClick={() => onNavigate('files')}>
+            <IconFolder size={15} />
+          </button>
+          <span style={{ flex: 1 }} />
+          <button className="btn btn-icon" title={t('refresh')} onClick={onRefresh}><IconRefresh size={14} /></button>
+          <button className="btn btn-icon" title="Language" onClick={() => setLang(getLang() === 'zh' ? 'en' : 'zh')} style={{ fontSize: 12 }}>
+            {getLang() === 'zh' ? 'EN' : '中'}
+          </button>
+          <button className="btn btn-icon" title={dark ? t('toLight') : t('toDark')} onClick={onToggleTheme}>
+            {dark ? <IconSun size={14} /> : <IconMoon size={14} />}
+          </button>
+        </div>
+        <div className="footer-row">
+          <button className={`btn btn-sm ${view !== 'chat' && view !== 'files' ? 'tab-active' : ''}`} onClick={() => onNavigate('settings')}>{t('navSettings')}</button>
+          <span style={{ flex: 1 }} />
+          {authRequired && (
+            <button
+              className="btn btn-icon"
+              title={t('logout')}
+              onClick={() => {
+                void fetch('/api/auth/logout', { method: 'POST' }).then(() => location.assign('/login'));
+              }}
+            >
+              <IconLogout size={13} />
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );
