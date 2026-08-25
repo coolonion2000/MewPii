@@ -310,28 +310,82 @@ export default function App() {
   );
 
   const handleRename = useCallback(
-    async (path: string, name: string) => {
-      await fetch('/api/sessions/rename', {
+    (path: string, name: string) => {
+      // optimistic: apply locally first, roll back on failure
+      const prevProjects = projects;
+      const prevArchived = archivedSessions;
+      const apply = (list: ProjectGroup[]) =>
+        list.map((g) => ({
+          ...g,
+          sessions: g.sessions.map((s) => (s.path === path ? { ...s, name } : s)),
+        }));
+      setProjects(apply(projects));
+      setArchivedSessions(archivedSessions.map((s) => (s.path === path ? { ...s, name } : s)));
+      fetch('/api/sessions/rename', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path, name }),
-      }).catch(() => undefined);
-      refreshProjects();
+      })
+        .then((r) => {
+          if (!r.ok) throw new Error(String(r.status));
+          refreshProjects();
+        })
+        .catch(() => {
+          setProjects(prevProjects);
+          setArchivedSessions(prevArchived);
+        });
     },
-    [refreshProjects],
+    [projects, archivedSessions, refreshProjects],
   );
 
   const handleArchive = useCallback(
-    async (path: string, archived: boolean) => {
-      await fetch('/api/sessions/archive', {
+    (path: string, archived: boolean) => {
+      // optimistic: move the session between lists immediately
+      const prevProjects = projects;
+      const prevArchived = archivedSessions;
+      if (archived) {
+        let moved: SessionSummary | undefined;
+        setProjects(
+          projects
+            .map((g) => {
+              const keep = g.sessions.filter((s) => {
+                if (s.path === path) moved = s;
+                return s.path !== path;
+              });
+              return { ...g, sessions: keep };
+            })
+            .filter((g) => g.sessions.length > 0),
+        );
+        if (moved) setArchivedSessions([{ ...moved, archived: true }, ...archivedSessions]);
+      } else {
+        const moved = archivedSessions.find((s) => s.path === path);
+        setArchivedSessions(archivedSessions.filter((s) => s.path !== path));
+        if (moved) {
+          setProjects(
+            projects.map((g) =>
+              g.cwd === moved.cwd
+                ? { ...g, sessions: [{ ...moved, archived: false }, ...g.sessions] }
+                : g,
+            ),
+          );
+        }
+      }
+      if (archived && selection?.sessionPath === path) setRoute({ view: 'chat' });
+      fetch('/api/sessions/archive', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path, archived }),
-      }).catch(() => undefined);
-      if (archived && selection?.sessionPath === path) setRoute({ view: 'chat' });
-      refreshProjects();
+      })
+        .then((r) => {
+          if (!r.ok) throw new Error(String(r.status));
+          refreshProjects();
+        })
+        .catch(() => {
+          setProjects(prevProjects);
+          setArchivedSessions(prevArchived);
+        });
     },
-    [selection, refreshProjects, setRoute],
+    [projects, archivedSessions, selection, refreshProjects, setRoute],
   );
 
   const startSidebarDrag = useCallback(
