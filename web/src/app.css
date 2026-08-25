@@ -1134,7 +1134,7 @@ body:not([data-ds-dark-theme]) .logo-on-light { display: block; }
 .subagent-panel-row {
   display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
   border: none; background: transparent; cursor: pointer;
-  padding: 5px 8px; border-radius: 6px; font-family: inherit;
+  padding: 4px 10px; border-radius: 6px; font-family: inherit;
 }
 .subagent-panel-row:hover { background: var(--dsw-alias-interactive-bg-hover); }
 .subagent-dot {
@@ -1142,7 +1142,7 @@ body:not([data-ds-dark-theme]) .logo-on-light { display: block; }
 }
 .subagent-dot.run { background: var(--dsw-alias-state-warn-primary); animation: pulse 1.2s ease-in-out infinite; }
 .subagent-dot.done { background: var(--dsw-alias-state-success-primary); opacity: 0.55; }
-.subagent-panel-name { flex: 1; min-width: 0; font-size: 12px; color: var(--dsw-alias-label-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.subagent-panel-name { flex: 0 1 auto; min-width: 0; font-size: 12px; color: var(--dsw-alias-label-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .subagent-panel-state { font-size: 11px; flex-shrink: 0; color: var(--dsw-alias-label-caption); }
 .subagent-panel-state.run { color: var(--dsw-alias-state-warn-label); }
 
