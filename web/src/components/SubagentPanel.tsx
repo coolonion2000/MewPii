@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { IconBot, IconX } from '../icons';
+import { IconBot, IconChevronDown } from '../icons';
 import { t } from '../i18n';
 import SubagentRunDialog from './SubagentRunDialog';
 
@@ -61,7 +61,7 @@ export default function SubagentPanel({ sessionFile, cwd, onOpenParent }: {
         <IconBot size={13} />
         <span>{runningCount > 0 ? t('subagentsRunning', { n: String(runningCount) }) : t('subagentsRecent', { n: String(runs.length) })}</span>
         <span className="spacer" />
-        <IconX size={11} style={{ transform: collapsed ? 'rotate(45deg)' : undefined }} />
+        <IconChevronDown size={12} style={{ transform: collapsed ? 'rotate(180deg)' : undefined, transition: 'transform 0.15s' }} />
       </button>
       {!collapsed && (
         <div className="subagent-panel-list">

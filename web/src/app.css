@@ -1117,16 +1117,17 @@ body:not([data-ds-dark-theme]) .logo-on-light { display: block; }
 /* subagent strip above the composer */
 .subagent-panel {
   flex-shrink: 0;
-  border-top: 1px solid var(--dsw-alias-border-l1);
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 10px;
   display: flex; flex-direction: column;
   background: var(--dsw-alias-bg-layer-1);
-  max-width: 900px; width: 100%; margin: 0 auto;
+  max-width: 860px; width: calc(100% - 24px); margin: 0 auto 6px;
 }
 .subagent-panel-head {
-  display: flex; align-items: center; gap: 6px; width: 100%;
+  display: flex; align-items: center; gap: 7px; width: 100%;
   border: none; background: transparent; cursor: pointer;
-  padding: 7px 14px; font-family: inherit; font-size: 12px; font-weight: 500;
-  color: var(--dsw-alias-label-secondary);
+  padding: 6px 12px; font-family: inherit; font-size: 12px; font-weight: 500;
+  color: var(--dsw-alias-label-secondary); border-radius: 10px;
 }
 .subagent-panel-head:hover { background: var(--dsw-alias-interactive-bg-hover); }
 .subagent-panel-list { overflow-y: auto; padding: 2px 6px 6px; max-height: 160px; }
