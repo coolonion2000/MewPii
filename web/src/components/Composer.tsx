@@ -375,7 +375,7 @@ export default function Composer({ conv, draft, onDraft }: Props) {
             title={t('abort')}
             onClick={() => void conv.send({ type: 'abort' }).catch(() => undefined)}
           >
-            <IconStop size={13} />
+            <IconStop size={16} />
           </button>
         ) : (
           <button className="send-circle" title={t('send')} disabled={!canSend} onClick={() => void submit()}>
