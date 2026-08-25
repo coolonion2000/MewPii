@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { IconBot, IconChevronDown } from '../icons';
+import { useEffect, useRef, useState } from 'react';
+import { IconChevronDown, IconBot } from '../icons';
 import { t } from '../i18n';
 import SubagentRunDialog from './SubagentRunDialog';
 
@@ -12,7 +12,7 @@ interface RunEntry {
   cwd: string;
 }
 
-/** Right-rail panel showing subagent runs of the CURRENT session. */
+/** Floating subagent indicator at the left of the composer; click to expand a popover. */
 export default function SubagentPanel({ sessionFile, cwd, onOpenParent }: {
   sessionFile?: string;
   cwd: string;
@@ -20,12 +20,8 @@ export default function SubagentPanel({ sessionFile, cwd, onOpenParent }: {
 }) {
   const [runs, setRuns] = useState<RunEntry[]>([]);
   const [dialogId, setDialogId] = useState<string>();
-  const [collapsed, setCollapsed] = useState(true);
-  const runningCount = runs.filter((r) => r.running).length;
-  useEffect(() => {
-    // auto-expand while any subagent runs, auto-collapse when all finish
-    setCollapsed(runningCount === 0);
-  }, [runningCount > 0]);
+  const [open, setOpen] = useState(false);
+  const anchorRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!sessionFile) {
@@ -53,29 +49,50 @@ export default function SubagentPanel({ sessionFile, cwd, onOpenParent }: {
     };
   }, [sessionFile]);
 
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: MouseEvent) => {
+      if (anchorRef.current && !anchorRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    window.addEventListener('mousedown', close);
+    return () => window.removeEventListener('mousedown', close);
+  }, [open]);
+
+  const runningCount = runs.filter((r) => r.running).length;
   if (runs.length === 0) return null;
 
   return (
-    <div className="subagent-panel">
-      <button className="subagent-panel-head" onClick={() => setCollapsed((c) => !c)}>
-        <IconBot size={13} />
-        <span>{runningCount > 0 ? t('subagentsRunning', { n: String(runningCount) }) : t('subagentsRecent', { n: String(runs.length) })}</span>
-        <span className="spacer" />
-        <IconChevronDown size={12} style={{ transform: collapsed ? 'rotate(180deg)' : undefined, transition: 'transform 0.15s' }} />
+    <div className="subagent-fab-anchor" ref={anchorRef}>
+      <button
+        className={`subagent-fab ${runningCount > 0 ? 'running' : ''}`}
+        title={runningCount > 0 ? t('subagentsRunning', { n: String(runningCount) }) : t('subagentsRecent', { n: String(runs.length) })}
+        onClick={() => setOpen((o) => !o)}
+      >
+        <IconChevronDown size={13} style={{ transform: 'rotate(180deg)' }} />
+        {runningCount > 0 && <span className="subagent-fab-badge">{runningCount}</span>}
       </button>
-      {!collapsed && (
-        <div className="subagent-panel-list">
-          {runs.map((r) => (
-            <button
-              key={r.path}
-              className="subagent-panel-row"
-              onClick={() => setDialogId(r.path.replace('pi-subagents-run://', ''))}
-            >
-              <span className={`subagent-dot ${r.running ? 'run' : 'done'}`} />
-              <span className="subagent-panel-name">{r.name}</span>
-              <span className={`subagent-panel-state ${r.running ? 'run' : ''}`}>{r.running ? t('running') : (r.runState ?? 'done')}</span>
-            </button>
-          ))}
+      {open && (
+        <div className="subagent-pop">
+          <div className="subagent-pop-head">
+            <IconBot size={13} />
+            <span>{runningCount > 0 ? t('subagentsRunning', { n: String(runningCount) }) : t('subagentsRecent', { n: String(runs.length) })}</span>
+          </div>
+          <div className="subagent-panel-list">
+            {runs.map((r) => (
+              <button
+                key={r.path}
+                className="subagent-panel-row"
+                onClick={() => {
+                  setOpen(false);
+                  setDialogId(r.path.replace('pi-subagents-run://', ''));
+                }}
+              >
+                <span className={`subagent-dot ${r.running ? 'run' : 'done'}`} />
+                <span className="subagent-panel-name">{r.name}</span>
+                <span className={`subagent-panel-state ${r.running ? 'run' : ''}`}>{r.running ? t('running') : (r.runState ?? 'done')}</span>
+              </button>
+            ))}
+          </div>
         </div>
       )}
       {dialogId && (
