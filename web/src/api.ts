@@ -32,11 +32,17 @@ export function withAgent(url: string): string {
 
 {
   const origFetch = window.fetch.bind(window);
-  window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
+  window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === 'string' ? input : (input instanceof Request ? input.url : String(input));
     if (typeof input === 'string' && input.startsWith('/api/')) {
       input = withAgent(input);
     }
-    return origFetch(input, init);
+    const res = await origFetch(input, init);
+    // silent 401 (e.g. session expired after server restart) → back to login
+    if (res.status === 401 && !url.startsWith('/api/auth/login')) {
+      location.assign(`/login?next=${encodeURIComponent(location.pathname + location.search)}`);
+    }
+    return res;
   };
 }
 

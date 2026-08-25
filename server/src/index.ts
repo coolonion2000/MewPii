@@ -139,7 +139,12 @@ function requireAuth(req: IncomingMessage, res: ServerResponse): boolean {
   const isApi = url.startsWith('/api/') || url === '/ws' || url === '/tunnel';
   if (isApi) {
     if (checkAuth(req)) return true;
-    res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="pii", charset="UTF-8"' });
+    // Only the tunnel endpoint challenges with Basic (machine agents use it).
+    // Browser /api 401s must be silent so the SPA can redirect to /login
+    // instead of the browser showing its native auth popup.
+    const headers: Record<string, string> = {};
+    if (url === '/tunnel') headers['WWW-Authenticate'] = 'Basic realm="pii", charset="UTF-8"';
+    res.writeHead(401, headers);
     res.end('Authentication required');
     return false;
   }
@@ -1300,7 +1305,9 @@ server.on('upgrade', (req, socket, head) => {
     return;
   }
   if (!checkAuth(req)) {
-    socket.write('HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm="pii"\r\n\r\n');
+    const urlPath = new URL(req.url ?? '/', 'http://localhost').pathname;
+    const challenge = urlPath === '/tunnel' ? '\r\nWWW-Authenticate: Basic realm="pii"' : '';
+    socket.write(`HTTP/1.1 401 Unauthorized${challenge}\r\n\r\n`);
     socket.destroy();
     return;
   }
