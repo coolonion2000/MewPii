@@ -31,13 +31,13 @@ docker run -d --name pii \
 # 从源码
 git clone <仓库> && cd Pii
 npm ci && npm run build
-PII_PASSWORD='...' node server/bin/pii-web.js --host 0.0.0.0
+PII_PASSWORD='...' node server/bin/mewpii.js --host 0.0.0.0
 
 # 或从打包产物
 npm pack                       # 生成 pii-0.1.0.tgz
 # 传到 NAS 后：
 npm install -g pii-0.1.0.tgz   # 自动装 pi SDK 依赖
-PII_PASSWORD='...' pii-web --host 0.0.0.0
+PII_PASSWORD='...' mewpii --host 0.0.0.0
 ```
 
 ## 首次使用：NAS 上的模型鉴权
@@ -74,7 +74,7 @@ docker run -d --name pii -p 31041:31041   -e PII_PASSWORD='强密码'   -v pii-p
 ```bash
 cd Pii
 npm run build
-node server/bin/pii-web.js \
+node server/bin/mewpii.js \
   --agent ws://<NAS-IP>:31041/tunnel \
   --token '强密码' \
   --name my-mac
@@ -98,9 +98,9 @@ hub 支持任意数量的 agent 同时在线，界面上可切换控制对象：
 
 ```bash
 # Mac 上
-node server/bin/pii-web.js --agent ws://<NAS>:31041/tunnel --token '密码' --name my-mac
+node server/bin/mewpii.js --agent ws://<NAS>:31041/tunnel --token '密码' --name my-mac
 # 办公机上
-node server/bin/pii-web.js --agent ws://<NAS>:31041/tunnel --token '密码' --name office-pc
+node server/bin/mewpii.js --agent ws://<NAS>:31041/tunnel --token '密码' --name office-pc
 ```
 
 - 侧边栏底部出现 agent 选择器：本机（hub 自己）+ 所有在线 agent

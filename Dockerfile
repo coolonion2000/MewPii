@@ -28,4 +28,4 @@ VOLUME /root/.pi
 EXPOSE 31041
 ENV PII_HOST=0.0.0.0 PII_PORT=31041
 # REQUIRED when listening on 0.0.0.0: PII_PASSWORD=<strong password>
-ENTRYPOINT ["node", "server/bin/pii-web.js"]
+ENTRYPOINT ["node", "server/bin/mewpii.js"]

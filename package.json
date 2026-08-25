@@ -18,7 +18,8 @@
     "concurrently": "^9.1.2"
   },
   "bin": {
-    "pii-web": "server/bin/pii-web.js"
+    "mewpii": "server/bin/mewpii.js",
+    "pii-web": "server/bin/mewpii.js"
   },
   "files": [
     "server/dist",
