@@ -359,10 +359,9 @@ export default function App() {
         onStartDrag={startSidebarDrag}
         onToggleCollapse={toggleCollapse}
         onNavigate={(view) =>
-          setRoute({
-            view,
-            selection: view === 'chat' || view === 'files' ? selection : { cwd: defaultCwd },
-          })
+          // keep the chat selection intact when visiting settings/files so
+          // coming back to chat restores the same conversation
+          setRoute({ view, selection })
         }
         onSelect={setSelection}
         onDelete={handleDelete}
