@@ -68,7 +68,7 @@ export default function RunsChip({ onOpenRun }: { onOpenRun: (run: RunInfo) => v
         {active > 0 ? t('runsActive', { n: String(active) }) : t('runsIdle', { n: String(runs.length) })}
       </button>
       {open && (
-        <div className="menu runs-panel" onClick={(e) => e.stopPropagation()}>
+        <div className="menu menu-down runs-panel" onClick={(e) => e.stopPropagation()}>
           {runs.map((r, i) => (
             <button
               key={r.sessionFile ?? i}
