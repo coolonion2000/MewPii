@@ -237,23 +237,6 @@ export default function ChatView({ conv, onRefresh, onForked, projects, onSelect
 
       <StatsBar conv={conv} />
 
-      {conv.compaction && (
-        <div className="compaction-banner">
-          <span className="composer-spinner" style={{ width: 13, height: 13 }} />
-          <span>
-            {t('compacting')}
-            <span className="dim">
-              {' · '}
-              {conv.compaction.reason === 'manual'
-                ? t('compactReasonManual')
-                : conv.compaction.reason === 'threshold'
-                  ? t('compactReasonThreshold')
-                  : t('compactReasonOverflow')}
-            </span>
-          </span>
-        </div>
-      )}
-
       <div className="chat-body">
       <div className="chat-main">
       {showTraj ? (
@@ -362,6 +345,22 @@ export default function ChatView({ conv, onRefresh, onForked, projects, onSelect
                 {t('retrying', { attempt: String(conv.retry.attempt), max: String(conv.retry.maxAttempts) })}
                 {conv.retry.delayMs > 0 && ` · ${Math.round(conv.retry.delayMs / 1000)}s`}
                 {conv.retry.errorMessage && <span className="dim"> · {conv.retry.errorMessage.slice(0, 80)}</span>}
+              </span>
+            </div>
+          )}
+          {conv.compaction && (
+            <div className="compaction-banner">
+              <span className="composer-spinner" style={{ width: 13, height: 13 }} />
+              <span>
+                {t('compacting')}
+                <span className="dim">
+                  {' · '}
+                  {conv.compaction.reason === 'manual'
+                    ? t('compactReasonManual')
+                    : conv.compaction.reason === 'threshold'
+                      ? t('compactReasonThreshold')
+                      : t('compactReasonOverflow')}
+                </span>
               </span>
             </div>
           )}

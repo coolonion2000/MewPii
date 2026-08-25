@@ -176,6 +176,12 @@ export default function Sidebar(props: Props) {
           className="sidebar-search"
           style={{ margin: `2px 0 2px ${indent + 14}px`, padding: '5px 8px', fontSize: 12.5 }}
           value={renameDraft}
+          draggable={false}
+          onDragStart={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+          }}
+          onMouseDown={(e) => e.stopPropagation()}
           onChange={(e) => setRenameDraft(e.target.value)}
           onBlur={() => setRenamingPath(undefined)}
           onKeyDown={(e) => {
