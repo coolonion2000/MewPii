@@ -21,6 +21,8 @@ interface ServerOptions {
   password?: string;
   /** Tunnel mode: URL of the hub (NAS) to dial out to, e.g. ws://nas:31041/tunnel */
   agent?: string;
+  /** UI-only mode: serve the interface + tunnel hub, never run pi locally. */
+  uiOnly?: boolean;
   agentName?: string;
   agentToken?: string;
 }
@@ -38,6 +40,7 @@ function parseOptions(argv: string[]): ServerOptions {
     else if (arg === '--port' || arg === '-p') opts.port = Number(next());
     else if (arg === '--password') opts.password = next();
     else if (arg === '--agent') opts.agent = next();
+    else if (arg === '--ui-only') opts.uiOnly = true;
     else if (arg === '--name') opts.agentName = next();
     else if (arg === '--token') opts.agentToken = next();
     else if (arg === '--help' || arg === '-h') {
@@ -49,6 +52,7 @@ Options:
   --host, -H <host>        Listen host (default 127.0.0.1, env PII_HOST)
   --port, -p <port>        Listen port (default 31041, env PII_PORT)
   --password <password>    Basic Auth password, user "pi" (env PII_PASSWORD)
+  --ui-only                UI-only mode: serve interface + tunnel hub, no local pi runtime
   --agent <url>            Tunnel mode: dial out to a pii hub, e.g. ws://nas:31041/tunnel
   --name <name>            Agent display name (tunnel mode)
   --token <token>          Hub auth token (env PII_AGENT_TOKEN; defaults to PII_PASSWORD)
@@ -160,6 +164,7 @@ function requireAuth(req: IncomingMessage, res: ServerResponse): boolean {
 const hosts = new Map<string, SessionHost>();
 
 async function acquireHost(cwd: string, sessionPath?: string): Promise<SessionHost> {
+  if (options.uiOnly) throw new Error('ui-only mode: connect an agent to use conversations');
   // Unify by live session file: a host created for a "new" session already
   // drives that file once the first prompt lands, so attaching by path must
   // find it instead of opening a second, diverging runtime over the same file.
@@ -1202,6 +1207,11 @@ const server = createServer((req, res) => {
         return;
       }
       if (!requireAuth(req, res)) return;
+      const UI_ONLY_LOCAL = ['/api/health', '/api/agents', '/api/auth/state'];
+      if (options.uiOnly && req.url?.startsWith('/api/') && !hub.connected && !UI_ONLY_LOCAL.some((p) => url0.pathname === p || url0.pathname.startsWith('/api/auth/'))) {
+        sendJson(res, 501, { error: 'ui-only mode: no local pi runtime — connect an agent' });
+        return;
+      }
       if (req.url === '/api/agents') {
         sendJson(res, 200, { connected: hub.connected, agents: hub.agentNames() });
         return;
@@ -1281,6 +1291,11 @@ server.on('upgrade', (req, socket, head) => {
     });
     return;
   }
+  if (options.uiOnly) {
+    socket.write('HTTP/1.1 503 Service Unavailable\r\n\r\n');
+    socket.destroy();
+    return;
+  }
   wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req, url));
 });
 
@@ -1340,6 +1355,6 @@ server.listen(options.port, options.host, () => {
     });
     return;
   }
-  console.log(`pii web listening on http://${options.host}:${port}`);
+  console.log(`MewPii listening on http://${options.host}:${port}${options.uiOnly ? ' (ui-only mode)' : ''}`);
   if (!options.password) console.log('Warning: no password set (loopback-only mode).');
 });
