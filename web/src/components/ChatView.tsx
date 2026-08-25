@@ -4,6 +4,7 @@ import MessageItem from './MessageItem';
 import Composer from './Composer';
 import StatsBar from './StatsBar';
 import RunsChip, { type RunInfo } from './RunsChip';
+import { addUsedSession as _u, getUsedSessions, subscribeUsedSessions } from '../used-sessions';
 import { IconFolder, IconChevronDown } from '../icons';
 import Trajectory from './Trajectory';
 import ExtensionUI, { InlineQuestions } from './ExtensionUI';
@@ -45,6 +46,16 @@ export default function ChatView({ conv, onRefresh, onForked, projects, onSelect
   const [draft, setDraft] = useState<string>();
   const [previewPath, setPreviewPath] = useState<string>();
   const [projMenuOpen, setProjMenuOpen] = useState(false);
+  const [usedMenuOpen, setUsedMenuOpen] = useState(false);
+  const [, forceUsed] = useReducer((x: number) => x + 1, 0);
+  useEffect(() => subscribeUsedSessions(forceUsed), []);
+  useEffect(() => {
+    if (!usedMenuOpen) return;
+    const close = () => setUsedMenuOpen(false);
+    window.addEventListener('click', close);
+    return () => window.removeEventListener('click', close);
+  }, [usedMenuOpen]);
+  const usedList = usedMenuOpen ? getUsedSessions() : [];
   useEffect(() => {
     if (!projMenuOpen) return;
     const close = () => setProjMenuOpen(false);
@@ -184,15 +195,39 @@ export default function ChatView({ conv, onRefresh, onForked, projects, onSelect
               }}
             />
           ) : (
-            <div
-              className="title"
-              title={t('doubleClickRename')}
-              onDoubleClick={() => {
-                setTitleDraft(snap?.name ?? title);
-                setEditingTitle(true);
-              }}
-            >
-              {title}
+            <div className="menu-anchor">
+              <button
+                className="title title-btn"
+                title={t('doubleClickRename')}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setUsedMenuOpen((o) => !o);
+                }}
+                onDoubleClick={() => {
+                  setTitleDraft(snap?.name ?? title);
+                  setEditingTitle(true);
+                }}
+              >
+                {title}
+                <IconChevronDown size={11} />
+              </button>
+              {usedMenuOpen && usedList.length > 0 && (
+                <div className="menu menu-down" onClick={(e) => e.stopPropagation()}>
+                  {usedList.map((u) => (
+                    <button
+                      key={(u.sessionPath ?? '') + u.cwd}
+                      className={`menu-item ${u.sessionPath === snap?.sessionFile ? 'active' : ''}`}
+                      onClick={() => {
+                        setUsedMenuOpen(false);
+                        if (onForked && u.sessionPath) onForked(u.cwd, u.sessionPath);
+                      }}
+                    >
+                      <span>{u.title}</span>
+                      <span className="dim">{u.cwd.split('/').filter(Boolean).pop()}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           )}
           <div className="sub" title={snap?.cwd ?? conv.cwd}>{(snap?.cwd ?? conv.cwd).split('/').filter(Boolean).pop()}</div>

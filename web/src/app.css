@@ -1022,3 +1022,13 @@ body:not([data-ds-dark-theme]) .logo-on-light { display: block; }
 .run-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .run-meta { font-size: 11px; color: var(--dsw-alias-label-tertiary); white-space: nowrap; }
 .run-dur { font-size: 11px; color: var(--dsw-alias-label-caption); white-space: nowrap; }
+
+/* title dropdown button */
+.title-btn {
+  border: none; background: transparent; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 5px;
+  font-family: inherit; font-weight: 600; font-size: 14px;
+  color: var(--dsw-alias-label-primary);
+  padding: 3px 7px; border-radius: 6px; max-width: 100%;
+}
+.title-btn:hover { background: var(--dsw-alias-interactive-bg-hover); }
