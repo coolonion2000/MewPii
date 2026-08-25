@@ -429,6 +429,34 @@ async function handleApi(req: IncomingMessage, res: ServerResponse): Promise<boo
     const state = await readState();
     const archivedSet = new Set(state.archived);
     const all = await SessionManager.listAll();
+    // pi defers writing a new session file until the first assistant reply —
+    // merge live hosts so not-yet-flushed sessions appear in the sidebar now.
+    const known = new Set(all.map((s) => s.path));
+    for (const h of [...hosts.values()]) {
+      const file = h.session.sessionFile;
+      if (!file || known.has(file)) continue;
+      const snap = h.snapshot();
+      const firstUser = snap.messages.find((m) => m.role === 'user');
+      const firstText = firstUser
+        ? typeof firstUser.content === 'string'
+          ? firstUser.content
+          : Array.isArray(firstUser.content)
+            ? (firstUser.content as { type?: string; text?: string }[]).find((b) => b.type === 'text')?.text ?? ''
+            : ''
+        : '';
+      known.add(file);
+      all.push({
+        path: file,
+        id: String((h.session as unknown as { sessionId?: string }).sessionId ?? file),
+        cwd: h.cwd,
+        name: snap.name,
+        created: new Date(),
+        modified: new Date(),
+        messageCount: snap.messages.length,
+        firstMessage: firstText,
+        allMessagesText: firstText,
+      });
+    }
     const byCwd = new Map<string, ProjectGroup>();
     for (const s of all) {
       if (!includeArchived && archivedSet.has(s.path)) continue;
