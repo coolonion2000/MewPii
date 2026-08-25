@@ -36,6 +36,12 @@ function basename(cwd: string): string {
   return parts[parts.length - 1] ?? cwd;
 }
 
+/** dsh-style: titles truncate to the first N characters with an ellipsis. */
+function shortTitle(text: string, n = 12): string {
+  const t = text.trim();
+  return t.length > n ? `${t.slice(0, n)}…` : t;
+}
+
 function relTime(iso: string): string {
   const diff = Date.now() - Date.parse(iso);
   const m = Math.floor(diff / 60_000);
@@ -218,7 +224,7 @@ export default function Sidebar(props: Props) {
           <span className="sub-chevron-placeholder" />
         )}
         <span className={`status-dot ${s.running ? 'on' : ''}`} />
-        <span className="title">{s.name || s.firstMessage || '(空会话)'}</span>
+        <span className="title" title={s.name || s.firstMessage}>{shortTitle(s.name || s.firstMessage || '(空会话)')}</span>
         {kids && <span className="sub-count">{kids.count}</span>}
         <span className="time">{relTime(s.modified)}</span>
         <span className="session-actions" onClick={(e) => e.stopPropagation()}>
@@ -455,7 +461,7 @@ export default function Sidebar(props: Props) {
               archivedSessions.map((s) => (
                 <div key={s.path} className="session-item archived">
                   <span className="status-dot" />
-                  <span className="title">{s.name || s.firstMessage || '(空会话)'}</span>
+                  <span className="title" title={s.name || s.firstMessage}>{shortTitle(s.name || s.firstMessage || '(空会话)')}</span>
                   <span className="time">{relTime(s.modified)}</span>
                   <span className="session-actions" onClick={(e) => e.stopPropagation()}>
                     <button className="btn btn-icon btn-sm" title={t('unarchive')} onClick={() => onArchive(s.path, false)}>
