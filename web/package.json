@@ -9,6 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "fflate": "^0.8.3",
     "highlight.js": "^11.12.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
