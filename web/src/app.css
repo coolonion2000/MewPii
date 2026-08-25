@@ -1124,9 +1124,11 @@ body:not([data-ds-dark-theme]) .logo-on-light { display: block; }
   border: 1px solid var(--dsw-alias-border-l2);
   background: var(--dsw-alias-bg-layer-1);
   color: var(--dsw-alias-label-tertiary);
-  display: grid; place-items: center; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  padding: 0; cursor: pointer;
   transition: background 0.15s, color 0.15s;
 }
+.subagent-fab svg { display: block; }
 .subagent-fab:hover { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
 .subagent-fab.running { color: var(--dsw-alias-state-warn-primary); border-color: var(--dsw-alias-state-warn-primary); }
 .subagent-fab-badge {
