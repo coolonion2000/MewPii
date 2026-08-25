@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { getAgent } from '../api';
 import { IconFolder, IconX } from '../icons';
 import { t } from '../i18n';
 
@@ -38,9 +39,10 @@ export default function DirectoryPicker({ initialPath, onPick, onClose }: Props)
       .catch((e) => setError(String(e)));
   }, []);
 
+  const agent = getAgent();
   useEffect(() => {
-    load(cwd);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    load(initialPath || HOME);
+  }, [agent]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const crumbs = cwd.split('/').filter(Boolean);
 
@@ -50,6 +52,7 @@ export default function DirectoryPicker({ initialPath, onPick, onClose }: Props)
         <div className="dp-head">
           <IconFolder size={15} />
           <h3>{t('pickFolder')}</h3>
+          {agent && <span className="tag">{agent}</span>}
           <span className="spacer" />
           <button className="btn btn-icon" onClick={onClose}><IconX size={13} /></button>
         </div>
