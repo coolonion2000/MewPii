@@ -71,9 +71,9 @@ export default function SubagentPanel({ sessionFile, cwd, onOpenParent }: {
               className="subagent-panel-row"
               onClick={() => setDialogId(r.path.replace('pi-subagents-run://', ''))}
             >
-              <span className={`running-dot ${r.running ? '' : 'idle'}`} style={{ width: 6, height: 6, flexShrink: 0 }} />
+              <span className={`subagent-dot ${r.running ? 'run' : 'done'}`} />
               <span className="subagent-panel-name">{r.name}</span>
-              <span className="subagent-panel-state dim">{r.running ? t('running') : (r.runState ?? 'done')}</span>
+              <span className={`subagent-panel-state ${r.running ? 'run' : ''}`}>{r.running ? t('running') : (r.runState ?? 'done')}</span>
             </button>
           ))}
         </div>
