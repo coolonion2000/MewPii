@@ -130,6 +130,9 @@ export class Conversation {
   snapshot?: SessionSnapshot;
   /** Finalized messages (from snapshot / message_end). */
   messages: PiiMessage[] = [];
+  /** Optimistically rendered user messages awaiting server echo (remote latency). */
+  optimistic: { key: number; text: string; message: PiiMessage }[] = [];
+  private optimisticSeq = 0;
   /** In-flight assistant message being streamed. */
   streaming?: PiiMessage;
   /** Live tool execution states keyed by toolCallId. */
@@ -338,6 +341,17 @@ export class Conversation {
       case 'message_end': {
         const message = event.message as PiiMessage | undefined;
         if (!message) break;
+        if (message.role === 'user' && this.optimistic.length > 0) {
+          const text = typeof message.content === 'string'
+            ? message.content
+            : Array.isArray(message.content)
+              ? (message.content as { type?: string; text?: string }[]).filter((b) => b.type === 'text').map((b) => b.text ?? '').join('')
+              : '';
+          const idx = this.optimistic.findIndex((o) => o.text === text);
+          if (idx !== -1) {
+            this.optimistic = [...this.optimistic.slice(0, idx), ...this.optimistic.slice(idx + 1)];
+          }
+        }
         if (message.role === 'assistant') this.streaming = undefined;
         // Avoid duplicates when a snapshot already carried this message.
         const last = this.messages[this.messages.length - 1];
@@ -404,6 +418,28 @@ export class Conversation {
       this.toasts = this.toasts.filter((t) => t.id !== id);
       this.emit();
     }, 4000);
+    this.emit();
+  }
+
+  /** Immediately render a user message locally; deduped when the server echoes it. */
+  addOptimistic(text: string, images?: { data: string; mimeType: string }[]): number {
+    const key = ++this.optimisticSeq;
+    const content = images?.length
+      ? [
+          ...images.map((img) => ({ type: 'image', data: img.data, mimeType: img.mimeType })),
+          ...(text ? [{ type: 'text', text }] : []),
+        ]
+      : text;
+    this.optimistic = [
+      ...this.optimistic,
+      { key, text, message: { role: 'user', content, timestamp: Date.now(), _pending: true } as PiiMessage },
+    ];
+    this.emit();
+    return key;
+  }
+
+  removeOptimistic(key: number): void {
+    this.optimistic = this.optimistic.filter((o) => o.key !== key);
     this.emit();
   }
 

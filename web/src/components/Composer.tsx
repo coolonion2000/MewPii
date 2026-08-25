@@ -82,6 +82,8 @@ export default function Composer({ conv, draft, onDraft }: Props) {
     setText('');
     setImages([]);
     requestAnimationFrame(autoResize);
+    // optimistic render: show the message now, not after the server round-trip
+    const optKey = conv.addOptimistic(value, imgs.map(({ data, mimeType }) => ({ data, mimeType })));
     try {
       await conv.send({
         type: 'prompt',
@@ -90,6 +92,7 @@ export default function Composer({ conv, draft, onDraft }: Props) {
         streamingBehavior: streaming ? queueMode : undefined,
       });
     } catch (err) {
+      conv.removeOptimistic(optKey);
       setText(value);
       setImages(imgs);
       conv.lastError = err instanceof Error ? err.message : String(err);

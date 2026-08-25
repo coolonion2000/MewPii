@@ -73,9 +73,13 @@ export default function ChatView({ conv, onRefresh, onForked, projects, onSelect
   };
   const snap = conv.snapshot;
 
+  const baseMessages: PiiMessage[] = [
+    ...conv.messages,
+    ...conv.optimistic.map((o) => o.message),
+  ];
   const allMessages: PiiMessage[] = conv.streaming
-    ? [...conv.messages, conv.streaming]
-    : conv.messages;
+    ? [...baseMessages, conv.streaming]
+    : baseMessages;
 
   // toolCallId → toolResult message
   const toolResults = new Map<string, PiiMessage>();
