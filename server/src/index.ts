@@ -626,6 +626,9 @@ async function handleApi(req: IncomingMessage, res: ServerResponse): Promise<boo
       if (!file || known.has(file)) continue;
       const snap = h.snapshot();
       const firstUser = snap.messages.find((m) => m.role === 'user');
+      // a bare hero-page attach creates an empty host — don't list it until
+      // the user actually sends something
+      if (!firstUser) continue;
       const firstText = firstUser
         ? typeof firstUser.content === 'string'
           ? firstUser.content
