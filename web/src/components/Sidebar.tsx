@@ -224,7 +224,7 @@ export default function Sidebar(props: Props) {
           <span className="sub-chevron-placeholder" />
         )}
         <span className={`status-dot ${s.running ? 'on' : ''}`} />
-        <span className="title" title={s.name || s.firstMessage}>{shortTitle(s.name || s.firstMessage || '(空会话)')}</span>
+        <span className="title" title={s.name || s.firstMessage}>{s.name || s.firstMessage || '(空会话)'}</span>
         {kids && <span className="sub-count">{kids.count}</span>}
         <span className="time">{relTime(s.modified)}</span>
         <span className="session-actions" onClick={(e) => e.stopPropagation()}>
@@ -461,7 +461,7 @@ export default function Sidebar(props: Props) {
               archivedSessions.map((s) => (
                 <div key={s.path} className="session-item archived">
                   <span className="status-dot" />
-                  <span className="title" title={s.name || s.firstMessage}>{shortTitle(s.name || s.firstMessage || '(空会话)')}</span>
+                  <span className="title" title={s.name || s.firstMessage}>{s.name || s.firstMessage || '(空会话)'}</span>
                   <span className="time">{relTime(s.modified)}</span>
                   <span className="session-actions" onClick={(e) => e.stopPropagation()}>
                     <button className="btn btn-icon btn-sm" title={t('unarchive')} onClick={() => onArchive(s.path, false)}>

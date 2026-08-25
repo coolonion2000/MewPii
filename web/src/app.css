@@ -58,7 +58,7 @@
 }
 .session-item .title {
   flex: 1; min-width: 0;
-  font: var(--dsw-font-xs-13); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 14px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   color: var(--dsw-alias-label-primary);
 }
 .session-item .time {
