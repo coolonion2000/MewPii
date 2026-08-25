@@ -457,16 +457,16 @@ export default function ChatView({ conv, onRefresh, onForked, projects, onSelect
           ↓ {t('jumpToBottom')}
         </button>
       )}
-      <div className="composer-wrap">
-        <InlineQuestions conv={conv} />
-        <Composer conv={conv} draft={draft} onDraft={setDraft} />
-      </div>
-      </div>
       <SubagentPanel
         sessionFile={snap?.sessionFile}
         cwd={snap?.cwd ?? conv.cwd}
         onOpenParent={onForked}
       />
+      <div className="composer-wrap">
+        <InlineQuestions conv={conv} />
+        <Composer conv={conv} draft={draft} onDraft={setDraft} />
+      </div>
+      </div>
       {previewPath && (
         <>
           <div className="preview-resize" onMouseDown={startPreviewDrag} />

@@ -20,7 +20,12 @@ export default function SubagentPanel({ sessionFile, cwd, onOpenParent }: {
 }) {
   const [runs, setRuns] = useState<RunEntry[]>([]);
   const [dialogId, setDialogId] = useState<string>();
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(true);
+  const runningCount = runs.filter((r) => r.running).length;
+  useEffect(() => {
+    // auto-expand while any subagent runs, auto-collapse when all finish
+    setCollapsed(runningCount === 0);
+  }, [runningCount > 0]);
 
   useEffect(() => {
     if (!sessionFile) {
@@ -32,7 +37,11 @@ export default function SubagentPanel({ sessionFile, cwd, onOpenParent }: {
       fetch(`/api/subagent-runs?parent=${encodeURIComponent(sessionFile)}`)
         .then((r) => r.json())
         .then((d: { runs?: RunEntry[] }) => {
-          if (alive) setRuns(d.runs ?? []);
+          if (alive) {
+            const list = d.runs ?? [];
+            list.sort((a, b) => Number(b.running ?? false) - Number(a.running ?? false));
+            setRuns(list);
+          }
         })
         .catch(() => undefined);
     };
@@ -45,7 +54,6 @@ export default function SubagentPanel({ sessionFile, cwd, onOpenParent }: {
   }, [sessionFile]);
 
   if (runs.length === 0) return null;
-  const runningCount = runs.filter((r) => r.running).length;
 
   return (
     <div className="subagent-panel">
