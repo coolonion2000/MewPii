@@ -906,7 +906,7 @@ body:not([data-ds-dark-theme]) .hljs .hljs-attr, body:not([data-ds-dark-theme]) 
 }
 
 /* brand row + big new-session button (dsh style) */
-.brand-row { display: flex; align-items: center; gap: 8px; padding: 12px 12px 10px 14px; }
+.brand-row { display: flex; align-items: center; gap: 8px; padding: 14px 12px 12px 14px; }
 .brand-logo { width: 24px; height: 24px; border-radius: 6px; display: block; }
 .brand-name { font-size: 15px; font-weight: 700; letter-spacing: -0.01em; }
 .new-session-btn {
@@ -943,7 +943,7 @@ body[data-ds-dark-theme] .hero-composer .composer { box-shadow: 0 8px 32px rgba(
 .menu.menu-down { top: calc(100% + 6px); bottom: auto; }
 
 /* MewPii brand image */
-.brand-logo-wide { height: 22px; width: auto; display: block; }
+.brand-logo-wide { height: 30px; width: auto; display: block; }
 .hero-logo-wide { width: 240px; max-width: 60vw; height: auto; }
 
 /* theme-adaptive logo (white on dark, black on light) */
