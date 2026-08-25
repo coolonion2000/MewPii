@@ -60,6 +60,30 @@ function toPath(route: Route, sessionId?: string): string {
   return `/${route.view}`;
 }
 
+const PROJECTS_CACHE_KEY = 'pii-projects-cache';
+
+interface ProjectsCache {
+  projects: ProjectGroup[];
+  archivedSessions: SessionSummary[];
+  at: number;
+}
+
+function loadProjectsCache(): ProjectsCache | undefined {
+  try {
+    const raw = localStorage.getItem(PROJECTS_CACHE_KEY);
+    if (!raw) return undefined;
+    return JSON.parse(raw) as ProjectsCache;
+  } catch {
+    return undefined;
+  }
+}
+
+function saveProjectsCache(projects: ProjectGroup[], archivedSessions: SessionSummary[]): void {
+  try {
+    localStorage.setItem(PROJECTS_CACHE_KEY, JSON.stringify({ projects, archivedSessions, at: Date.now() }));
+  } catch { /* quota */ }
+}
+
 export default function App() {
   const [projects, setProjects] = useState<ProjectGroup[]>([]);
   const [authRequired, setAuthRequired] = useState(false);
