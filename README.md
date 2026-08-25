@@ -1,4 +1,4 @@
-# pii
+# MewPii
 
 [pi coding agent](https://github.com/earendil-works/pi) 的 Web 界面，视觉风格对齐 [DeepSeek Harness (dsh)](https://www.npmjs.com/package/@deepseek-ai/dsh)，功能由 pi SDK 直接驱动。
 

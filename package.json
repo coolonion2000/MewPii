@@ -1,8 +1,8 @@
 {
-  "name": "pii",
+  "name": "mewpii",
   "version": "0.1.0",
   "private": true,
-  "description": "A dsh-styled web UI for the pi coding agent",
+  "description": "MewPii — a dsh-styled web UI for the pi coding agent",
   "type": "module",
   "workspaces": [
     "server",

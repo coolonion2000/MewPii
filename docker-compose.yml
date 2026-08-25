@@ -1,6 +1,6 @@
 version: "3.8"
 services:
-  pii:
+  mewpii:
     build: .
     ports:
       - "31041:31041"

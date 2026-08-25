@@ -41,7 +41,7 @@ function parseOptions(argv: string[]): ServerOptions {
     else if (arg === '--name') opts.agentName = next();
     else if (arg === '--token') opts.agentToken = next();
     else if (arg === '--help' || arg === '-h') {
-      console.log(`pii web — dsh-styled web UI for the pi coding agent
+      console.log(`MewPii — dsh-styled web UI for the pi coding agent
 
 Usage: pii-web [options]
 

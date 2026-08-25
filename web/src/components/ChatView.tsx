@@ -99,9 +99,9 @@ export default function ChatView({ conv, onRefresh, onForked, projects, onSelect
   const title = snap?.name || firstUserText(allMessages) || '新会话';
 
   useEffect(() => {
-    document.title = `Pii - ${title}`;
+    document.title = `MewPii - ${title}`;
     return () => {
-      document.title = 'Pii';
+      document.title = 'MewPii';
     };
   }, [title]);
 
