@@ -105,7 +105,7 @@ export default function ChatView({ conv, onRefresh, onForked, projects, onSelect
   useEffect(() => {
     const el = scrollRef.current;
     if (el && atBottomRef.current) el.scrollTop = el.scrollHeight;
-    setShowJump(!atBottomRef.current && Boolean(conv.snapshot?.isStreaming));
+    setShowJump(!atBottomRef.current);
   }, [lastMsg, conv.streaming, conv.tools, conv.snapshot?.isStreaming]);
 
   const title = snap?.name || firstUserText(allMessages) || '新会话';
@@ -443,11 +443,6 @@ export default function ChatView({ conv, onRefresh, onForked, projects, onSelect
         </div>
       )}
 
-      <div className="composer-wrap">
-        <InlineQuestions conv={conv} />
-        <Composer conv={conv} draft={draft} onDraft={setDraft} />
-      </div>
-      </div>
       {showJump && (
         <button
           className="jump-bottom"
@@ -461,6 +456,11 @@ export default function ChatView({ conv, onRefresh, onForked, projects, onSelect
           ↓ {t('jumpToBottom')}
         </button>
       )}
+      <div className="composer-wrap">
+        <InlineQuestions conv={conv} />
+        <Composer conv={conv} draft={draft} onDraft={setDraft} />
+      </div>
+      </div>
       {previewPath && (
         <>
           <div className="preview-resize" onMouseDown={startPreviewDrag} />
