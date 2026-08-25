@@ -4,6 +4,7 @@ import MessageItem from './MessageItem';
 import Composer from './Composer';
 import StatsBar from './StatsBar';
 import RunsChip, { type RunInfo } from './RunsChip';
+import SubagentPanel from './SubagentPanel';
 import { getUsedSessions, subscribeUsedSessions } from '../used-sessions';
 import { IconFolder, IconChevronDown } from '../icons';
 import Trajectory from './Trajectory';
@@ -461,6 +462,11 @@ export default function ChatView({ conv, onRefresh, onForked, projects, onSelect
         <Composer conv={conv} draft={draft} onDraft={setDraft} />
       </div>
       </div>
+      <SubagentPanel
+        sessionFile={snap?.sessionFile}
+        cwd={snap?.cwd ?? conv.cwd}
+        onOpenParent={onForked}
+      />
       {previewPath && (
         <>
           <div className="preview-resize" onMouseDown={startPreviewDrag} />

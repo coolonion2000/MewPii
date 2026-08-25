@@ -32,6 +32,8 @@ export interface SessionSummary {
   parentSessionPath?: string;
   /** Synthesized entry for an in-flight pi-subagents run (no session file yet). */
   virtualRun?: boolean;
+  /** State of the synthesized run (running/complete/failed/...). */
+  runState?: string;
 }
 
 export interface ProjectGroup {

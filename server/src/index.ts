@@ -234,7 +234,7 @@ function bumpSessionsVersion(): void {
 }
 
 /** Synthesize sidebar entries for in-flight pi-subagents runs (files land lazily). */
-function listVirtualSubagentRuns(): import('./protocol').SessionSummary[] {
+function listVirtualSubagentRuns(realNested: Set<string>): import('./protocol').SessionSummary[] {
   const out: import('./protocol').SessionSummary[] = [];
   const tmp = tmpdir();
   let scopeDirs: string[] = [];
@@ -265,19 +265,21 @@ function listVirtualSubagentRuns(): import('./protocol').SessionSummary[] {
           mode?: string;
           chainStepCount?: number;
         };
-        // only genuinely running runs belong in the sidebar
-        if (status.state !== 'running') continue;
-        // dead pid = stale entry from a crashed process; don't show it
-        if (typeof status.pid === 'number') {
+        // running runs always show; finished runs stay visible for a day so the
+        // user can still open the run view (transcripts live outside listAll)
+        const isRunning = status.state === 'running';
+        if (!isRunning) {
+          const age = Date.now() - (status.lastUpdate ?? status.startedAt ?? 0);
+          if (age > 24 * 3600_000) continue;
+        }
+        // dead pid on a running-state entry = stale entry from a crashed process
+        if (isRunning && typeof status.pid === 'number') {
           try {
             process.kill(status.pid, 0);
           } catch {
             continue;
           }
         }
-        // skip old runs whose process is unknown
-        const lastActivity = status.lastUpdate ?? status.startedAt ?? 0;
-        if (Date.now() - lastActivity > 2 * 3600_000) continue;
         // agent name comes from the artifacts meta file
         let agent = 'subagent';
         const artifactsDir = status.artifactsDir;
@@ -291,18 +293,23 @@ function listVirtualSubagentRuns(): import('./protocol').SessionSummary[] {
           } catch { /* ignore */ }
         }
         const steps = typeof status.chainStepCount === 'number' && status.chainStepCount > 1 ? ` ×${status.chainStepCount}` : '';
+        const parentFile = typeof status.sessionId === 'string' ? status.sessionId : '';
+        const displayName = status.mode === 'workflow' ? `subagent-workflow${steps}` : `subagent-${agent}`;
+        // a real nested session for the same parent+agent supersedes the run entry
+        if (!isRunning && realNested.has(`${parentFile}|${displayName}`)) continue;
         out.push({
           path: `pi-subagents-run://${runId}`,
           id: runId,
           cwd: status.cwd ?? '',
-          name: status.mode === 'workflow' ? `subagent-workflow${steps}` : `subagent-${agent}`,
+          name: displayName,
           created: new Date(status.startedAt ?? Date.now()).toISOString(),
           modified: new Date(status.lastUpdate ?? Date.now()).toISOString(),
           messageCount: 0,
           firstMessage: '',
-          parentSessionPath: typeof status.sessionId === 'string' ? status.sessionId : undefined,
-          running: true,
+          parentSessionPath: parentFile || undefined,
+          running: isRunning,
           virtualRun: true,
+          runState: status.state,
         });
       } catch {
         continue;
@@ -504,6 +511,13 @@ async function handleApi(req: IncomingMessage, res: ServerResponse): Promise<boo
     return true;
   }
 
+  if (path === '/api/subagent-runs' && req.method === 'GET') {
+    const parent = url.searchParams.get('parent') ?? '';
+    const runs = listVirtualSubagentRuns(new Set()).filter((v) => !parent || v.parentSessionPath === parent);
+    sendJson(res, 200, { runs });
+    return true;
+  }
+
   if (path === '/api/subagent-run' && req.method === 'GET') {
     const runId = url.searchParams.get('runId') ?? '';
     if (!/^[a-z0-9_\-|]+$/i.test(runId)) {
@@ -653,11 +667,6 @@ async function handleApi(req: IncomingMessage, res: ServerResponse): Promise<boo
         archived: archivedSet.has(s.path),
         parentSessionPath: s.parentSessionPath,
       });
-    }
-    for (const v of listVirtualSubagentRuns()) {
-      const group = byCwd.get(v.cwd) ?? { cwd: v.cwd, sessions: [] };
-      byCwd.set(v.cwd, group);
-      group.sessions.push(v);
     }
     const groups = [...byCwd.values()].sort(
       (a, b) =>
