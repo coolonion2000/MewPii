@@ -262,8 +262,11 @@ function listVirtualSubagentRuns(): import('./protocol').SessionSummary[] {
           lastUpdate?: number;
           artifactsDir?: string;
           pid?: number;
+          mode?: string;
+          chainStepCount?: number;
         };
-        if (status.state === 'complete') continue; // real session file takes over
+        // only genuinely running runs belong in the sidebar
+        if (status.state !== 'running') continue;
         // dead pid = stale entry from a crashed process; don't show it
         if (typeof status.pid === 'number') {
           try {
@@ -287,11 +290,12 @@ function listVirtualSubagentRuns(): import('./protocol').SessionSummary[] {
             }
           } catch { /* ignore */ }
         }
+        const steps = typeof status.chainStepCount === 'number' && status.chainStepCount > 1 ? ` ×${status.chainStepCount}` : '';
         out.push({
           path: `pi-subagents-run://${runId}`,
           id: runId,
           cwd: status.cwd ?? '',
-          name: `subagent-${agent}`,
+          name: status.mode === 'workflow' ? `subagent-workflow${steps}` : `subagent-${agent}`,
           created: new Date(status.startedAt ?? Date.now()).toISOString(),
           modified: new Date(status.lastUpdate ?? Date.now()).toISOString(),
           messageCount: 0,
