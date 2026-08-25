@@ -381,6 +381,35 @@ async function handleApi(req: IncomingMessage, res: ServerResponse): Promise<boo
     return true;
   }
 
+  if (path === '/api/runs' && req.method === 'GET') {
+    const runs = [...hosts.values()]
+      .map((h) => {
+        const s = h.session;
+        const snap = h.snapshot();
+        const firstUser = snap.messages.find((m) => m.role === 'user');
+        const firstText = firstUser
+          ? (typeof firstUser.content === 'string'
+              ? firstUser.content
+              : Array.isArray(firstUser.content)
+                ? ((firstUser.content as { type?: string; text?: string }[]).find((b) => b.type === 'text')?.text ?? '')
+                : '')
+          : '';
+        return {
+          sessionFile: s.sessionFile,
+          cwd: h.cwd,
+          title: s.sessionName || firstText.slice(0, 60) || '(新会话)',
+          model: s.model ? `${s.model.provider}/${s.model.id}` : undefined,
+          modelName: s.model?.name,
+          startedAt: h.runStartedAt ?? null,
+          isStreaming: s.isStreaming,
+          queued: h.snapshot().queue.steering.length + h.snapshot().queue.followUp.length,
+        };
+      })
+      .sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0));
+    sendJson(res, 200, { runs });
+    return true;
+  }
+
   if (path === '/api/sessions/version' && req.method === 'GET') {
     sendJson(res, 200, { version: sessionsVersion });
     return true;

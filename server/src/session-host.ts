@@ -88,6 +88,8 @@ export class SessionHost {
   /** Full branch message list from the latest snapshot (for history paging). */
   private lastBranch: Record<string, unknown>[] = [];
   private fileWatcher?: FSWatcher;
+  /** Current agent run start time (undefined when idle). */
+  runStartedAt?: number;
   private settledMtime = 0;
   private reloading = false;
   private cooldownUntil = 0;
@@ -312,9 +314,11 @@ export class SessionHost {
       if (event.type === 'agent_start') {
         // isStreaming must flip live: the composer stop button, queue-mode
         // chips and the waiting-for-model indicator all read snapshot state
+        this.runStartedAt = Date.now();
         this.broadcastSnapshot();
       }
       if (event.type === 'agent_end') {
+        this.runStartedAt = undefined;
         clearTimeout(pendingSnapshot);
         pendingSnapshot = setTimeout(() => {
           this.settledMtime = Date.now();

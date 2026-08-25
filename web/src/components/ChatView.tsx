@@ -3,6 +3,7 @@ import type { Conversation } from '../api';
 import MessageItem from './MessageItem';
 import Composer from './Composer';
 import StatsBar from './StatsBar';
+import RunsChip, { type RunInfo } from './RunsChip';
 import { IconFolder, IconChevronDown } from '../icons';
 import Trajectory from './Trajectory';
 import ExtensionUI, { InlineQuestions } from './ExtensionUI';
@@ -203,6 +204,9 @@ export default function ChatView({ conv, onRefresh, onForked, projects, onSelect
             {t('running')}
           </span>
         )}
+        <RunsChip onOpenRun={(run: RunInfo) => {
+          if (run.sessionFile && onForked) onForked(run.cwd, run.sessionFile);
+        }} />
         <button className={`btn btn-sm ${showTraj ? 'tab-active' : ''}`} onClick={() => setShowTraj((v) => !v)}>
           {t('trajectory')}
         </button>
