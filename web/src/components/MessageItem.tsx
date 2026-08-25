@@ -1,4 +1,5 @@
 import { memo, useState } from 'react';
+import { IconX } from '../icons';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { PiiMessage } from '../types';
@@ -52,6 +53,7 @@ function MessageActions({ entryId, text, onFork, onBranch }: { entryId?: string;
 }
 
 function MessageItem({ message, streaming, toolResults, tools, onFork, onBranch, onOpenFile, live }: Props) {
+  const [preview, setPreview] = useState<string>();
   const entryId = message._entryId;
 
   if (message.role === 'user') {
@@ -62,7 +64,13 @@ function MessageItem({ message, streaming, toolResults, tools, onFork, onBranch,
       <div className="msg-user">
         {((Array.isArray(content) ? content : []) as Block[]).map((b, i) =>
           b.type === 'image' && b.data ? (
-            <img key={i} src={`data:${b.mimeType};base64,${b.data}`} alt="attachment" />
+            <img
+              key={i}
+              src={`data:${b.mimeType};base64,${b.data}`}
+              alt="attachment"
+              style={{ cursor: 'zoom-in' }}
+              onClick={() => setPreview(`data:${b.mimeType};base64,${b.data}`)}
+            />
           ) : (
             <span key={i}>{b.text}</span>
           ),
@@ -73,6 +81,12 @@ function MessageItem({ message, streaming, toolResults, tools, onFork, onBranch,
       <div className="msg-row user">
         {bubble}
         {!streaming && <MessageActions entryId={entryId} text={typeof content === 'string' ? content : ''} onFork={onFork} onBranch={onBranch} />}
+        {preview && (
+          <div className="lightbox" onClick={() => setPreview(undefined)}>
+            <button className="lightbox-close"><IconX size={18} /></button>
+            <img src={preview} alt="preview" onClick={(e) => e.stopPropagation()} />
+          </div>
+        )}
       </div>
     );
   }

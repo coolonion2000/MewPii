@@ -968,3 +968,24 @@ body:not([data-ds-dark-theme]) .logo-on-light { display: block; }
   0%, 12% { transform: translateX(0); }
   88%, 100% { transform: translateX(calc(320px - 100%)); }
 }
+
+/* image lightbox */
+.lightbox {
+  position: fixed; inset: 0; z-index: 200;
+  background: var(--dsw-alias-bg-mask-1);
+  display: grid; place-items: center;
+  cursor: zoom-out;
+  animation: lb-fade 0.12s ease-out;
+}
+@keyframes lb-fade { from { opacity: 0; } to { opacity: 1; } }
+.lightbox img {
+  max-width: 92vw; max-height: 88vh;
+  border-radius: 10px; cursor: default;
+  box-shadow: 0 12px 48px rgba(0,0,0,0.45);
+}
+.lightbox-close {
+  position: absolute; top: 16px; right: 20px;
+  width: 34px; height: 34px; border-radius: 50%; border: none;
+  background: var(--dsw-alias-toast-bg); color: var(--dsw-alias-label-primary);
+  display: grid; place-items: center; cursor: pointer;
+}
