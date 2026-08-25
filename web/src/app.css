@@ -74,10 +74,21 @@
 
 .sidebar-footer {
   border-top: 1px solid var(--dsw-alias-border-l1);
-  padding: 4px 6px;
-  display: flex; flex-direction: column; gap: 2px;
+  padding: 6px 8px;
+  display: flex; flex-direction: column; gap: 4px;
 }
 .sidebar-footer .footer-row { display: flex; gap: 1px; align-items: center; }
+/* big stacked nav buttons (chat / files) */
+.footer-nav-btn {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  border: none; background: transparent; cursor: pointer;
+  padding: 8px 12px; border-radius: 10px;
+  font-family: inherit; font-size: 13.5px; font-weight: 500;
+  color: var(--dsw-alias-label-secondary);
+  transition: background 0.12s, color 0.12s;
+}
+.footer-nav-btn:hover { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
+.footer-nav-btn.tab-active { background: var(--dsw-alias-bg-layer-3); color: var(--dsw-alias-label-primary); }
 .sidebar-footer .btn-sm { padding: 4px 5px; font-size: 11.5px; flex-shrink: 0; }
 .sidebar-footer .btn-icon { width: 24px; height: 24px; min-width: 24px; }
 

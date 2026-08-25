@@ -513,25 +513,26 @@ export default function Sidebar(props: Props) {
       </div>
 
       <div className="sidebar-footer">
+        <button className={`footer-nav-btn ${view === 'chat' ? 'tab-active' : ''}`} title={t('navChat')} onClick={() => onNavigate('chat')}>
+          <IconChat size={20} />
+          <span>{t('navChat')}</span>
+        </button>
+        <button className={`footer-nav-btn ${view === 'files' ? 'tab-active' : ''}`} title={t('navFiles')} onClick={() => onNavigate('files')}>
+          <IconFolder size={20} />
+          <span>{t('navFiles')}</span>
+        </button>
         <div className="footer-row">
-          <button className={`btn btn-icon ${view === 'chat' ? 'tab-active' : ''}`} title={t('navChat')} onClick={() => onNavigate('chat')}>
-            <IconChat size={15} />
-          </button>
-          <button className={`btn btn-icon ${view === 'files' ? 'tab-active' : ''}`} title={t('navFiles')} onClick={() => onNavigate('files')}>
-            <IconFolder size={15} />
+          <button className={`btn btn-icon ${view !== 'chat' && view !== 'files' ? 'tab-active' : ''}`} title={t('navSettings')} onClick={() => onNavigate('settings')}>
+            <IconSettings size={14} />
           </button>
           <span style={{ flex: 1 }} />
-          <button className="btn btn-icon" title={t('refresh')} onClick={onRefresh}><IconRefresh size={14} /></button>
-          <button className="btn btn-icon" title="Language" onClick={() => setLang(getLang() === 'zh' ? 'en' : 'zh')} style={{ fontSize: 12 }}>
+          <button className="btn btn-icon" title={t('refresh')} onClick={onRefresh}><IconRefresh size={13} /></button>
+          <button className="btn btn-icon" title="Language" onClick={() => setLang(getLang() === 'zh' ? 'en' : 'zh')} style={{ fontSize: 11 }}>
             {getLang() === 'zh' ? 'EN' : '中'}
           </button>
           <button className="btn btn-icon" title={dark ? t('toLight') : t('toDark')} onClick={onToggleTheme}>
-            {dark ? <IconSun size={14} /> : <IconMoon size={14} />}
+            {dark ? <IconSun size={13} /> : <IconMoon size={13} />}
           </button>
-        </div>
-        <div className="footer-row">
-          <button className={`btn btn-sm ${view !== 'chat' && view !== 'files' ? 'tab-active' : ''}`} onClick={() => onNavigate('settings')}>{t('navSettings')}</button>
-          <span style={{ flex: 1 }} />
           {authRequired && (
             <button
               className="btn btn-icon"
@@ -540,7 +541,7 @@ export default function Sidebar(props: Props) {
                 void fetch('/api/auth/logout', { method: 'POST' }).then(() => location.assign('/login'));
               }}
             >
-              <IconLogout size={13} />
+              <IconLogout size={12} />
             </button>
           )}
         </div>
