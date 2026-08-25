@@ -1158,7 +1158,7 @@ const server = createServer((req, res) => {
     try {
       const url0 = new URL(req.url ?? '/', 'http://localhost');
       // public assets (favicon etc.) must load even before login
-      if (/^\/(favicon\.svg|apple-touch-icon\.png|icon-512\.png|manifest\.webmanifest)$/.test(url0.pathname)) {
+      if (/^\/(favicon\.svg|favicon\.png|apple-touch-icon\.png|icon-512\.png|logo-wide\.png|logo-wide-dark\.png|logo-wide-light\.png|cat-square\.png|cat-mark-dark\.png|cat-mark-light\.png|manifest\.webmanifest)$/.test(url0.pathname)) {
         await serveStatic(req, res);
         return;
       }

@@ -941,3 +941,13 @@ body[data-ds-dark-theme] .hero-composer .composer { box-shadow: 0 8px 32px rgba(
 
 /* downward-opening menu variant (hero chips) */
 .menu.menu-down { top: calc(100% + 6px); bottom: auto; }
+
+/* MewPii brand image */
+.brand-logo-wide { height: 22px; width: auto; display: block; }
+.hero-logo-wide { width: 240px; max-width: 60vw; height: auto; }
+
+/* theme-adaptive logo (white on dark, black on light) */
+.logo-on-light { display: none; }
+.logo-on-dark { display: block; }
+body:not([data-ds-dark-theme]) .logo-on-dark { display: none; }
+body:not([data-ds-dark-theme]) .logo-on-light { display: block; }

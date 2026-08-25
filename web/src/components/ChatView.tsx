@@ -115,8 +115,8 @@ export default function ChatView({ conv, onRefresh, onForked, projects, onSelect
     return (
       <>
         <div className="hero">
-          <img className="hero-logo" src="/favicon.svg" alt="Pii" />
-          <h1 className="hero-title">Pii</h1>
+          <img className="hero-logo-wide logo-on-dark" src="/logo-wide-dark.png" alt="MewPii" />
+          <img className="hero-logo-wide logo-on-light" src="/logo-wide-light.png" alt="MewPii" />
           <div className="hero-sub">{t('heroTagline')}</div>
           <div className="hero-chips">
             <div className="menu-anchor">

@@ -5,3 +5,7 @@ dist/
 tsconfig.tsbuildinfo
 *.tgz
 pii-web-0.1.0-docker.tar.gz
+*.tar.gz
+.tgz
+.pi-subagents/
+

@@ -304,7 +304,7 @@ export default function Sidebar(props: Props) {
     return (
       <div className="sidebar sidebar-collapsed">
         <div className="sidebar-resize" onMouseDown={onStartDrag} />
-        <img className="brand-logo" src="/favicon.svg" alt="Pii" style={{ margin: '2px auto 8px' }} />
+        <img className="brand-logo" src="/favicon.png" alt="MewPii" style={{ margin: '2px auto 8px' }} />
         <button className="btn btn-icon" title={t('expandSidebar')} onClick={onToggleCollapse}>
           <IconChevronRight />
         </button>
@@ -329,8 +329,8 @@ export default function Sidebar(props: Props) {
     <div className="sidebar" style={{ width }}>
       <div className="sidebar-resize" onMouseDown={onStartDrag} />
       <div className="brand-row">
-        <img className="brand-logo" src="/favicon.svg" alt="Pii" />
-        <span className="brand-name">Pii</span>
+        <img className="brand-logo-wide logo-on-dark" src="/logo-wide-dark.png" alt="MewPii" />
+        <img className="brand-logo-wide logo-on-light" src="/logo-wide-light.png" alt="MewPii" />
         <span className="spacer" />
         <button className="btn btn-icon" title={t('collapseSidebar')} onClick={onToggleCollapse}>
           <IconChevronLeft />

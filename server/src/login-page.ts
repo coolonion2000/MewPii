@@ -5,7 +5,7 @@ export function loginPageHtml(error = false): string {
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Pii - 登录</title>
+<title>MewPii - 登录</title>
 <style>
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; }
@@ -26,10 +26,9 @@ export function loginPageHtml(error = false): string {
     box-shadow: 0 12px 40px rgba(0,0,0,0.4);
   }
   .logo {
-    width: 52px; height: 52px; border-radius: 13px;
-    margin: 0 auto 14px;
+    width: 190px; height: auto; border-radius: 14px;
+    margin: 0 auto 18px;
     display: block;
-    box-shadow: 0 6px 20px rgba(110,49,232,0.45);
   }
   h1 { font-size: 18px; font-weight: 600; text-align: center; margin: 0 0 4px; }
   .sub { text-align: center; font-size: 13px; color: #81858c; margin-bottom: 22px; }
@@ -61,7 +60,7 @@ export function loginPageHtml(error = false): string {
 </head>
 <body>
   <form class="card" id="form">
-    <img class="logo" src="/favicon.svg" alt="Pii" />
+    <img class="logo" src="/logo-wide-dark.png" alt="MewPii" />
     <h1>Pii</h1>
     <div class="sub">pi coding agent 的 Web 控制台</div>
     <div class="error" id="error">密码错误，请重试</div>
