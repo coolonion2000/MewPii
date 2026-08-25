@@ -239,9 +239,6 @@ export default function ChatView({ conv, onRefresh, onForked, projects, onSelect
             {t('running')}
           </span>
         )}
-        <RunsChip onOpenRun={(run: RunInfo) => {
-          if (run.sessionFile && onForked) onForked(run.cwd, run.sessionFile);
-        }} />
         <button className={`btn btn-sm ${showTraj ? 'tab-active' : ''}`} onClick={() => setShowTraj((v) => !v)}>
           {t('trajectory')}
         </button>
@@ -272,6 +269,9 @@ export default function ChatView({ conv, onRefresh, onForked, projects, onSelect
         <button className="btn btn-sm" onClick={() => conv.send({ type: 'newSession' }).then(onRefresh).catch(() => undefined)}>
           {t('newSession')}
         </button>
+        <RunsChip onOpenRun={(run: RunInfo) => {
+          if (run.sessionFile && onForked) onForked(run.cwd, run.sessionFile);
+        }} />
       </div>
 
       <StatsBar conv={conv} />
