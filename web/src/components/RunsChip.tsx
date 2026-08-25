@@ -1,6 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { t } from '../i18n';
 
+export interface ActiveExec {
+  toolName: string;
+  summary: string;
+  startedAt: number;
+}
+
 export interface RunInfo {
   sessionFile?: string;
   cwd: string;
@@ -9,6 +15,7 @@ export interface RunInfo {
   startedAt: number | null;
   isStreaming: boolean;
   queued: number;
+  active?: ActiveExec[];
 }
 
 function fmtDur(startedAt: number | null, now: number): string {
@@ -78,13 +85,24 @@ export default function RunsChip({ onOpenRun }: { onOpenRun: (run: RunInfo) => v
                 onOpenRun(r);
               }}
             >
-              <span className={`run-status ${r.isStreaming ? 'running' : 'idle'}`} />
-              <span className="run-title">{r.title}</span>
-              <span className="run-meta">
-                {r.isStreaming ? t('running') : t('idle')}
-                {r.modelName ? ` · ${r.modelName}` : ''}
-                {r.queued > 0 ? ` · +${r.queued}` : ''}
-              </span>
+              <span className={`run-status ${r.active?.length ? 'exec' : r.isStreaming ? 'running' : 'idle'}`} />
+              <div className="run-main">
+                <div className="run-title">{r.title}</div>
+                {r.active?.length ? (
+                  r.active.map((a, j) => (
+                    <div key={j} className="run-exec">
+                      <span className="mono run-exec-tool">{a.toolName}</span>
+                      <span className="run-exec-summary">{a.summary}</span>
+                      <span className="run-exec-dur mono">{fmtDur(a.startedAt, now)}</span>
+                    </div>
+                  ))
+                ) : r.isStreaming ? (
+                  <div className="run-exec"><span className="run-exec-summary">{t('waitingModel')}…</span></div>
+                ) : (
+                  <div className="run-exec"><span className="run-exec-summary">{t('idle')}</span></div>
+                )}
+              </div>
+              {r.queued > 0 && <span className="run-queued">+{r.queued}</span>}
               <span className="run-dur mono">{fmtDur(r.startedAt, now)}</span>
             </button>
           ))}

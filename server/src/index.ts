@@ -408,6 +408,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse): Promise<boo
           startedAt: h.runStartedAt ?? null,
           isStreaming: s.isStreaming,
           queued: h.snapshot().queue.steering.length + h.snapshot().queue.followUp.length,
+          active: h.activeExecutions,
         };
       })
       .sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0));

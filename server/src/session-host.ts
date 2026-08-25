@@ -21,6 +21,19 @@ import {
 } from '@earendil-works/pi-coding-agent';
 import type { ClientCommand, ServerMessage, SessionSnapshot, UiRequest, WidgetState } from './protocol.js';
 
+/** Short human-readable summary of a tool call's main argument. */
+function toolSummary(toolName: string, args: Record<string, unknown>): string {
+  const pick = (k: string) => (typeof args[k] === 'string' ? String(args[k]) : undefined);
+  switch (toolName) {
+    case 'bash': return pick('command') ?? '';
+    case 'read': case 'write': case 'edit': return pick('path') ?? pick('file_path') ?? '';
+    case 'grep': return pick('pattern') ?? '';
+    case 'find': return pick('pattern') ?? pick('path') ?? '';
+    case 'ls': return pick('path') ?? '.';
+    default: return '';
+  }
+}
+
 /** Strip the huge `partial` message from streaming events; keep everything else JSON-passthrough. */
 function serializeEvent(event: AgentSessionEvent): Record<string, unknown> {
   return JSON.parse(
@@ -83,8 +96,8 @@ export class SessionHost {
   private uiPending = new Map<string, (value: unknown) => void>();
   /** Last observed prompt queue (from queue_update events). */
   private queue = { steering: [] as string[], followUp: [] as string[] };
-  /** Currently executing tool calls (toolCallId → name/args), for ui.custom dialogs. */
-  private activeToolCalls = new Map<string, { toolName: string; args: Record<string, unknown> }>();
+  /** Currently executing tool calls (toolCallId → name/args/startedAt), for ui.custom dialogs. */
+  private activeToolCalls = new Map<string, { toolName: string; args: Record<string, unknown>; startedAt: number }>();
   /** Full branch message list from the latest snapshot (for history paging). */
   private lastBranch: Record<string, unknown>[] = [];
   private fileWatcher?: FSWatcher;
@@ -336,7 +349,7 @@ export class SessionHost {
       // Track the prompt queue so snapshots reflect it for late joiners.
       if (event.type === 'tool_execution_start') {
         const e = event as unknown as { toolCallId?: string; toolName?: string; args?: Record<string, unknown> };
-        if (e.toolCallId) this.activeToolCalls.set(e.toolCallId, { toolName: e.toolName ?? '', args: e.args ?? {} });
+        if (e.toolCallId) this.activeToolCalls.set(e.toolCallId, { toolName: e.toolName ?? '', args: e.args ?? {}, startedAt: Date.now() });
       }
       if (event.type === 'tool_execution_end') {
         const e = event as unknown as { toolCallId?: string };
@@ -393,6 +406,15 @@ export class SessionHost {
         }
       }, 5 * 60_000);
     }
+  }
+
+  /** Active tool executions in this session (what is literally running right now). */
+  get activeExecutions(): { toolName: string; summary: string; startedAt: number }[] {
+    return [...this.activeToolCalls.values()].map((t) => ({
+      toolName: t.toolName,
+      summary: toolSummary(t.toolName, t.args),
+      startedAt: t.startedAt,
+    }));
   }
 
   get isRunning(): boolean {

@@ -1061,3 +1061,21 @@ body:not([data-ds-dark-theme]) .logo-on-light { display: block; }
 .dp-icon { color: var(--dsw-alias-state-business-primary); flex-shrink: 0; }
 .dp-foot { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
 .dp-current { flex: 1; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* active executions inside a run */
+.run-main { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.run-exec { display: flex; align-items: center; gap: 8px; font-size: 11.5px; min-width: 0; }
+.run-exec-tool {
+  flex-shrink: 0; font-size: 10.5px; padding: 1px 6px; border-radius: 4px;
+  background: var(--dsw-alias-state-warn-tertiary); color: var(--dsw-alias-state-warn-label);
+}
+.run-exec-summary {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: var(--ds-font-family-code); font-size: 11px; color: var(--dsw-alias-label-secondary);
+}
+.run-exec-dur { flex-shrink: 0; color: var(--dsw-alias-label-caption); font-size: 10.5px; }
+.run-status.exec { background: var(--dsw-alias-state-warn-primary); animation: pulse 1.2s ease-in-out infinite; }
+.run-queued {
+  font-size: 10px; color: var(--dsw-alias-label-caption);
+  background: var(--dsw-alias-bg-layer-2); border-radius: 99px; padding: 0 6px;
+}
