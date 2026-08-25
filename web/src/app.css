@@ -1121,7 +1121,7 @@ body:not([data-ds-dark-theme]) .logo-on-light { display: block; }
   border-radius: 10px;
   display: flex; flex-direction: column;
   background: var(--dsw-alias-bg-layer-1);
-  max-width: 860px; width: calc(100% - 24px); margin: 0 auto 6px;
+  max-width: 440px; width: calc(100% - 24px); margin: 0 auto 6px;
 }
 .subagent-panel-head {
   display: flex; align-items: center; gap: 7px; width: 100%;
