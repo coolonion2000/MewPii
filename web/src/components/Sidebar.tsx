@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ProjectGroup, SessionSummary } from '../types';
 import type { Selection, View } from '../App';
 import { setLang, getLang, t } from '../i18n';
+import DirectoryPicker from './DirectoryPicker';
 import {
   IconPlus, IconSearch, IconSettings, IconTrash, IconStar, IconStarFilled,
   IconArchive, IconUnarchive, IconPencil, IconFolder, IconChevronLeft,
@@ -77,6 +78,7 @@ export default function Sidebar(props: Props) {
   const [renamingPath, setRenamingPath] = useState<string>();
   const [renameDraft, setRenameDraft] = useState('');
   const [showArchived, setShowArchived] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
   const [projectOrder, setProjectOrder] = useState<string[]>([]);
   const dragCwd = useRef<string | undefined>(undefined);
   const importRef = useRef<HTMLInputElement>(null);
@@ -366,10 +368,20 @@ export default function Sidebar(props: Props) {
         <button className="btn btn-icon" title={t('importSession')} onClick={() => importRef.current?.click()}>
           <IconExport size={14} style={{ transform: 'rotate(180deg)' }} />
         </button>
-        <button className="btn btn-icon" title={t('newSession')} onClick={() => onSelect({ cwd: newSessionCwd })}>
+        <button className="btn btn-icon" title={t('pickFolder')} onClick={() => setPickerOpen(true)}>
           <IconPlus />
         </button>
       </div>
+      {pickerOpen && (
+        <DirectoryPicker
+          initialPath={newSessionCwd}
+          onPick={(cwd) => {
+            setPickerOpen(false);
+            onSelect({ cwd });
+          }}
+          onClose={() => setPickerOpen(false)}
+        />
+      )}
       <input
         ref={importRef}
         type="file"
