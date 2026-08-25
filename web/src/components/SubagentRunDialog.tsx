@@ -13,6 +13,7 @@ interface RunDetail {
   startedAt?: number;
   lastUpdate?: number;
   log: string;
+  steps?: { key: string; state: string; durationMs?: number }[];
 }
 
 /** Live view of an in-flight pi-subagents run: task, state, streaming log. */
@@ -67,6 +68,22 @@ export default function SubagentRunDialog({ runId, onClose, onOpenParent }: {
           <button className="btn btn-icon" onClick={onClose}><IconX size={13} /></button>
         </div>
         {detail?.task && <div className="srun-task">{detail.task}</div>}
+        {detail?.steps && detail.steps.length > 0 && (
+          <div className="srun-steps">
+            {detail.steps.map((st, i) => (
+              <div key={st.key} className="srun-step">
+                <span className={`srun-step-state ${st.state}`}>
+                  {st.state === 'completed' ? '✓' : st.state === 'started' || st.state === 'running' ? '◔' : '·'}
+                </span>
+                <span className="srun-step-key mono">Step {i + 1}/{detail.steps!.length}: {st.key}</span>
+                <span className={`srun-step-label ${st.state}`}>{st.state}</span>
+                {st.durationMs !== undefined && (
+                  <span className="srun-step-dur mono">{(st.durationMs / 1000).toFixed(1)}s</span>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
         <div className="srun-log mono">
           {detail?.log?.trim() ? detail.log : <span className="dim">{t('subagentNoLog')}</span>}
         </div>

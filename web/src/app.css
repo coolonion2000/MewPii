@@ -1098,3 +1098,18 @@ body:not([data-ds-dark-theme]) .logo-on-light { display: block; }
   padding: 12px 14px; max-height: 420px; overflow-y: auto;
   white-space: pre-wrap; word-break: break-word;
 }
+
+/* workflow step rows */
+.srun-steps { margin-bottom: 10px; border: 1px solid var(--dsw-alias-border-l1); border-radius: 10px; overflow: hidden; }
+.srun-step {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 12px; font-size: 12px;
+}
+.srun-step + .srun-step { border-top: 1px solid var(--dsw-alias-border-l1); }
+.srun-step-state { width: 14px; flex-shrink: 0; text-align: center; }
+.srun-step-state.completed { color: var(--dsw-alias-state-success-primary); }
+.srun-step-state.started, .srun-step-state.running { color: var(--dsw-alias-state-warn-primary); }
+.srun-step-key { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.srun-step-label.completed { color: var(--dsw-alias-state-success-label); }
+.srun-step-label.started, .srun-step-label.running { color: var(--dsw-alias-state-warn-label); }
+.srun-step-dur { color: var(--dsw-alias-label-caption); font-size: 11px; }

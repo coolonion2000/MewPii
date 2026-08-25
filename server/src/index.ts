@@ -506,7 +506,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse): Promise<boo
 
   if (path === '/api/subagent-run' && req.method === 'GET') {
     const runId = url.searchParams.get('runId') ?? '';
-    if (!/^[a-z0-9-]+$/i.test(runId)) {
+    if (!/^[a-z0-9_\-|]+$/i.test(runId)) {
       sendJson(res, 400, { error: 'bad runId' });
       return true;
     }
@@ -556,6 +556,24 @@ async function handleApi(req: IncomingMessage, res: ServerResponse): Promise<boo
         if (log.trim()) break;
       } catch { /* next */ }
     }
+    // per-step state from the workflow event stream (latest event per key)
+    const steps: { key: string; state: string; durationMs?: number }[] = [];
+    try {
+      const eventsRaw = readFileSync(join(found.dir, 'events.jsonl'), 'utf8');
+      const byKey = new Map<string, { key: string; state: string; durationMs?: number }>();
+      for (const line of eventsRaw.split('\n')) {
+        if (!line.trim()) continue;
+        const e = JSON.parse(line) as { type?: string; trace?: { key?: string; state?: string; durationMs?: number }[] };
+        if (e.type === 'subagent.workflow.trace' && Array.isArray(e.trace)) {
+          for (const tr of e.trace) {
+            if (!tr.key || !tr.state) continue;
+            byKey.set(tr.key, { key: tr.key, state: tr.state, durationMs: tr.durationMs });
+          }
+        }
+      }
+      steps.push(...byKey.values());
+    } catch { /* single runs have no trace */ }
+
     sendJson(res, 200, {
       runId,
       agent,
@@ -567,6 +585,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse): Promise<boo
       startedAt: status.startedAt,
       lastUpdate: status.lastUpdate,
       log,
+      steps,
     });
     return true;
   }
