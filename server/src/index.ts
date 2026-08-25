@@ -500,6 +500,73 @@ async function handleApi(req: IncomingMessage, res: ServerResponse): Promise<boo
     return true;
   }
 
+  if (path === '/api/subagent-run' && req.method === 'GET') {
+    const runId = url.searchParams.get('runId') ?? '';
+    if (!/^[a-z0-9-]+$/i.test(runId)) {
+      sendJson(res, 400, { error: 'bad runId' });
+      return true;
+    }
+    const tmp = tmpdir();
+    let found: { dir: string; status: Record<string, unknown> } | undefined;
+    try {
+      for (const scope of readdirSync(tmp).filter((d) => d.startsWith('pi-subagents-'))) {
+        const dir = join(tmp, scope, 'async-subagent-runs', runId);
+        if (existsSync(join(dir, 'status.json'))) {
+          found = { dir, status: JSON.parse(readFileSync(join(dir, 'status.json'), 'utf8')) };
+          break;
+        }
+      }
+    } catch { /* ignore */ }
+    if (!found) {
+      sendJson(res, 404, { error: 'run not found' });
+      return true;
+    }
+    const status = found.status as { state?: string; cwd?: string; sessionId?: string; startedAt?: number; lastUpdate?: number; artifactsDir?: string; pid?: number };
+    let alive = false;
+    if (typeof status.pid === 'number') {
+      try {
+        process.kill(status.pid, 0);
+        alive = true;
+      } catch { /* dead */ }
+    }
+    let agent = 'subagent';
+    let task = '';
+    if (status.artifactsDir) {
+      try {
+        const meta = readdirSync(status.artifactsDir).find((f) => f.startsWith(`${runId}_`) && f.endsWith('_meta.json'));
+        if (meta) {
+          const m = JSON.parse(readFileSync(join(status.artifactsDir, meta), 'utf8')) as { agent?: string; task?: string };
+          if (m.agent) agent = m.agent;
+          if (m.task) task = m.task;
+        }
+      } catch { /* ignore */ }
+    }
+    // live log: formatted per-step log preferred, runner stdout as fallback
+    let log = '';
+    const logCandidates = [join(found.dir, `subagent-log-${runId}.md`), join(found.dir, 'output-0.log')];
+    for (const p of logCandidates) {
+      try {
+        const content = readFileSync(p, 'utf8');
+        const lines = content.split('\n');
+        log = lines.slice(-200).join('\n');
+        if (log.trim()) break;
+      } catch { /* next */ }
+    }
+    sendJson(res, 200, {
+      runId,
+      agent,
+      task,
+      state: status.state ?? (alive ? 'running' : 'unknown'),
+      alive,
+      cwd: status.cwd,
+      parentSessionPath: status.sessionId,
+      startedAt: status.startedAt,
+      lastUpdate: status.lastUpdate,
+      log,
+    });
+    return true;
+  }
+
   if (path === '/api/sessions/version' && req.method === 'GET') {
     sendJson(res, 200, { version: sessionsVersion });
     return true;

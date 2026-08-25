@@ -85,3 +85,5 @@ export function ToolIcon({ name, size = 14, className }: { name: ToolIconName; s
     default: return <IconSparkles size={size} className={className} />;
   }
 }
+
+export const IconBot = (p: IconProps) => base(p, <><rect x="5" y="8" width="14" height="10" rx="2" /><path d="M12 8V4" /><circle cx="9" cy="13" r="1" fill="currentColor" stroke="none" /><circle cx="15" cy="13" r="1" fill="currentColor" stroke="none" /><path d="M2 13h3M19 13h3" /></>);

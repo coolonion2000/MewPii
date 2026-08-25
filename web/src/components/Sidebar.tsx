@@ -3,6 +3,7 @@ import type { ProjectGroup, SessionSummary } from '../types';
 import type { Selection, View } from '../App';
 import { setLang, getLang, t } from '../i18n';
 import DirectoryPicker from './DirectoryPicker';
+import SubagentRunDialog from './SubagentRunDialog';
 import {
   IconPlus, IconSearch, IconSettings, IconTrash, IconStar, IconStarFilled,
   IconArchive, IconUnarchive, IconPencil, IconFolder, IconChevronLeft,
@@ -79,6 +80,7 @@ export default function Sidebar(props: Props) {
   const [renameDraft, setRenameDraft] = useState('');
   const [showArchived, setShowArchived] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [runDialogId, setRunDialogId] = useState<string>();
   const [projectOrder, setProjectOrder] = useState<string[]>([]);
   const dragCwd = useRef<string | undefined>(undefined);
   const importRef = useRef<HTMLInputElement>(null);
@@ -210,8 +212,7 @@ export default function Sidebar(props: Props) {
           style={{ marginLeft: indent, cursor: 'pointer' }}
           title={t('subagentOpenParent')}
           onClick={() => {
-            // no session file yet — open the parent session for context
-            if (s.parentSessionPath) onSelect({ cwd: s.cwd || '', sessionPath: s.parentSessionPath });
+            setRunDialogId(s.path.replace('pi-subagents-run://', ''));
           }}
         >
           <span className="running-dot" style={{ width: 6, height: 6, flexShrink: 0 }} />
@@ -390,6 +391,16 @@ export default function Sidebar(props: Props) {
           <IconPlus />
         </button>
       </div>
+      {runDialogId && (
+        <SubagentRunDialog
+          runId={runDialogId}
+          onClose={() => setRunDialogId(undefined)}
+          onOpenParent={(cwd, sessionPath) => {
+            setRunDialogId(undefined);
+            onSelect({ cwd, sessionPath });
+          }}
+        />
+      )}
       {pickerOpen && (
         <DirectoryPicker
           initialPath={newSessionCwd}
