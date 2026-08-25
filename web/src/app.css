@@ -963,7 +963,7 @@ body:not([data-ds-dark-theme]) .logo-on-light { display: block; }
   text-overflow: ellipsis;
 }
 .proj-item .proj-path { font-size: 10.5px; white-space: nowrap; display: inline-block; }
-.proj-item:hover .proj-path { animation: proj-path-scroll 4s linear infinite; }
+.proj-item.can-scroll .proj-path { animation: proj-path-scroll 4s linear infinite; }
 @keyframes proj-path-scroll {
   0%, 12% { transform: translateX(0); }
   88%, 100% { transform: translateX(calc(320px - 100%)); }

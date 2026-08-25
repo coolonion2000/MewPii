@@ -135,6 +135,14 @@ export default function ChatView({ conv, onRefresh, onForked, projects, onSelect
                     <button
                       key={p.cwd}
                       className={`menu-item proj-item ${conv.cwd === p.cwd ? 'active' : ''}`}
+                      onMouseEnter={(e) => {
+                        const wrap = e.currentTarget.querySelector('.proj-path-wrap');
+                        const span = wrap?.querySelector('.proj-path');
+                        if (wrap && span && (span as HTMLElement).scrollWidth > (wrap as HTMLElement).clientWidth + 4) {
+                          e.currentTarget.classList.add('can-scroll');
+                        }
+                      }}
+                      onMouseLeave={(e) => e.currentTarget.classList.remove('can-scroll')}
                       onClick={() => { setProjMenuOpen(false); onSelectProject?.(p.cwd); }}
                     >
                       <span className="proj-name">{p.cwd.split('/').filter(Boolean).pop()}</span>
