@@ -442,14 +442,15 @@ async function serveStatic(req: IncomingMessage, res: ServerResponse): Promise<v
     // SPA fallback
     const index = join(WEB_DIST, 'index.html');
     if (existsSync(index)) {
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' });
       res.end(await readFile(index));
       return;
     }
     sendJson(res, 404, { error: 'not found' });
     return;
   }
-  res.writeHead(200, { 'Content-Type': MIME[extname(file)] ?? 'application/octet-stream' });
+  const cache = /index-[A-Za-z0-9_-]+\.(js|css)$/.test(file) ? 'public, max-age=31536000, immutable' : 'no-cache';
+  res.writeHead(200, { 'Content-Type': MIME[extname(file)] ?? 'application/octet-stream', 'Cache-Control': cache });
   createReadStream(file).pipe(res);
 }
 
@@ -1425,7 +1426,7 @@ const server = createServer((req, res) => {
           res.end();
           return;
         }
-        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' });
         res.end(loginPageHtml(url0.searchParams.get('error') === '1'));
         return;
       }
