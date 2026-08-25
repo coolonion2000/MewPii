@@ -51,12 +51,12 @@ PII_PASSWORD='强密码' mewpii --host 0.0.0.0
 ## Docker / NAS
 
 ```bash
-docker build -t ghcr.io/coolonion2000/pii-web:latest .
+docker build -t coolonion2000/mewpii:latest .
 docker run -d -p 31041:31041 -e PII_PASSWORD='强密码' \
-  -v pii-state:/root/.pi ghcr.io/coolonion2000/pii-web:latest
+  -v pii-state:/root/.pi coolonion2000/mewpii:latest
 ```
 
-- 镜像：`ghcr.io/coolonion2000/pii-web`（linux/amd64，公开免认证）
+- 镜像：`coolonion2000/mewpii`（Docker Hub，linux/amd64）
 - 绿联 UGOS / 群晖部署、隧道、HTTPS、多 agent：见 [docs/nas-deployment.md](docs/nas-deployment.md)
 - 远程访问安全模型（Basic Auth + Cookie 会话 + Origin 校验）：[docs/remote-access.md](docs/remote-access.md)
 

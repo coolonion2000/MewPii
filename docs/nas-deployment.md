@@ -163,7 +163,7 @@ ssh 用户@<NAS-IP> "sudo docker load -i /tmp/pii-web-0.1.0-docker.tar.gz"
 镜像已推 GHCR（需要有 write:packages 权限的 PAT 才能更新）：
 
 ```
-ghcr.io/coolonion2000/pii-web:0.1.0
+coolonion2000/mewpii:0.1.0
 ```
 
 私有包需在 UI 里填 GHCR 用户名 + PAT。
