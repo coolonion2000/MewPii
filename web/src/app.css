@@ -392,7 +392,7 @@ body[data-ds-dark-theme] .composer:focus-within { box-shadow: 0 2px 14px rgba(0,
 }
 .composer-bar {
   display: flex; align-items: center; gap: 8px;
-  padding: 6px 10px 10px 12px;
+  padding: 8px 10px 8px 12px;
 }
 .round-btn {
   width: 32px; height: 32px; border-radius: 50%; border: none;
@@ -404,11 +404,13 @@ body[data-ds-dark-theme] .composer:focus-within { box-shadow: 0 2px 14px rgba(0,
 
 .model-chip {
   display: inline-flex; align-items: center; gap: 6px;
+  height: 32px; line-height: 1;
   border: none; background: transparent; cursor: pointer;
-  font-family: inherit; padding: 6px 10px; border-radius: 10px;
+  font-family: inherit; padding: 0 10px; border-radius: 10px;
   color: var(--dsw-alias-label-primary); font-size: 14px; font-weight: 600;
   max-width: 260px;
 }
+.model-chip svg { align-self: center; flex-shrink: 0; }
 .model-chip:hover { background: var(--dsw-alias-interactive-bg-hover); }
 .model-chip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .model-chip-qualifier { font-weight: 400; color: var(--dsw-alias-label-caption); font-size: 13.5px; }
