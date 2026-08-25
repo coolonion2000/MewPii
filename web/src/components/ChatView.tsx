@@ -138,7 +138,7 @@ export default function ChatView({ conv, onRefresh, onForked, projects, onSelect
                       onClick={() => { setProjMenuOpen(false); onSelectProject?.(p.cwd); }}
                     >
                       <span className="proj-name">{p.cwd.split('/').filter(Boolean).pop()}</span>
-                      <span className="dim mono proj-path">{p.cwd}</span>
+                      <span className="proj-path-wrap"><span className="dim mono proj-path">{p.cwd}</span></span>
                     </button>
                   ))}
                 </div>

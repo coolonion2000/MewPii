@@ -958,4 +958,11 @@ body:not([data-ds-dark-theme]) .logo-on-light { display: block; }
 /* hero project menu: two-line rows (name on top, path below) */
 .proj-item { flex-direction: column; align-items: flex-start !important; gap: 0 !important; padding: 7px 10px; }
 .proj-item .proj-name { white-space: nowrap; font-weight: 500; }
-.proj-item .proj-path { font-size: 10.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 320px; }
+.proj-item .proj-path-wrap { max-width: 320px; overflow: hidden; }
+.proj-item .proj-path { font-size: 10.5px; white-space: nowrap; display: inline-block; }
+.proj-item:not(:hover) .proj-path { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.proj-item:hover .proj-path { animation: proj-path-scroll 8s linear infinite; }
+@keyframes proj-path-scroll {
+  0%, 12% { transform: translateX(0); }
+  88%, 100% { transform: translateX(calc(320px - 100%)); }
+}
