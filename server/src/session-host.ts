@@ -94,6 +94,9 @@ export class SessionHost {
   private statuses = new Map<string, string>();
   /** Pending extension dialogs awaiting a browser answer. */
   private uiPending = new Map<string, (value: unknown) => void>();
+  /** The ui_request currently awaiting an answer (re-sent to new attaches). */
+  private pendingUiRequest?: UiRequest;
+  private pendingUiTimer?: NodeJS.Timeout;
   /** Last observed prompt queue (from queue_update events). */
   private queue = { steering: [] as string[], followUp: [] as string[] };
   /** Currently executing tool calls (toolCallId → name/args/startedAt), for ui.custom dialogs. */
@@ -295,12 +298,18 @@ export class SessionHost {
   private uiRequest<T>(req: Omit<UiRequest, 'id'>, timeoutMs?: number): Promise<T> {
     const id = crypto.randomUUID();
     return new Promise<T>((resolvePromise) => {
-      const timer = setTimeout(() => {
+      // long-running fallback: unanswered dialogs eventually resolve as
+      // "cancelled" so the agent never hangs forever on a closed tab
+      const timeout = timeoutMs ?? 10 * 60_000;
+      this.pendingUiRequest = { id, ...req };
+      this.pendingUiTimer = setTimeout(() => {
         this.uiPending.delete(id);
+        this.pendingUiRequest = undefined;
         resolvePromise(undefined as T);
-      }, timeoutMs ?? 5 * 60_000);
+      }, timeout);
       this.uiPending.set(id, (value) => {
-        clearTimeout(timer);
+        clearTimeout(this.pendingUiTimer);
+        this.pendingUiRequest = undefined;
         resolvePromise(value as T);
       });
       this.broadcast({ type: 'ui_request', request: { id, ...req } });
@@ -394,6 +403,10 @@ export class SessionHost {
     this.send(ws, { type: 'snapshot', snapshot: this.snapshot() });
     this.send(ws, { type: 'widgets', widgets: [...this.widgets.values()] });
     this.send(ws, { type: 'statuses', statuses: Object.fromEntries(this.statuses) });
+    // re-deliver an unanswered extension dialog to the newly attached browser
+    if (this.pendingUiRequest) {
+      this.send(ws, { type: 'ui_request', request: this.pendingUiRequest });
+    }
   }
 
   detach(ws: WebSocket): void {
@@ -634,6 +647,7 @@ export class SessionHost {
 
   async dispose(): Promise<void> {
     clearTimeout(this.idleTimer);
+    clearTimeout(this.pendingUiTimer);
     this.fileWatcher?.close();
     this.unsubscribe?.();
     await this.runtime.dispose();
