@@ -17,7 +17,7 @@
   display: flex; align-items: center; gap: 2px;
   padding: 12px 12px 8px 16px;
 }
-.wb-title { font: var(--dsw-font-xs-strong-13); color: var(--dsw-alias-label-secondary); }
+.wb-title { font-size: 14px; font-weight: 600; color: var(--dsw-alias-label-secondary); }
 .sidebar-search {
   width: 100%; border: 1px solid var(--dsw-alias-border-l2); border-radius: 8px;
   padding: 6px 10px; font-size: 13px; font-family: inherit;
