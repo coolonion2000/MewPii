@@ -137,7 +137,17 @@ export default function App() {
     const loadAgents = () =>
       fetch('/api/agents')
         .then((r) => r.json())
-        .then((d: { agents?: string[] }) => setAgents(d.agents ?? []))
+        .then((d: { agents?: string[] }) => {
+          const list = d.agents ?? [];
+          setAgents(list);
+          // a previously selected agent that is no longer connected must not
+          // 502 the whole UI — silently fall back to local mode
+          const stored = getAgent();
+          if (stored && !list.includes(stored)) {
+            localStorage.removeItem('pii-agent');
+            refreshProjects();
+          }
+        })
         .catch(() => undefined);
     loadAgents();
     const agentTimer = setInterval(loadAgents, 15_000);
