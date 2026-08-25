@@ -261,9 +261,18 @@ function listVirtualSubagentRuns(): import('./protocol').SessionSummary[] {
           startedAt?: number;
           lastUpdate?: number;
           artifactsDir?: string;
+          pid?: number;
         };
         if (status.state === 'complete') continue; // real session file takes over
-        // skip stale runs (crashed/abandoned processes never reconcile their state)
+        // dead pid = stale entry from a crashed process; don't show it
+        if (typeof status.pid === 'number') {
+          try {
+            process.kill(status.pid, 0);
+          } catch {
+            continue;
+          }
+        }
+        // skip old runs whose process is unknown
         const lastActivity = status.lastUpdate ?? status.startedAt ?? 0;
         if (Date.now() - lastActivity > 2 * 3600_000) continue;
         // agent name comes from the artifacts meta file

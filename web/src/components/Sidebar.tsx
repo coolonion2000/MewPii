@@ -204,7 +204,16 @@ export default function Sidebar(props: Props) {
     }
     if (s.virtualRun) {
       return (
-        <div key={s.path} className="session-item virtual-run" style={{ marginLeft: indent }} title={t('subagentRunning')}>
+        <div
+          key={s.path}
+          className="session-item virtual-run"
+          style={{ marginLeft: indent, cursor: 'pointer' }}
+          title={t('subagentOpenParent')}
+          onClick={() => {
+            // no session file yet — open the parent session for context
+            if (s.parentSessionPath) onSelect({ cwd: s.cwd || '', sessionPath: s.parentSessionPath });
+          }}
+        >
           <span className="running-dot" style={{ width: 6, height: 6, flexShrink: 0 }} />
           <span className="title dim">{s.name}</span>
           <span className="time dim">{t('running')}</span>
