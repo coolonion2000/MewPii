@@ -43,7 +43,7 @@ function parseOptions(argv: string[]): ServerOptions {
     else if (arg === '--help' || arg === '-h') {
       console.log(`MewPii — dsh-styled web UI for the pi coding agent
 
-Usage: pii-web [options]
+Usage: mewpii [options]
 
 Options:
   --host, -H <host>        Listen host (default 127.0.0.1, env PII_HOST)
