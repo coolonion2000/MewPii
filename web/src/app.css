@@ -1176,3 +1176,16 @@ body:not([data-ds-dark-theme]) .logo-on-light { display: block; }
 .subagent-panel-state { font-size: 11px; flex-shrink: 0; color: var(--dsw-alias-label-caption); }
 .subagent-panel-state.run { color: var(--dsw-alias-state-warn-label); }
 
+
+/* agent row above the workspace section */
+.agent-row { padding: 0 12px 8px; }
+.agent-select-wide {
+  width: 100%; border: 1px solid var(--dsw-alias-border-l2); border-radius: 8px;
+  background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary);
+  font-size: 12px; font-family: inherit; padding: 5px 8px; outline: none; cursor: pointer;
+}
+.agent-local {
+  display: inline-block; font-size: 12px; color: var(--dsw-alias-label-caption);
+  border: 1px dashed var(--dsw-alias-border-l1); border-radius: 8px; padding: 4px 10px;
+  user-select: none; cursor: default;
+}

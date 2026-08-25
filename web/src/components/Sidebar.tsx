@@ -356,6 +356,23 @@ export default function Sidebar(props: Props) {
           <span>{t('newSession')}</span>
         </button>
       </div>
+      <div className="agent-row">
+        {(agents?.length ?? 0) > 0 ? (
+          <select
+            className="agent-select-wide"
+            title={t('agentSelect')}
+            value={currentAgent ?? ''}
+            onChange={(e) => onSelectAgent?.(e.target.value)}
+          >
+            <option value="">{t('agentLocal')}</option>
+            {agents!.map((a) => (
+              <option key={a} value={a}>{a}</option>
+            ))}
+          </select>
+        ) : (
+          <span className="agent-local">{t('agentLocal')}</span>
+        )}
+      </div>
       <div className="wb-header">
         <span className="wb-title">{t('workspace')}</span>
         <span className="spacer" />
@@ -500,19 +517,6 @@ export default function Sidebar(props: Props) {
         <button className={`btn btn-sm ${view === 'files' ? 'tab-active' : ''}`} onClick={() => onNavigate('files')}>{t('navFiles')}</button>
         <button className={`btn btn-sm ${view !== 'chat' && view !== 'files' ? 'tab-active' : ''}`} onClick={() => onNavigate('settings')}>{t('navSettings')}</button>
         <span style={{ flex: 1 }} />
-        {(agents?.length ?? 0) > 0 && (
-          <select
-            className="agent-select"
-            title={t('agentSelect')}
-            value={currentAgent ?? ''}
-            onChange={(e) => onSelectAgent?.(e.target.value)}
-          >
-            <option value="">{t('agentLocal')}</option>
-            {agents!.map((a) => (
-              <option key={a} value={a}>{a}</option>
-            ))}
-          </select>
-        )}
         <button className="btn btn-icon" title={t('refresh')} onClick={onRefresh}><IconRefresh size={14} /></button>
         <button className="btn btn-icon" title="Language" onClick={() => setLang(getLang() === 'zh' ? 'en' : 'zh')} style={{ fontSize: 12 }}>
           {getLang() === 'zh' ? 'EN' : '中'}
