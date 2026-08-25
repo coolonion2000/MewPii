@@ -294,6 +294,7 @@ export default function Composer({ conv, draft, onDraft }: Props) {
                     className={`menu-item ${currentModel?.provider === m.provider && currentModel.id === m.id ? 'active' : ''}`}
                     onClick={() => {
                       // keep open: user usually picks the level right after
+                      conv.applyOptimisticModel(m.provider, m.id, m.name);
                       void conv.send({ type: 'setModel', provider: m.provider, modelId: m.id }).catch(() => undefined);
                     }}
                   >
@@ -319,6 +320,7 @@ export default function Composer({ conv, draft, onDraft }: Props) {
                         className={`menu-item ${snap?.thinkingLevel === level ? 'active' : ''}`}
                         onClick={() => {
                           setMenuOpen(undefined);
+                          conv.applyOptimisticThinking(level);
                           void conv.send({ type: 'setThinkingLevel', level }).catch(() => undefined);
                         }}
                       >

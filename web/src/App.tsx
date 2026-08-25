@@ -301,12 +301,25 @@ export default function App() {
   }, [msgCount, conv?.snapshot?.isStreaming, conv?.snapshot?.sessionFile]);
 
   const handleDelete = useCallback(
-    async (path: string) => {
-      await deleteSession(path).catch(() => undefined);
+    (path: string) => {
+      // optimistic: remove instantly, roll back on failure
+      const prevProjects = projects;
+      const prevArchived = archivedSessions;
+      setProjects(
+        projects
+          .map((g) => ({ ...g, sessions: g.sessions.filter((s) => s.path !== path) }))
+          .filter((g) => g.sessions.length > 0),
+      );
+      setArchivedSessions(archivedSessions.filter((s) => s.path !== path));
       if (selection?.sessionPath === path) setRoute({ view: 'chat' });
-      refreshProjects();
+      deleteSession(path)
+        .then(() => refreshProjects())
+        .catch(() => {
+          setProjects(prevProjects);
+          setArchivedSessions(prevArchived);
+        });
     },
-    [selection, refreshProjects, setRoute],
+    [projects, archivedSessions, selection, refreshProjects, setRoute],
   );
 
   const handleRename = useCallback(

@@ -461,6 +461,23 @@ export class Conversation {
     this.emit();
   }
 
+  /** Optimistic local model change; the next server snapshot confirms or corrects it. */
+  applyOptimisticModel(provider: string, modelId: string, name?: string): void {
+    if (!this.snapshot) return;
+    this.snapshot = {
+      ...this.snapshot,
+      model: { provider, id: modelId, name: name ?? modelId },
+    };
+    this.emit();
+  }
+
+  /** Optimistic local thinking-level change. */
+  applyOptimisticThinking(level: string): void {
+    if (!this.snapshot) return;
+    this.snapshot = { ...this.snapshot, thinkingLevel: level };
+    this.emit();
+  }
+
   answerUi(value: unknown): void {
     const req = this.uiRequest;
     if (!req) return;
