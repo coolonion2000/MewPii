@@ -187,6 +187,11 @@ async function acquireHost(cwd: string, sessionPath?: string): Promise<SessionHo
     },
   });
   hosts.set(key, host);
+  // bump the sessions list version when a subagent is spawned/finished so the
+  // sidebar picks up the child session file promptly
+  host.onToolExecution = (toolName, _phase) => {
+    if (toolName === 'subagent' || toolName.startsWith('subagent_')) bumpSessionsVersion();
+  };
   return host;
 }
 
@@ -223,6 +228,9 @@ const oauthFlows = new Map<string, OAuthFlow>();
 // sessions dir watcher: CLI-side changes bump a version the UI polls
 // ---------------------------------------------------------------------------
 let sessionsVersion = 0;
+function bumpSessionsVersion(): void {
+  sessionsVersion += 1;
+}
 {
   const sessionsDir = join(getAgentDir(), 'sessions');
   let timer: NodeJS.Timeout | undefined;

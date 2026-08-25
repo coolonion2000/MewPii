@@ -101,6 +101,8 @@ export class SessionHost {
   private queue = { steering: [] as string[], followUp: [] as string[] };
   /** Currently executing tool calls (toolCallId → name/args/startedAt), for ui.custom dialogs. */
   private activeToolCalls = new Map<string, { toolName: string; args: Record<string, unknown>; startedAt: number }>();
+  /** Hook (set by index.ts) invoked on every tool execution start/end. */
+  onToolExecution?: (toolName: string, phase: 'start' | 'end') => void;
   /** Full branch message list from the latest snapshot (for history paging). */
   private lastBranch: Record<string, unknown>[] = [];
   private fileWatcher?: FSWatcher;
@@ -359,10 +361,13 @@ export class SessionHost {
       if (event.type === 'tool_execution_start') {
         const e = event as unknown as { toolCallId?: string; toolName?: string; args?: Record<string, unknown> };
         if (e.toolCallId) this.activeToolCalls.set(e.toolCallId, { toolName: e.toolName ?? '', args: e.args ?? {}, startedAt: Date.now() });
+        this.onToolExecution?.(e.toolName ?? '', 'start');
       }
       if (event.type === 'tool_execution_end') {
         const e = event as unknown as { toolCallId?: string };
         if (e.toolCallId) this.activeToolCalls.delete(e.toolCallId);
+        const name = (event as unknown as { toolName?: string }).toolName ?? '';
+        this.onToolExecution?.(name, 'end');
       }
       if (event.type === 'queue_update') {
         const q = event as unknown as { steering?: readonly string[]; followUp?: readonly string[] };
