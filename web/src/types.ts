@@ -26,6 +26,8 @@ export interface SessionSummary {
   archived?: boolean;
   /** Present for sessions forked from / spawned by another session (subagents). */
   parentSessionPath?: string;
+  /** Synthesized entry for an in-flight pi-subagents run (no session file yet). */
+  virtualRun?: boolean;
 }
 
 export interface ProjectGroup {
