@@ -202,6 +202,15 @@ export default function Sidebar(props: Props) {
         />
       );
     }
+    if (s.virtualRun) {
+      return (
+        <div key={s.path} className="session-item virtual-run" style={{ marginLeft: indent }} title={t('subagentRunning')}>
+          <span className="running-dot" style={{ width: 6, height: 6, flexShrink: 0 }} />
+          <span className="title dim">{s.name}</span>
+          <span className="time dim">{t('running')}</span>
+        </div>
+      );
+    }
     return (
       <div
         key={s.path}

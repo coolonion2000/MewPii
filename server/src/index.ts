@@ -1,9 +1,10 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { randomBytes } from 'node:crypto';
 import { readFile, readdir, stat, unlink, writeFile, mkdir } from 'node:fs/promises';
-import { createReadStream, existsSync, readdirSync, watch } from 'node:fs';
+import { createReadStream, existsSync, readdirSync, readFileSync, watch } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { extname, join, normalize, resolve, dirname } from 'node:path';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { DefaultPackageManager, ModelRegistry, ModelRuntime, SessionManager, SettingsManager, createAgentSessionServices, getAgentDir } from '@earendil-works/pi-coding-agent';
@@ -230,6 +231,72 @@ const oauthFlows = new Map<string, OAuthFlow>();
 let sessionsVersion = 0;
 function bumpSessionsVersion(): void {
   sessionsVersion += 1;
+}
+
+/** Synthesize sidebar entries for in-flight pi-subagents runs (files land lazily). */
+function listVirtualSubagentRuns(): import('./protocol').SessionSummary[] {
+  const out: import('./protocol').SessionSummary[] = [];
+  const tmp = tmpdir();
+  let scopeDirs: string[] = [];
+  try {
+    scopeDirs = readdirSync(tmp)
+      .filter((d) => d.startsWith('pi-subagents-'))
+      .map((d) => join(tmp, d, 'async-subagent-runs'));
+  } catch {
+    return out;
+  }
+  for (const root of scopeDirs) {
+    let runDirs: string[] = [];
+    try {
+      runDirs = readdirSync(root);
+    } catch {
+      continue;
+    }
+    for (const runId of runDirs) {
+      try {
+        const status = JSON.parse(readFileSync(join(root, runId, 'status.json'), 'utf8')) as {
+          state?: string;
+          cwd?: string;
+          sessionId?: string;
+          startedAt?: number;
+          lastUpdate?: number;
+          artifactsDir?: string;
+        };
+        if (status.state === 'complete') continue; // real session file takes over
+        // skip stale runs (crashed/abandoned processes never reconcile their state)
+        const lastActivity = status.lastUpdate ?? status.startedAt ?? 0;
+        if (Date.now() - lastActivity > 2 * 3600_000) continue;
+        // agent name comes from the artifacts meta file
+        let agent = 'subagent';
+        const artifactsDir = status.artifactsDir;
+        if (artifactsDir) {
+          try {
+            const meta = readdirSync(artifactsDir).find((f) => f.startsWith(`${runId}_`) && f.endsWith('_meta.json'));
+            if (meta) {
+              const m = JSON.parse(readFileSync(join(artifactsDir, meta), 'utf8')) as { agent?: string };
+              if (m.agent) agent = m.agent;
+            }
+          } catch { /* ignore */ }
+        }
+        out.push({
+          path: `pi-subagents-run://${runId}`,
+          id: runId,
+          cwd: status.cwd ?? '',
+          name: `subagent-${agent}`,
+          created: new Date(status.startedAt ?? Date.now()).toISOString(),
+          modified: new Date(status.lastUpdate ?? Date.now()).toISOString(),
+          messageCount: 0,
+          firstMessage: '',
+          parentSessionPath: typeof status.sessionId === 'string' ? status.sessionId : undefined,
+          running: true,
+          virtualRun: true,
+        });
+      } catch {
+        continue;
+      }
+    }
+  }
+  return out;
 }
 {
   const sessionsDir = join(getAgentDir(), 'sessions');
@@ -487,6 +554,11 @@ async function handleApi(req: IncomingMessage, res: ServerResponse): Promise<boo
         archived: archivedSet.has(s.path),
         parentSessionPath: s.parentSessionPath,
       });
+    }
+    for (const v of listVirtualSubagentRuns()) {
+      const group = byCwd.get(v.cwd) ?? { cwd: v.cwd, sessions: [] };
+      byCwd.set(v.cwd, group);
+      group.sessions.push(v);
     }
     const groups = [...byCwd.values()].sort(
       (a, b) =>
