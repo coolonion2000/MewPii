@@ -204,12 +204,19 @@ interface ModelServices {
   registry: ModelRegistry;
 }
 let modelServices: ModelServices | undefined;
+let modelServicesMtime = 0;
 async function getModelServices(): Promise<ModelServices> {
-  if (!modelServices) {
+  // recreate when models.json changed (e.g. user added a model via pi CLI)
+  let mtime = 0;
+  try {
+    mtime = (await stat(join(getAgentDir(), 'models.json'))).mtimeMs;
+  } catch { /* no custom models file */ }
+  if (!modelServices || mtime !== modelServicesMtime) {
     const runtime = await ModelRuntime.create();
     const registry = new ModelRegistry(runtime);
     await registry.refresh().catch(() => undefined);
     modelServices = { runtime, registry };
+    modelServicesMtime = mtime;
   }
   return modelServices;
 }
