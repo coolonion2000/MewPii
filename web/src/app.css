@@ -545,6 +545,11 @@ body[data-ds-dark-theme] .composer:focus-within { box-shadow: 0 2px 14px rgba(0,
 .md table { border-collapse: collapse; margin: 8px 0; }
 .md th, .md td { border: 1px solid var(--dsw-alias-border-l2); padding: 5px 10px; font-size: 13px; }
 .md a { color: var(--dsw-alias-state-business-primary); }
+/* long URLs must wrap inside messages instead of overflowing */
+.md a, .md p, .md li, .msg-user, .msg-assistant {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
 
 /* ------------------------------------------------------------------ */
 /* panels (models / files)                                             */
