@@ -72,6 +72,21 @@ export class TunnelHub {
     this.agents.set(finalName, conn);
     console.log(`[tunnel] agent connected: ${finalName} (${this.agents.size} total)`);
 
+    // heartbeat: proxies/NATs silently kill idle websockets — detect it
+    let alive = true;
+    ws.on('pong', () => { alive = true; });
+    const heartbeat = setInterval(() => {
+      if (!alive) {
+        clearInterval(heartbeat);
+        try { ws.terminate(); } catch { /* ignore */ }
+        if (this.agents.get(finalName)?.ws === ws) this.dropAgent(finalName);
+        return;
+      }
+      alive = false;
+      try { ws.ping(); } catch { /* ignore */ }
+    }, 25_000);
+    ws.on('close', () => clearInterval(heartbeat));
+
     ws.on('message', (raw) => this.onAgentMessage(conn, raw));
     ws.on('close', () => {
       // identity check: a stale connection's late close must not evict the live one
@@ -176,6 +191,19 @@ export function runTunnelAgent(opts: {
     const headers: Record<string, string> = {};
     if (opts.token) headers.Authorization = `Basic ${Buffer.from(`pi:${opts.token}`).toString('base64')}`;
     const ws = new WebSocket(hubUrl, { headers });
+
+    let hubAlive = true;
+    ws.on('pong', () => { hubAlive = true; });
+    const heartbeat = setInterval(() => {
+      if (!hubAlive) {
+        clearInterval(heartbeat);
+        try { ws.terminate(); } catch { /* ignore */ }
+        return;
+      }
+      hubAlive = false;
+      try { ws.ping(); } catch { /* ignore */ }
+    }, 25_000);
+    ws.on('close', () => clearInterval(heartbeat));
 
     ws.on('open', () => console.log(`[agent] connected to hub ${opts.hubUrl}${opts.name ? ` as "${opts.name}"` : ''}`));
 
