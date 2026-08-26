@@ -1225,3 +1225,7 @@ body:not([data-ds-dark-theme]) .logo-on-light { display: block; }
   position: sticky; top: 0; z-index: 1;
   background: var(--dsw-specific-menu);
 }
+
+/* model/level menu rows never wrap */
+.combined-menu .menu-item { white-space: nowrap; }
+.combined-menu .menu-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
