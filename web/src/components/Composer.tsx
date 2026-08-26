@@ -82,8 +82,10 @@ export default function Composer({ conv, draft, onDraft }: Props) {
     setText('');
     setImages([]);
     requestAnimationFrame(autoResize);
-    // optimistic render: show the message now, not after the server round-trip
-    const optKey = conv.addOptimistic(value, imgs.map(({ data, mimeType }) => ({ data, mimeType })));
+    // optimistic render: show the message now, not after the server round-trip.
+    // while streaming the message only enters the queue (steer/followUp) — the
+    // queue strip shows it; a premature bubble would double-display it.
+    const optKey = streaming ? -1 : conv.addOptimistic(value, imgs.map(({ data, mimeType }) => ({ data, mimeType })));
     try {
       await conv.send({
         type: 'prompt',
@@ -92,7 +94,7 @@ export default function Composer({ conv, draft, onDraft }: Props) {
         streamingBehavior: streaming ? queueMode : undefined,
       });
     } catch (err) {
-      conv.removeOptimistic(optKey);
+      if (optKey >= 0) conv.removeOptimistic(optKey);
       setText(value);
       setImages(imgs);
       conv.lastError = err instanceof Error ? err.message : String(err);

@@ -440,10 +440,12 @@ body[data-ds-dark-theme] .composer:focus-within { box-shadow: 0 2px 14px rgba(0,
 
 .send-circle {
   width: 38px; height: 38px; border-radius: 50%; border: none;
-  display: grid; place-items: center; cursor: pointer; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center; padding: 0;
+  cursor: pointer; flex-shrink: 0;
   background: var(--dsw-alias-state-business-primary); color: #fff;
   transition: transform 0.1s, filter 0.15s;
 }
+.send-circle svg { display: block; }
 .send-circle:hover:not(:disabled) { filter: brightness(1.08); }
 .send-circle:active:not(:disabled) { transform: scale(0.94); }
 .send-circle:disabled { opacity: 0.35; cursor: default; }
