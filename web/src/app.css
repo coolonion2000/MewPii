@@ -1219,9 +1219,10 @@ body:not([data-ds-dark-theme]) .logo-on-light { display: block; }
   animation: spin 0.7s linear infinite;
 }
 
-/* model menu grouped by provider */
+/* model menu grouped by provider (sticky section headers) */
 .menu-group-label {
   font-size: 11px; color: var(--dsw-alias-label-caption);
-  padding: 8px 10px 2px; user-select: none;
+  padding: 6px 10px 3px; user-select: none;
+  position: sticky; top: 26px; z-index: 1;
+  background: var(--dsw-specific-menu);
 }
-.menu-group-label:first-child { padding-top: 4px; }
