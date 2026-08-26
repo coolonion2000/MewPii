@@ -353,6 +353,13 @@ export default function ChatView({ conv, onRefresh, onForked, projects, onSelect
                     const text = data?.editorText as string | undefined;
                     if (text) setDraft(text);
                     else conv.toast(t('branchedHere'));
+                    // branch truncates the conversation; the browser would clamp
+                    // the scroll to the top — bring the composer back into view
+                    atBottomRef.current = true;
+                    requestAnimationFrame(() => {
+                      const el = scrollRef.current;
+                      if (el) el.scrollTop = el.scrollHeight;
+                    });
                   })
                   .catch((err) => conv.reportError(err instanceof Error ? err.message : String(err)))
               }
