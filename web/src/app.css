@@ -1218,3 +1218,10 @@ body:not([data-ds-dark-theme]) .logo-on-light { display: block; }
   border-top-color: var(--dsw-alias-state-business-primary);
   animation: spin 0.7s linear infinite;
 }
+
+/* model menu grouped by provider */
+.menu-group-label {
+  font-size: 11px; color: var(--dsw-alias-label-caption);
+  padding: 8px 10px 2px; user-select: none;
+}
+.menu-group-label:first-child { padding-top: 4px; }

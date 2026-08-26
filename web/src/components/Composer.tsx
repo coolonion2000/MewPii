@@ -288,20 +288,33 @@ export default function Composer({ conv, draft, onDraft }: Props) {
             <div className="menu combined-menu menu-right" onClick={(e) => e.stopPropagation()}>
               <div className="menu-section">
                 <div className="menu-section-label">{t('selectModel')}</div>
-                {configuredModels.map((m) => (
-                  <button
-                    key={`${m.provider}/${m.id}`}
-                    className={`menu-item ${currentModel?.provider === m.provider && currentModel.id === m.id ? 'active' : ''}`}
-                    onClick={() => {
-                      // keep open: user usually picks the level right after
-                      conv.applyOptimisticModel(m.provider, m.id, m.name);
-                      void conv.send({ type: 'setModel', provider: m.provider, modelId: m.id }).catch(() => undefined);
-                    }}
-                  >
-                    <span>{m.name}</span>
-                    <span className="dim">{m.provider}</span>
-                  </button>
-                ))}
+                {(() => {
+                  // group by provider: provider name as section label, rows without provider suffix
+                  const groups: { provider: string; items: typeof configuredModels }[] = [];
+                  for (const m of configuredModels) {
+                    const g = groups.find((x) => x.provider === m.provider);
+                    if (g) g.items.push(m);
+                    else groups.push({ provider: m.provider, items: [m] });
+                  }
+                  return groups.map((g) => (
+                    <div key={g.provider}>
+                      <div className="menu-group-label">{g.provider}</div>
+                      {g.items.map((m) => (
+                        <button
+                          key={`${m.provider}/${m.id}`}
+                          className={`menu-item ${currentModel?.provider === m.provider && currentModel.id === m.id ? 'active' : ''}`}
+                          onClick={() => {
+                            // keep open: user usually picks the level right after
+                            conv.applyOptimisticModel(m.provider, m.id, m.name);
+                            void conv.send({ type: 'setModel', provider: m.provider, modelId: m.id }).catch(() => undefined);
+                          }}
+                        >
+                          <span>{m.name}</span>
+                        </button>
+                      ))}
+                    </div>
+                  ));
+                })()}
                 {configuredModels.length === 0 && (
                   <div style={{ padding: 10, fontSize: 12, color: 'var(--dsw-alias-label-tertiary)' }}>{t('noConfiguredModels')}</div>
                 )}
