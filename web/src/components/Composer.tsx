@@ -372,22 +372,47 @@ export default function Composer({ conv, draft, onDraft }: Props) {
           )}
         </div>
 
-        {streaming && <span className="composer-spinner" />}
+        {streaming && <ContextRing conv={conv} />}
 
         {streaming ? (
           <button
-            className="send-circle stop"
+            className="send-circle stop send-sm"
             title={t('abort')}
             onClick={() => void conv.send({ type: 'abort' }).catch(() => undefined)}
           >
             <IconStop size={16} />
           </button>
         ) : (
-          <button className="send-circle" title={t('send')} disabled={!canSend} onClick={() => void submit()}>
+          <button className="send-circle send-sm" title={t('send')} disabled={!canSend} onClick={() => void submit()}>
 <IconArrowUp size={17} />
           </button>
         )}
       </div>
     </div>
+  );
+}
+
+
+/** Small ring showing current context usage while streaming. */
+function ContextRing({ conv }: { conv: Conversation }) {
+  const pct = conv.snapshot?.stats?.contextPercent ?? null;
+  const p = Math.max(0, Math.min(100, pct ?? 0));
+  const R = 8;
+  const C = 2 * Math.PI * R;
+  const color = p >= 90 ? 'var(--dsw-alias-state-error-primary)' : p >= 70 ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-state-business-primary)';
+  return (
+    <span className="context-ring" title={`${t('context')} ${Math.round(p)}%`}>
+      <svg width="18" height="18" viewBox="0 0 20 20">
+        <circle cx="10" cy="10" r={R} fill="none" stroke="var(--dsw-alias-border-l2)" strokeWidth="2.5" />
+        {pct != null && (
+          <circle
+            cx="10" cy="10" r={R} fill="none" stroke={color} strokeWidth="2.5"
+            strokeDasharray={`${(C * p) / 100} ${C}`}
+            strokeLinecap="round" transform="rotate(-90 10 10)"
+          />
+        )}
+      </svg>
+      {pct == null && <span className="context-ring-spin" />}
+    </span>
   );
 }

@@ -1207,3 +1207,14 @@ body:not([data-ds-dark-theme]) .logo-on-light { display: block; }
   border: 1px dashed var(--dsw-alias-border-l1); border-radius: 8px; padding: 4px 10px;
   user-select: none; cursor: default;
 }
+
+/* smaller send/stop circle */
+.send-sm { width: 32px !important; height: 32px !important; }
+.context-ring { position: relative; width: 18px; height: 18px; display: inline-grid; place-items: center; margin-right: 4px; }
+.context-ring svg { display: block; }
+.context-ring-spin {
+  position: absolute; inset: 3px; border-radius: 50%;
+  border: 2px solid var(--dsw-alias-border-l2);
+  border-top-color: var(--dsw-alias-state-business-primary);
+  animation: spin 0.7s linear infinite;
+}
