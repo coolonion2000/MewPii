@@ -181,7 +181,7 @@
   border-radius: 14px 14px 4px 14px;
   padding: 9px 14px;
   white-space: pre-wrap; word-break: break-word;
-  font: var(--dsw-font-base-16);
+  font-size: 14px;
 }
 .msg-user img, .msg-assistant img { max-width: 320px; border-radius: 8px; display: block; margin-top: 6px; }
 
@@ -297,7 +297,7 @@ body[data-ds-dark-theme] .tag-assistant { background: var(--dsw-static-deepseek-
 .queue-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dsw-alias-label-secondary); }
 .queue-mode { display: flex; gap: 2px; background: var(--dsw-alias-bg-layer-2); border-radius: 8px; padding: 2px; }
 
-.msg-assistant { display: flex; flex-direction: column; gap: 8px; min-width: 0; font: var(--dsw-font-base-16); }
+.msg-assistant { display: flex; flex-direction: column; gap: 8px; min-width: 0; font-size: 14px; line-height: 1.65; }
 .msg-error {
   background: var(--dsw-alias-interactive-bg-hover-danger);
   border: 1px solid var(--dsw-alias-state-error-secondary);
