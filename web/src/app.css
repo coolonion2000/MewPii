@@ -906,7 +906,6 @@ body:not([data-ds-dark-theme]) .hljs .hljs-attr, body:not([data-ds-dark-theme]) 
 .menu-section-label {
   font-size: 11px; font-weight: 600; color: var(--dsw-alias-label-caption);
   padding: 6px 10px 4px; text-transform: uppercase; letter-spacing: 0.04em;
-  position: sticky; top: 0; background: var(--dsw-specific-menu);
 }
 
 /* retry banner */
@@ -1223,6 +1222,6 @@ body:not([data-ds-dark-theme]) .logo-on-light { display: block; }
 .menu-group-label {
   font-size: 11px; color: var(--dsw-alias-label-caption);
   padding: 6px 10px 3px; user-select: none;
-  position: sticky; top: 26px; z-index: 1;
+  position: sticky; top: 0; z-index: 1;
   background: var(--dsw-specific-menu);
 }
