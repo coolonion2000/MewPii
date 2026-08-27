@@ -356,10 +356,27 @@ async function convertClaudeSession(raw: string, lines: string[]): Promise<{ cwd
     }
   }
   if (entries.length === 0 || !cwd) return undefined;
-  // cap imported history: pi sessions with tens of thousands of messages are
-  // unwieldy and slow; keep the most recent window for review
-  const MAX_IMPORT = 300;
-  if (entries.length > MAX_IMPORT) entries.splice(0, entries.length - MAX_IMPORT);
+  // cap imported history by cumulative token estimate (~1M ctx, leave headroom).
+  // Walk backwards from the newest message, accumulating until the budget is hit.
+  const TOKEN_BUDGET = 900_000;
+  const estTokens = (content: unknown): number => {
+    const text = typeof content === 'string'
+      ? content
+      : Array.isArray(content)
+        ? (content as { type: string; text?: string }[]).map((b) => b.text ?? '').join(' ')
+        : '';
+    // rough: ~3 chars/token for mixed CJK; add per-message overhead
+    return Math.ceil(text.length / 3) + 24;
+  };
+  let used = 0;
+  let start = entries.length;
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const cost = estTokens(entries[i].content);
+    if (used + cost > TOKEN_BUDGET && start !== entries.length) break;
+    used += cost;
+    start = i;
+  }
+  if (start > 0) entries.splice(0, start);
 
   // build a pi-format JSONL
   const sessionId = crypto.randomUUID();
