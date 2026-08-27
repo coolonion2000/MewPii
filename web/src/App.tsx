@@ -469,6 +469,7 @@ export default function App() {
 
   return (
     <div className="app">
+      <div className="build-tag">v0.1.9</div>
       <Sidebar
         projects={projects}
         archivedSessions={archivedSessions}
