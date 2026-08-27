@@ -393,11 +393,21 @@ async function convertClaudeSession(raw: string, lines: string[]): Promise<{ cwd
     }));
     prev = id;
   }
+  // guard: every emitted line must be a single self-contained JSON object
+  // (a message whose text carried a raw JSON fragment once produced a merged
+  // line that pi's line reader choked on)
+  const clean = lines2.filter((line) => {
+    try {
+      return !!(JSON.parse(line) && typeof JSON.parse(line) === 'object' && JSON.parse(line));
+    } catch {
+      return false;
+    }
+  });
   const fileName = `${new Date().toISOString().replace(/[:.]/g, '-')}_import-${sessionId.slice(0, 8)}.jsonl`;
   const dir = join(getAgentDir(), 'sessions', encodeCwd(cwd));
   await mkdir(dir, { recursive: true });
   const path = join(dir, fileName);
-  await writeFile(path, lines2.join('\n'));
+  await writeFile(path, clean.join('\n'));
   return { cwd, path };
 }
 
@@ -754,6 +764,13 @@ async function handleApi(req: IncomingMessage, res: ServerResponse): Promise<boo
       log,
       steps,
     });
+    return true;
+  }
+
+  if (path === '/api/client-error' && req.method === 'POST') {
+    const body = JSON.parse((await readBody(req, 1024 * 1024)).toString()) as { message?: string; stack?: string; url?: string; ts?: number };
+    console.log('[client-error]', body.url ?? '', body.message ?? '', '\n', (body.stack ?? '').split('\n').slice(0, 8).join('\n'));
+    sendJson(res, 200, { ok: true });
     return true;
   }
 
