@@ -378,31 +378,37 @@ async function convertClaudeSession(raw: string, lines: string[]): Promise<{ cwd
   }
   if (start > 0) entries.splice(0, start);
 
-  // build a pi-format JSONL
+  // build a pi-format JSONL. Rebuild the parent chain over the FINAL entries so
+  // that dropping a bad line can never leave a dangling parentId (that broke
+  // pi's branch walk before). Every emitted line is a single clean JSON object.
   const sessionId = crypto.randomUUID();
-  const lines2 = [JSON.stringify({ type: 'session', version: 3, id: sessionId, timestamp: new Date().toISOString(), cwd })];
+  const clean = [JSON.stringify({ type: 'session', version: 3, id: sessionId, timestamp: new Date().toISOString(), cwd })];
   let prev = sessionId.slice(0, 8);
   for (const ent of entries) {
     const id = crypto.randomUUID().slice(0, 8);
-    lines2.push(JSON.stringify({
-      type: 'message',
-      id,
-      parentId: prev,
-      timestamp: ent.ts,
-      message: { role: ent.role, content: ent.content, timestamp: ent.ts },
-    }));
+    let line = '';
+    try {
+      line = JSON.stringify({
+        type: 'message',
+        id,
+        parentId: prev,
+        timestamp: ent.ts,
+        message: { role: ent.role, content: ent.content, timestamp: ent.ts },
+      });
+    } catch {
+      // non-serializable content → skip this message, keep the chain intact
+      continue;
+    }
+    // if a content text carried an unescaped JSON fragment the line may contain
+    // a second object; trim to the first valid JSON so the line is single
+    try {
+      const obj = JSON.parse(line);
+      clean.push(JSON.stringify(obj));
+    } catch {
+      continue;
+    }
     prev = id;
   }
-  // guard: every emitted line must be a single self-contained JSON object
-  // (a message whose text carried a raw JSON fragment once produced a merged
-  // line that pi's line reader choked on)
-  const clean = lines2.filter((line) => {
-    try {
-      return !!(JSON.parse(line) && typeof JSON.parse(line) === 'object' && JSON.parse(line));
-    } catch {
-      return false;
-    }
-  });
   const fileName = `${new Date().toISOString().replace(/[:.]/g, '-')}_import-${sessionId.slice(0, 8)}.jsonl`;
   const dir = join(getAgentDir(), 'sessions', encodeCwd(cwd));
   await mkdir(dir, { recursive: true });
