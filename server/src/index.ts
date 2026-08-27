@@ -389,7 +389,7 @@ async function convertClaudeSession(raw: string, lines: string[]): Promise<{ cwd
       id,
       parentId: prev,
       timestamp: ent.ts,
-      message: { role: ent.role, content: ent.content },
+      message: { role: ent.role, content: ent.content, timestamp: ent.ts },
     }));
     prev = id;
   }
