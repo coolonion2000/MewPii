@@ -578,8 +578,27 @@ async function handleApi(req: IncomingMessage, res: ServerResponse): Promise<boo
         if (log.trim()) break;
       } catch { /* next */ }
     }
+    // read usage (tokens/cost) from a real subagent session file
+    const readUsage = (sessionFile?: string) => {
+      if (!sessionFile || !existsSync(sessionFile)) return { tokens: 0, cost: 0 };
+      let tokens = 0;
+      let cost = 0;
+      try {
+        for (const line of readFileSync(sessionFile, 'utf8').split('\n')) {
+          if (!line.trim()) continue;
+          const e = JSON.parse(line) as { type?: string; message?: { usage?: { totalTokens?: number; cost?: { total?: number } } } };
+          const u = e.type === 'message' ? e.message?.usage : undefined;
+          if (u) {
+            tokens += u.totalTokens ?? 0;
+            cost += u.cost?.total ?? 0;
+          }
+        }
+      } catch { /* ignore */ }
+      return { tokens, cost };
+    };
+
     // per-step state from the workflow event stream (latest event per key)
-    const steps: { key: string; state: string; durationMs?: number }[] = [];
+    const steps: { key: string; state: string; durationMs?: number; agent?: string; tokens?: number; cost?: number; sessionFile?: string }[] = [];
     try {
       const eventsRaw = readFileSync(join(found.dir, 'events.jsonl'), 'utf8');
       const byKey = new Map<string, { key: string; state: string; durationMs?: number }>();
@@ -595,6 +614,26 @@ async function handleApi(req: IncomingMessage, res: ServerResponse): Promise<boo
       }
       steps.push(...byKey.values());
     } catch { /* single runs have no trace */ }
+
+    // if status.json carries a steps[] array, prefer its richer detail (agent,
+    // per-step timing, real session file → token/cost aggregation)
+    const statusSteps = (status as unknown as { steps?: { agent?: string; label?: string; status?: string; startedAt?: number; lastActivityAt?: number; durationMs?: number; sessionFile?: string }[] }).steps;
+    if (Array.isArray(statusSteps) && statusSteps.length > 0) {
+      const agg = statusSteps.map((st) => {
+        const u = readUsage(st.sessionFile);
+        const dur = st.durationMs ?? ((st.lastActivityAt ?? status.lastUpdate ?? 0) - (st.startedAt ?? status.startedAt ?? 0));
+        return {
+          key: st.label ?? st.agent ?? 'step',
+          state: st.status ?? 'unknown',
+          agent: st.agent,
+          durationMs: dur,
+          tokens: u.tokens,
+          cost: u.cost,
+          sessionFile: st.sessionFile,
+        };
+      });
+      if (agg.length > 0) steps.length = 0, steps.push(...agg);
+    }
 
     sendJson(res, 200, {
       runId,

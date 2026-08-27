@@ -13,7 +13,14 @@ interface RunDetail {
   startedAt?: number;
   lastUpdate?: number;
   log: string;
-  steps?: { key: string; state: string; durationMs?: number }[];
+  steps?: { key: string; state: string; durationMs?: number; agent?: string; tokens?: number; cost?: number }[];
+}
+
+/** Compact number formatting (12.3k / 4.5M). */
+function fmtNum(n: number): string {
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
+  if (n >= 1_000) return (n / 1_000).toFixed(1) + 'k';
+  return String(n);
 }
 
 /** Live view of an in-flight pi-subagents run: task, state, streaming log. */
@@ -77,6 +84,10 @@ export default function SubagentRunDialog({ runId, onClose, onOpenParent }: {
                 </span>
                 <span className="srun-step-key mono">Step {i + 1}/{detail.steps!.length}: {st.key}</span>
                 <span className={`srun-step-label ${st.state}`}>{st.state}</span>
+                <span className="srun-step-meta mono">
+                  {st.tokens !== undefined && st.tokens > 0 ? `${fmtNum(st.tokens)} tok` : ''}
+                  {st.cost !== undefined && st.cost > 0 ? ` · $${st.cost.toFixed(4)}` : ''}
+                </span>
                 {st.durationMs !== undefined && (
                   <span className="srun-step-dur mono">{(st.durationMs / 1000).toFixed(1)}s</span>
                 )}

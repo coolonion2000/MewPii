@@ -1231,3 +1231,6 @@ body:not([data-ds-dark-theme]) .logo-on-light { display: block; }
 /* model/level menu rows never wrap */
 .combined-menu .menu-item { white-space: nowrap; }
 .combined-menu .menu-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* subagent step meta (tokens/cost) */
+.srun-step-meta { flex-shrink: 0; font-size: 10.5px; color: var(--dsw-alias-label-caption); }
