@@ -480,7 +480,17 @@ export class SessionHost {
       for (const entry of branch) {
         const e = entry as { type?: string; id?: string; message?: unknown };
         if (e.type === 'message' && e.message && typeof e.message === 'object') {
-          messages.push({ ...(e.message as Record<string, unknown>), _entryId: e.id });
+          const msg = e.message as Record<string, unknown>;
+          // some sessions carry bare-string content blocks ({ "A" } instead of
+          // {type:'text'}); normalize so rendering & tool cards don't choke
+          if (Array.isArray(msg.content)) {
+            msg.content = msg.content.map((b) => {
+              if (typeof b === 'string') return { type: 'text', text: b };
+              if (b && typeof b === 'object') return b;
+              return { type: 'text', text: String(b ?? '') };
+            });
+          }
+          messages.push({ ...msg, _entryId: e.id });
         }
       }
     } catch {
