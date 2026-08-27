@@ -16,6 +16,16 @@ interface RunDetail {
   steps?: { key: string; state: string; durationMs?: number; agent?: string; tokens?: number; cost?: number }[];
 }
 
+/** Compact elapsed-time string ("8分32秒"). */
+function fmtDur(startedAt: number, now: number): string {
+  const s = Math.max(0, Math.floor((now - startedAt) / 1000));
+  const m = Math.floor(s / 60);
+  const h = Math.floor(m / 60);
+  if (h > 0) return `${h}小时${m % 60}分`;
+  if (m > 0) return `${m}分${s % 60}秒`;
+  return `${s}秒`;
+}
+
 /** Compact number formatting (12.3k / 4.5M). */
 function fmtNum(n: number): string {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
@@ -30,6 +40,11 @@ export default function SubagentRunDialog({ runId, onClose, onOpenParent }: {
   onOpenParent?: (cwd: string, sessionPath: string) => void;
 }) {
   const [detail, setDetail] = useState<RunDetail>();
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
 
   useEffect(() => {
     let alive = true;
@@ -62,6 +77,9 @@ export default function SubagentRunDialog({ runId, onClose, onOpenParent }: {
             <span className={`srun-state ${detail.alive ? 'alive' : ''}`}>
               {detail.alive ? `● ${t('running')}` : detail.state}
             </span>
+          )}
+          {detail?.startedAt != null && (
+            <span className="srun-elapsed mono">{fmtDur(detail.startedAt, now)}</span>
           )}
           <span className="spacer" />
           {detail?.parentSessionPath && detail.cwd && onOpenParent && (
