@@ -383,8 +383,11 @@ export class SessionHost {
           },
         } as never,
       });
-    } catch {
+    } catch (err) {
       // Extensions are optional; a failing binding must not break the session.
+      // Log it though — silent swallow makes "why doesn't my extension load"
+      // impossible to debug (e.g. pi-codex-multi throwing at module load).
+      console.log('[ext] bindExtensionUi error:', err instanceof Error ? err.message : String(err));
     }
   }
 
@@ -631,10 +634,65 @@ export class SessionHost {
     };
   }
 
+  /**
+   * Parse and execute a pi slash command (typed as \"/cmd args\" in the composer).
+   * Built-ins map to AgentSession methods; commands that genuinely require the
+   * interactive TUI (model selector, OAuth login, extension pickers like /subs)
+   * return a helpful message instead of silently going to the LLM.
+   */
+  async runSlash(raw: string): Promise<{ ok: boolean; error?: string; data?: Record<string, unknown> }> {
+    const s = this.session;
+    const text = raw.replace(/^\s*\/+\s*/, '').trim();
+    const [name, ...args] = text.split(/\s+/);
+    const arg = args.join(' ').trim();
+    const out = (o: string) => ({ ok: true, data: { output: o } });
+    switch (name) {
+      case 'compact':
+        await s.compact();
+        return out('已触发上下文压缩。');
+      case 'name':
+        if (!arg) return { ok: false, error: '用法: /name <会话名>' };
+        s.setSessionName(arg);
+        this.broadcastSnapshot();
+        return out(`会话已命名为：${arg}`);
+      case 'session': {
+        const st = s.sessionName ?? '';
+        const model = s.model ? `${s.model.provider}/${s.model.id}` : '-';
+        return out(`会话: ${st || '(未命名)'}\n模型: ${model}\n流式: ${s.isStreaming ? '是' : '否'}`);
+      }
+      case 'new':
+        await this.runtime.newSession();
+        this.broadcastSnapshot();
+        return out('已新建会话。');
+      case 'model': {
+        // /model <provider/modelId> — resolve current within the model registry
+        const [prov, ...mid] = arg.split('/');
+        if (!prov || mid.length === 0) return { ok: false, error: '用法: /model <provider/modelId>' };
+        const model = this.modelRegistry.find(prov, mid.join('/'));
+        if (!model) return { ok: false, error: `模型未找到: ${arg}` };
+        await s.setModel(model);
+        this.broadcastSnapshot();
+        return out(`已切换模型：${model.name ?? model.id}`);
+      }
+      case 'login':
+        return { ok: false, error: '/login 需要在 pi CLI 或「设置→模型」里完成（OAuth 流程浏览器端不支持在命令中直接触发）。' };
+      case 'export':
+        return { ok: false, error: '/export 请使用界面右上角的「导出」按钮。' };
+      case 'subs':
+      case 'pool':
+      case 'mp-preset':
+        return { ok: false, error: `/${name} 是扩展 pi-codex-multi 的 TUI 命令，请在 pi 命令行里执行；账号管理完成后 MewPii 自动使用这些账号轮换。` };
+      default:
+        return { ok: false, error: `未知命令 /${name}。可用内置命令：/compact /name /session /model /new` };
+    }
+  }
+
   async handleCommand(cmd: ClientCommand & { id?: string }): Promise<{ ok: boolean; error?: string; data?: Record<string, unknown> }> {
     const s = this.session;
     try {
       switch (cmd.type) {
+        case 'slash':
+          return this.runSlash(cmd.raw);
         case 'prompt':
           await s.prompt(cmd.message, {
             images: cmd.images?.map((img) => ({ type: 'image' as const, data: img.data, mimeType: img.mimeType })),

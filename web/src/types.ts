@@ -71,7 +71,8 @@ export type ClientCommand =
   | { type: 'queue_clear' }
   | { type: 'history'; before: number }
   | { type: 'setToolMode'; mode: 'off' | 'read-only' | 'default' | 'full' }
-  | { type: 'ui_response'; requestId: string; value: unknown };
+  | { type: 'ui_response'; requestId: string; value: unknown }
+  | { type: 'slash'; raw: string };
 
 export interface WidgetState {
   key: string;

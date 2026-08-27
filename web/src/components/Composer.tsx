@@ -85,6 +85,24 @@ export default function Composer({ conv, draft, onDraft }: Props) {
     // optimistic render: show the message now, not after the server round-trip.
     // while streaming the message only enters the queue (steer/followUp) — the
     // queue strip shows it; a premature bubble would double-display it.
+    // a leading "/cmd" is a pi slash command (compact, model, session, extension
+    // commands) — route it to the command executor, not the LLM
+    const slashMatch = value.match(/^\s*\/([a-z][a-z0-9-]*)(\s+.*)?$/i);
+    if (slashMatch) {
+      const optKey2 = streaming ? -1 : conv.addOptimistic(value, imgs.map(({ data, mimeType }) => ({ data, mimeType })));
+      try {
+        const res = await conv.send({ type: 'slash', raw: value });
+        const output = (res as { output?: string } | undefined)?.output;
+        if (output) conv.toast(output);
+        else if (!conv.lastError) conv.toast(t('slashDone'));
+        if (optKey2 >= 0) conv.removeOptimistic(optKey2);
+      } catch (err) {
+        if (optKey2 >= 0) conv.removeOptimistic(optKey2);
+        conv.lastError = err instanceof Error ? err.message : String(err);
+        setText(value);
+      }
+      return;
+    }
     const optKey = streaming ? -1 : conv.addOptimistic(value, imgs.map(({ data, mimeType }) => ({ data, mimeType })));
     try {
       await conv.send({
