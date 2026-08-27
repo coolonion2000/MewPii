@@ -325,6 +325,63 @@ function listVirtualSubagentRuns(realNested: Set<string>): import('./protocol').
   }
   return out;
 }
+/**
+ * Convert a Claude Code .jsonl conversation into a pi-format session file.
+ * Returns {cwd, path} or undefined when the file isn't a Claude conversation.
+ */
+async function convertClaudeSession(raw: string, lines: string[]): Promise<{ cwd: string; path: string } | undefined> {
+  // detect Claude: has last-prompt/user/assistant entries
+  let cwd = '';
+  const entries: { role: 'user' | 'assistant'; content: unknown; ts: string }[] = [];
+  for (const line of lines) {
+    let e: { type?: string; cwd?: string; timestamp?: string; message?: { role?: string; content?: unknown } };
+    try { e = JSON.parse(line); } catch { continue; }
+    if (e.cwd) cwd = e.cwd;
+    if (e.type === 'user' || e.type === 'assistant') {
+      const content = e.message?.content;
+      if (typeof content === 'string' && content.length > 0) {
+        entries.push({ role: e.type, content: [{ type: 'text', text: content }], ts: e.timestamp ?? new Date().toISOString() });
+      } else if (Array.isArray(content)) {
+        const blocks: { type: string; text?: string; id?: string; name?: string; arguments?: unknown }[] = [];
+        for (const b of content) {
+          if (!b) continue;
+          if (b.type === 'text' && b.text) blocks.push({ type: 'text', text: b.text });
+          else if (b.type === 'tool_use' && b.id) blocks.push({ type: 'toolCall', id: b.id, name: String(b.name ?? 'tool'), arguments: b.input ?? {} });
+          else if (b.type === 'tool_result') blocks.push({ type: 'toolResult', text: typeof b.content === 'string' ? b.content : JSON.stringify(b.content ?? '') });
+        }
+        if (blocks.length > 0) entries.push({ role: e.type, content: blocks, ts: e.timestamp ?? new Date().toISOString() });
+      }
+    }
+  }
+  if (entries.length === 0 || !cwd) return undefined;
+
+  // build a pi-format JSONL
+  const sessionId = crypto.randomUUID();
+  const lines2 = [JSON.stringify({ type: 'session', version: 3, id: sessionId, timestamp: new Date().toISOString(), cwd })];
+  let prev = sessionId.slice(0, 8);
+  for (const ent of entries) {
+    const id = crypto.randomUUID().slice(0, 8);
+    lines2.push(JSON.stringify({
+      type: 'message',
+      id,
+      parentId: prev,
+      timestamp: ent.ts,
+      message: { role: ent.role, content: ent.content },
+    }));
+    prev = id;
+  }
+  const fileName = `${new Date().toISOString().replace(/[:.]/g, '-')}_import-${sessionId.slice(0, 8)}.jsonl`;
+  const dir = join(getAgentDir(), 'sessions', encodeCwd(cwd));
+  await mkdir(dir, { recursive: true });
+  const path = join(dir, fileName);
+  await writeFile(path, lines2.join('\n'));
+  return { cwd, path };
+}
+
+function encodeCwd(cwd: string): string {
+  return cwd.replace(/[^a-zA-Z0-9-]/g, '-');
+}
+
 {
   const sessionsDir = join(getAgentDir(), 'sessions');
   let timer: NodeJS.Timeout | undefined;
@@ -371,6 +428,31 @@ async function writeState(state: PiiState): Promise<void> {
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
+/** Like readBody but resolves the reject to a 413 response instead of killing the socket. */
+function readBodyGraceful(req: IncomingMessage, limit: number): Promise<Buffer> {
+  return new Promise((resolvePromise, reject) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    let done = false;
+    req.on('data', (c: Buffer) => {
+      size += c.length;
+      if (size > limit) {
+        if (!done) {
+          done = true;
+          reject(new Error('body too large'));
+        }
+        req.pause();
+      } else {
+        chunks.push(c);
+      }
+    });
+    req.on('end', () => {
+      if (!done) resolvePromise(Buffer.concat(chunks));
+    });
+    req.on('error', (err) => { if (!done) { done = true; reject(err); } });
+  });
+}
+
 function readBody(req: IncomingMessage, limit = 64 * 1024 * 1024): Promise<Buffer> {
   return new Promise((resolvePromise, reject) => {
     const chunks: Buffer[] = [];
@@ -1272,7 +1354,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse): Promise<boo
 
   // ---- session import (JSONL) ------------------------------------------
   if (path === '/api/sessions/import' && req.method === 'POST') {
-    const body = await readBody(req, 64 * 1024 * 1024);
+    const body = await readBodyGraceful(req, 512 * 1024 * 1024);
     const lines = body.toString('utf-8').split('\n').filter(Boolean);
     if (lines.length === 0) {
       sendJson(res, 400, { error: 'empty file' });
@@ -1286,7 +1368,13 @@ async function handleApi(req: IncomingMessage, res: ServerResponse): Promise<boo
       return true;
     }
     if (header.type !== 'session' || !header.cwd) {
-      sendJson(res, 400, { error: 'not a pi session file' });
+      // Claude Code (.claude/projects/*/*.jsonl) sessions: convert to a pi session.
+      const converted = await convertClaudeSession(body.toString('utf-8'), lines);
+      if (converted) {
+        sendJson(res, 200, { ok: true, cwd: converted.cwd, sessionFile: converted.path, converted: true });
+        return true;
+      }
+      sendJson(res, 400, { error: 'not a pi session file (Claude import requires assistant+user entries)' });
       return true;
     }
     const importsDir = join(getAgentDir(), 'imports');
