@@ -342,18 +342,24 @@ async function convertClaudeSession(raw: string, lines: string[]): Promise<{ cwd
       if (typeof content === 'string' && content.length > 0) {
         entries.push({ role: e.type, content: [{ type: 'text', text: content }], ts: e.timestamp ?? new Date().toISOString() });
       } else if (Array.isArray(content)) {
-        const blocks: { type: string; text?: string; id?: string; name?: string; arguments?: unknown }[] = [];
+        // text-only conversion: Claude tool_use/tool_result explode to thousands of
+        // structured blocks that pi's content validation rejects (image/block cap).
+        const blocks: { type: string; text: string }[] = [];
         for (const b of content) {
           if (!b) continue;
           if (b.type === 'text' && b.text) blocks.push({ type: 'text', text: b.text });
-          else if (b.type === 'tool_use' && b.id) blocks.push({ type: 'toolCall', id: b.id, name: String(b.name ?? 'tool'), arguments: b.input ?? {} });
-          else if (b.type === 'tool_result') blocks.push({ type: 'toolResult', text: typeof b.content === 'string' ? b.content : JSON.stringify(b.content ?? '') });
+          else if (b.type === 'tool_use') blocks.push({ type: 'text', text: `[调用工具: ${String(b.name ?? 'tool')}]` });
+          else if (b.type === 'tool_result') blocks.push({ type: 'text', text: `[工具结果] ${typeof b.content === 'string' ? b.content : JSON.stringify(b.content ?? '').slice(0, 2000)}` });
         }
         if (blocks.length > 0) entries.push({ role: e.type, content: blocks, ts: e.timestamp ?? new Date().toISOString() });
       }
     }
   }
   if (entries.length === 0 || !cwd) return undefined;
+  // cap imported history: pi sessions with tens of thousands of messages are
+  // unwieldy and slow; keep the most recent window for review
+  const MAX_IMPORT = 300;
+  if (entries.length > MAX_IMPORT) entries.splice(0, entries.length - MAX_IMPORT);
 
   // build a pi-format JSONL
   const sessionId = crypto.randomUUID();
@@ -379,7 +385,8 @@ async function convertClaudeSession(raw: string, lines: string[]): Promise<{ cwd
 }
 
 function encodeCwd(cwd: string): string {
-  return cwd.replace(/[^a-zA-Z0-9-]/g, '-');
+  // match pi's SessionManager encoding exactly: --<cwd-no-leading-slash, / and : -> ->--
+  return `--${cwd.replace(/^[/\\]/, '').replace(/[/\\:]/g, '-')}--`;
 }
 
 {
