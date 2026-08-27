@@ -34,6 +34,39 @@ function toolSummary(toolName: string, args: Record<string, unknown>): string {
   }
 }
 
+/** Minimal JSON decoder returning [value, bytesConsumed] (handles concatenated JSON). */
+class JSONDecoder {
+  private source = '';
+  decode(input: string): [unknown, number] {
+    this.source = input;
+    const value = JSON.parse(this.readValue());
+    return [value, this.consumed];
+  }
+  private pos = 0;
+  private consumed = 0;
+  private readValue(): string {
+    let depth = 0; let inStr = false; let esc = false; let start = this.pos;
+    this.pos = 0;
+    // find the end of one JSON value
+    let i = 0;
+    while (i < this.source.length) {
+      const ch = this.source[i];
+      if (inStr) {
+        if (esc) esc = false;
+        else if (ch === '\\') esc = true;
+        else if (ch === '"') inStr = false;
+      } else {
+        if (ch === '"') inStr = true;
+        else if (ch === '{' || ch === '[') depth++;
+        else if (ch === '}' || ch === ']') { depth--; if (depth === 0) { i++; break; } }
+      }
+      i++;
+    }
+    this.consumed = i;
+    return this.source.slice(0, i);
+  }
+}
+
 /** Strip the huge `partial` message from streaming events; keep everything else JSON-passthrough. */
 function serializeEvent(event: AgentSessionEvent): Record<string, unknown> {
   return JSON.parse(
@@ -171,6 +204,46 @@ export class SessionHost {
     }
   }
 
+  /**
+   * Repair a session file whose lines got merged by concurrent writes (pi's
+   * append can interleave a `thinking_level_change`/`custom_message` onto the
+   * previous line when the file is opened right after an import). Splits every
+   * line into one JSON object per line so the file always parses.
+   */
+  private static async healIfMerged(file: string): Promise<boolean> {
+    try {
+      const fs = await import('node:fs/promises');
+      const raw = await fs.readFile(file, 'utf8');
+      const lines = raw.split('\n');
+      let changed = false;
+      const out: string[] = [];
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const decoder = new JSONDecoder();
+          let rest = line;
+          let first = true;
+          while (rest.trim()) {
+            const [obj, end] = decoder.decode(rest.trim());
+            out.push(JSON.stringify(obj));
+            rest = rest.trim().slice(end).trim();
+            if (first) first = false;
+            else changed = true; // found a merged line
+          }
+        } catch {
+          out.push(line);
+        }
+      }
+      if (changed) {
+        await fs.writeFile(file, out.join('\n') + '\n');
+        return true;
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  }
+
   private async reloadIfExternal(): Promise<void> {
     const file = this.runtime.session.sessionFile;
     if (!file || this.runtime.session.isStreaming || this.reloading) return;
@@ -182,6 +255,8 @@ export class SessionHost {
       if (mtimeMs <= this.settledMtime + 10) return;
       // Content check: the file's last entry must be one we don't already have.
       // Our own reload/append side-effects share our known leaf id — skip those.
+      // heal merged lines from concurrent writes before re-reading
+      await SessionHost.healIfMerged(file);
       const tailId = await lastEntryId(file);
       const knownLeaf = this.runtime.session.sessionManager.getLeafId();
       if (tailId && tailId === knownLeaf) {
