@@ -6,21 +6,21 @@
 
 - Docker Desktop 正在运行：`open -a Docker`，等 `docker info` 能返回
 - 有 Docker Hub 账号 `coolonion2000` + **Personal Access Token（PAT）**
-  - 获取：https://hub.docker.com/settings/security → New Access Token（勾 `Read, Write, Delete`）
-  - PAT 只临时用，`docker login` 后建议删除
+  - 通过环境变量 `DOCKERHUB_PAT` 临时注入，禁止写入仓库、命令脚本或聊天产物
+  - 获取：https://hub.docker.com/settings/security → New Access Token（勾 `Read, Write`）
 - 仓库代码是最新且已推送
 
 ## 1. 推送代码（确保构建用最新）
 
 ```bash
 cd /Users/cosmo010225/Pii
-git add -A
-git -c user.name=pii -c user.email=pii@local commit -m "chore: release <版本号>"   # 若无未提交改动可跳过
-git push
-git log --oneline | head -3   # 确认推送成功
+git branch --show-current       # 必须是 main
+git status --short             # 必须无输出；有改动就停止，不要自动 git add/commit
+git push origin main
+git log --oneline | head -3    # 确认推送成功
 ```
 
-> ⚠️ **必须**先 `git push` 成功，否则镜像会基于旧代码构建。
+> ⚠️ **必须**先确认工作区干净并成功 `git push`，禁止发布流程自动提交其他开发中的改动。
 
 ## 2. 确定下一个版本号
 
@@ -33,7 +33,8 @@ curl -s "https://hub.docker.com/v2/repositories/coolonion2000/mewpii/tags" | pyt
 ## 3. 登录 Docker Hub
 
 ```bash
-echo '<你的DockerHub-PAT>' | docker login -u coolonion2000 --password-stdin
+read -s DOCKERHUB_PAT && export DOCKERHUB_PAT
+echo "$DOCKERHUB_PAT" | docker login -u coolonion2000 --password-stdin
 ```
 
 ## 4. 构建并推送（amd64）
