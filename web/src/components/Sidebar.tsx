@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ProjectGroup, SessionSummary } from '../types';
 import type { Selection, View } from '../App';
 import { setLang, getLang, t } from '../i18n';
+import { parseStoredStringArray } from '../state-utils';
 import DirectoryPicker from './DirectoryPicker';
 import {
   IconPlus, IconSearch, IconSettings, IconTrash, IconStar, IconStarFilled,
@@ -38,11 +39,6 @@ function basename(cwd: string): string {
 }
 
 /** dsh-style: titles truncate to the first N characters with an ellipsis. */
-function shortTitle(text: string, n = 12): string {
-  const t = text.trim();
-  return t.length > n ? `${t.slice(0, n)}…` : t;
-}
-
 function relTime(iso: string): string {
   const diff = Date.now() - Date.parse(iso);
   const m = Math.floor(diff / 60_000);
@@ -84,42 +80,71 @@ export default function Sidebar(props: Props) {
   const importRef = useRef<HTMLInputElement>(null);
   const [openParents, setOpenParents] = useState<Set<string>>(new Set());
   const [favs, setFavs] = useState<string[]>([]);
-  const stateLoaded = useRef(false);
+  const stateVersion = useRef(-1);
+  const stateChannel = useRef<BroadcastChannel | undefined>(undefined);
+
+  const applyServerState = useCallback((state: { favorites?: string[]; projectOrder?: string[]; version?: number }) => {
+    const version = state.version ?? 0;
+    if (version < stateVersion.current) return;
+    stateVersion.current = version;
+    if (state.favorites) setFavs(state.favorites);
+    if (state.projectOrder) setProjectOrder(state.projectOrder);
+  }, []);
+
+  const publishState = useCallback((state: { favorites?: string[]; projectOrder?: string[]; version?: number }) => {
+    applyServerState(state);
+    stateChannel.current?.postMessage(state);
+  }, [applyServerState]);
 
   useEffect(() => {
-    fetch('/api/state')
+    const channel = typeof BroadcastChannel === 'undefined'
+      ? undefined
+      : new BroadcastChannel(`pii-sidebar-state:${currentAgent ?? 'local'}`);
+    stateChannel.current = channel;
+    if (channel) channel.onmessage = (event: MessageEvent) => applyServerState(event.data as { favorites?: string[]; projectOrder?: string[]; version?: number });
+    const controller = new AbortController();
+    void fetch('/api/state', { signal: controller.signal })
       .then((r) => r.json())
-      .then((d: { favorites?: string[]; projectOrder?: string[] }) => {
+      .then((d: { favorites?: string[]; projectOrder?: string[]; version?: number }) => {
+        if (controller.signal.aborted) return;
         const serverFavs = d.favorites ?? [];
         const serverOrder = d.projectOrder ?? [];
-        // migrate legacy localStorage values if the server has none
-        const legacyFavs = JSON.parse(localStorage.getItem('pii-favs') ?? '[]') as string[];
-        const legacyOrder = JSON.parse(localStorage.getItem('pii-project-order') ?? '[]') as string[];
+        const legacyFavs = parseStoredStringArray(localStorage.getItem('pii-favs'));
+        const legacyOrder = parseStoredStringArray(localStorage.getItem('pii-project-order'));
         const mergedFavs = serverFavs.length ? serverFavs : legacyFavs;
         const mergedOrder = serverOrder.length ? serverOrder : legacyOrder;
-        setFavs(mergedFavs);
-        setProjectOrder(mergedOrder);
-        stateLoaded.current = true;
+        applyServerState({ ...d, favorites: mergedFavs, projectOrder: mergedOrder });
         if (!serverFavs.length && (legacyFavs.length || legacyOrder.length)) {
           void fetch('/api/state', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ favorites: mergedFavs, projectOrder: mergedOrder }),
-          }).catch(() => undefined);
+          }).then((response) => response.json()).then(publishState).catch(() => undefined);
         }
       })
-      .catch(() => {
-        stateLoaded.current = true;
-      });
-  }, []);
+      .catch(() => undefined);
+    return () => {
+      controller.abort();
+      channel?.close();
+      if (stateChannel.current === channel) stateChannel.current = undefined;
+    };
+  }, [applyServerState, currentAgent, publishState]);
 
-  const persistState = useCallback((favorites: string[], order: string[]) => {
-    void fetch('/api/state', {
+  const mutateSidebarState = useCallback((path: string, body: Record<string, unknown>) => {
+    void fetch(path, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ favorites, projectOrder: order }),
-    }).catch(() => undefined);
-  }, []);
+      body: JSON.stringify(body),
+    })
+      .then((response) => {
+        if (!response.ok) throw new Error(String(response.status));
+        return response.json();
+      })
+      .then(publishState)
+      .catch(() => {
+        void fetch('/api/state').then((response) => response.json()).then(publishState).catch(() => undefined);
+      });
+  }, [publishState]);
 
   useEffect(() => {
     localStorage.setItem(OPEN_KEY, JSON.stringify([...openProjects]));
@@ -127,9 +152,9 @@ export default function Sidebar(props: Props) {
 
   const toggleFav = (cwd: string) => {
     setFavs((prev) => {
-      const next = prev.includes(cwd) ? prev.filter((c) => c !== cwd) : [...prev, cwd];
-      persistState(next, projectOrder);
-      return next;
+      const favorite = !prev.includes(cwd);
+      mutateSidebarState('/api/state/favorites', { cwd, favorite });
+      return favorite ? [...prev, cwd] : prev.filter((value) => value !== cwd);
     });
   };
 
@@ -161,6 +186,7 @@ export default function Sidebar(props: Props) {
   }, [filtered, favs, projectOrder]);
 
   const newSessionCwd = selection?.cwd ?? projects[0]?.cwd ?? '/';
+  const agentOffline = Boolean(currentAgent && !agents?.includes(currentAgent));
 
   const toggleProject = (cwd: string) =>
     setOpenProjects((prev) => {
@@ -357,7 +383,7 @@ export default function Sidebar(props: Props) {
         </button>
       </div>
       <div className="agent-row">
-        {(agents?.length ?? 0) > 0 ? (
+        {(agents?.length ?? 0) > 0 || currentAgent ? (
           <select
             className="agent-select-wide"
             title={t('agentSelect')}
@@ -365,7 +391,8 @@ export default function Sidebar(props: Props) {
             onChange={(e) => onSelectAgent?.(e.target.value)}
           >
             <option value="">{t('agentLocal')}</option>
-            {agents!.map((a) => (
+            {agentOffline && currentAgent && <option value={currentAgent}>{currentAgent} ({t('disconnected')})</option>}
+            {(agents ?? []).map((a) => (
               <option key={a} value={a}>{a}</option>
             ))}
           </select>
@@ -378,9 +405,6 @@ export default function Sidebar(props: Props) {
         <span className="spacer" />
         <button className="btn btn-icon" title={t('searchSessions')} onClick={() => setSearchOpen((o) => !o)}>
           <IconSearch />
-        </button>
-        <button className={`btn btn-icon ${view !== 'chat' && view !== 'files' ? 'tab-active' : ''}`} title={t('navSettings')} onClick={() => onNavigate('settings')}>
-          <IconSettings />
         </button>
         <button className="btn btn-icon" title={t('importSession')} onClick={() => importRef.current?.click()}>
           <IconExport size={14} style={{ transform: 'rotate(180deg)' }} />
@@ -454,11 +478,12 @@ export default function Sidebar(props: Props) {
                 e.preventDefault();
                 const from = dragCwd.current;
                 if (!from || from === p.cwd) return;
-                setProjectOrder((prev) => {
-                  const base = sorted.map((x) => x.cwd).filter((c) => c !== from);
-                  const idx = base.indexOf(p.cwd);
-                  base.splice(idx === -1 ? base.length : idx, 0, from);
-                  persistState(favs, base);
+                setProjectOrder(() => {
+                  const visibleOrder = sorted.map((item) => item.cwd);
+                  const base = visibleOrder.filter((cwd) => cwd !== from);
+                  const index = base.indexOf(p.cwd);
+                  base.splice(index === -1 ? base.length : index, 0, from);
+                  mutateSidebarState('/api/state/project-order', { cwd: from, beforeCwd: p.cwd, visibleOrder });
                   return base;
                 });
               }}
@@ -525,6 +550,7 @@ export default function Sidebar(props: Props) {
           <button className={`btn btn-icon ${view !== 'chat' && view !== 'files' ? 'tab-active' : ''}`} title={t('navSettings')} onClick={() => onNavigate('settings')}>
             <IconSettings size={14} />
           </button>
+          <span className="build-tag">v0.1.9</span>
           <span style={{ flex: 1 }} />
           <button className="btn btn-icon" title={t('refresh')} onClick={onRefresh}><IconRefresh size={13} /></button>
           <button className="btn btn-icon" title="Language" onClick={() => setLang(getLang() === 'zh' ? 'en' : 'zh')} style={{ fontSize: 11 }}>

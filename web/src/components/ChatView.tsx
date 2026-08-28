@@ -13,6 +13,7 @@ import FilePreview from './FilePreview';
 import { IconTrash, IconPencil, IconX } from '../icons';
 import { exportHtml } from '../export';
 import type { PiiMessage, ProjectGroup } from '../types';
+import { shouldShowDisconnected } from '../state-utils';
 import { t } from '../i18n';
 
 interface Props {
@@ -295,8 +296,8 @@ export default function ChatView({ conv, onRefresh, onForked, projects, onSelect
         <div className="chat-column">
           {conv.historyFrom > 0 && (
             <div style={{ display: 'flex', justifyContent: 'center' }}>
-              <button className="btn btn-sm" onClick={() => conv.loadOlder()}>
-                {t('loadOlder')} ({conv.historyFrom})
+              <button className="btn btn-sm" disabled={conv.historyInFlight} onClick={() => conv.loadOlder()}>
+                {conv.historyInFlight ? '…' : t('loadOlder')} ({conv.historyFrom})
               </button>
             </div>
           )}
@@ -413,7 +414,9 @@ export default function ChatView({ conv, onRefresh, onForked, projects, onSelect
           )}
           {conv.lastError && <div className="msg-error">{conv.lastError}</div>}
           {conv.reconnecting && <div className="msg-error">{t('reconnecting')}</div>}
-          {!conv.reconnecting && !conv.connected && <div className="msg-error">{t('disconnected')}</div>}
+          {shouldShowDisconnected(conv.connected, conv.reconnecting, conv.error) && (
+            <div className="msg-error">{t('disconnected')}</div>
+          )}
         </div>
       </div>
       )}
@@ -435,6 +438,7 @@ export default function ChatView({ conv, onRefresh, onForked, projects, onSelect
               index={i}
               msg={msg}
               conv={conv}
+              capabilities={conv.snapshot?.queueCapabilities}
               onEdit={(m) => setDraft(m)}
             />
           ))}
@@ -445,6 +449,7 @@ export default function ChatView({ conv, onRefresh, onForked, projects, onSelect
               index={i}
               msg={msg}
               conv={conv}
+              capabilities={conv.snapshot?.queueCapabilities}
               onEdit={(m) => setDraft(m)}
             />
           ))}
@@ -481,6 +486,7 @@ export default function ChatView({ conv, onRefresh, onForked, projects, onSelect
             cwd={snap?.cwd ?? conv.cwd}
             path={previewPath}
             width={previewWidth}
+            agent={conv.agent}
             onClose={() => setPreviewPath(undefined)}
           />
         </>
@@ -506,11 +512,12 @@ function firstUserText(messages: PiiMessage[]): string {
 }
 
 
-function QueueItem({ kind, index, msg, conv, onEdit }: {
+function QueueItem({ kind, index, msg, conv, capabilities, onEdit }: {
   kind: 'steer' | 'followUp';
   index: number;
   msg: string;
   conv: Conversation;
+  capabilities?: { reorder: boolean; remove: boolean; reason?: string };
   onEdit: (m: string) => void;
 }) {
   const other = kind === 'steer' ? 'followUp' : 'steer';
@@ -523,14 +530,16 @@ function QueueItem({ kind, index, msg, conv, onEdit }: {
       <span className="queue-actions">
         <button
           className="btn btn-icon btn-sm"
-          title={t('queueMove', { mode: other === 'steer' ? t('queuedSteer') : t('queuedFollowUp') })}
+          title={capabilities?.reason ?? t('queueMove', { mode: other === 'steer' ? t('queuedSteer') : t('queuedFollowUp') })}
+          disabled={capabilities?.reorder === false}
           onClick={() => void conv.send({ type: 'queue_move', from: apiQueue, to: apiOther, index }).catch(() => undefined)}
         >
           ⇄
         </button>
         <button
           className="btn btn-icon btn-sm"
-          title={t('queueEdit')}
+          title={capabilities?.reason ?? t('queueEdit')}
+          disabled={capabilities?.remove === false}
           onClick={() => {
             onEdit(msg);
             void conv.send({ type: 'queue_remove', queue: apiQueue, index }).catch(() => undefined);
@@ -540,7 +549,8 @@ function QueueItem({ kind, index, msg, conv, onEdit }: {
         </button>
         <button
           className="btn btn-icon btn-sm"
-          title={t('queueRemove')}
+          title={capabilities?.reason ?? t('queueRemove')}
+          disabled={capabilities?.remove === false}
           onClick={() => void conv.send({ type: 'queue_remove', queue: apiQueue, index }).catch(() => undefined)}
         >
           <IconX size={11} />

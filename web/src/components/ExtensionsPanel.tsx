@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { t } from '../i18n';
 import { IconChevronRight } from '../icons';
 
@@ -38,19 +38,32 @@ export default function ExtensionsPanel({ cwd: initialCwd }: { cwd: string }) {
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string>();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const loadGeneration = useRef(0);
+  const loadController = useRef<AbortController | undefined>(undefined);
 
   const load = useCallback(() => {
-    fetch(`/api/packages/config?cwd=${encodeURIComponent(cwd)}`)
-      .then((r) => r.json())
-      .then((d: { packages?: PkgConfig[] }) => setPackages(d.packages ?? []))
-      .catch(() => undefined);
-    fetch(`/api/resources?cwd=${encodeURIComponent(cwd)}`)
-      .then((r) => r.json())
-      .then((d: { extensions?: ExtItem[] }) => setExtensions(d.extensions ?? []))
-      .catch(() => undefined);
+    loadController.current?.abort();
+    const controller = new AbortController();
+    const generation = ++loadGeneration.current;
+    loadController.current = controller;
+    void Promise.all([
+      fetch(`/api/packages/config?cwd=${encodeURIComponent(cwd)}`, { signal: controller.signal })
+        .then((r) => r.json())
+        .then((d: { packages?: PkgConfig[] }) => {
+          if (!controller.signal.aborted && generation === loadGeneration.current) setPackages(d.packages ?? []);
+        }),
+      fetch(`/api/resources?cwd=${encodeURIComponent(cwd)}`, { signal: controller.signal })
+        .then((r) => r.json())
+        .then((d: { extensions?: ExtItem[] }) => {
+          if (!controller.signal.aborted && generation === loadGeneration.current) setExtensions(d.extensions ?? []);
+        }),
+    ]).catch(() => undefined);
   }, [cwd]);
 
-  useEffect(load, [load]);
+  useEffect(() => {
+    load();
+    return () => loadController.current?.abort();
+  }, [load]);
 
   const install = async () => {
     const source = installSource.trim();

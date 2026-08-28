@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { t } from '../i18n';
+import { getAgent, withAgent } from '../api';
 
 interface FileItem {
   name: string;
@@ -34,6 +35,7 @@ export default function FilesPanel({ cwd: initialCwd }: { cwd: string }) {
   const [diff, setDiff] = useState<{ path?: string; diff: string } | undefined>();
   const [error, setError] = useState<string>();
   const fileInput = useRef<HTMLInputElement>(null);
+  const agent = useRef(getAgent()).current;
 
   const loadDir = useCallback((dirCwd: string, path: string) => {
     fetch(`/api/files?cwd=${encodeURIComponent(dirCwd)}&path=${encodeURIComponent(path)}`)
@@ -156,7 +158,7 @@ export default function FilesPanel({ cwd: initialCwd }: { cwd: string }) {
             {preview ? (
               preview.image ? (
                 <img
-                  src={`/api/file?cwd=${encodeURIComponent(cwd)}&path=${encodeURIComponent(preview.path)}`}
+                  src={withAgent(`/api/file?cwd=${encodeURIComponent(cwd)}&path=${encodeURIComponent(preview.path)}`, agent)}
                   alt={preview.path}
                   style={{ maxWidth: '100%', borderRadius: 8 }}
                 />

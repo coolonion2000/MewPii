@@ -7,7 +7,8 @@ export default defineConfig({
     host: '127.0.0.1',
     port: 31042,
     proxy: {
-      '/api': { target: 'http://127.0.0.1:31041', changeOrigin: true },
+      // Preserve the browser Host so strict same-origin checks also work in development.
+      '/api': { target: 'http://127.0.0.1:31041', changeOrigin: false },
       '/ws': { target: 'ws://127.0.0.1:31041', ws: true },
     },
   },

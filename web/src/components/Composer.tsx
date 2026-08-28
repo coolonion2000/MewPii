@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { Conversation } from '../api';
 import { fetchModels, type ModelsResponse } from '../api';
 import { t } from '../i18n';
+import { restoreFailedImages, restoreFailedText } from '../state-utils';
 import { IconPlus, IconArrowUp, IconStop, IconThink, IconChevronDown, IconX, IconWrench } from '../icons';
 
 interface Props {
@@ -31,20 +32,11 @@ export default function Composer({ conv, draft, onDraft }: Props) {
     fetchModels().then(setModels).catch(() => undefined);
   }, []);
 
-  // slash commands (skills + prompt templates) for autocomplete
-  const [slashItems, setSlashItems] = useState<{ cmd: string; desc: string }[]>([]);
-  useEffect(() => {
-    const cwd = conv.snapshot?.cwd ?? conv.cwd;
-    fetch(`/api/resources?cwd=${encodeURIComponent(cwd)}`)
-      .then((r) => r.json())
-      .then((d: { skills?: { name: string; description?: string }[]; prompts?: { name: string; description?: string }[] }) => {
-        const items: { cmd: string; desc: string }[] = [];
-        for (const sk of d.skills ?? []) items.push({ cmd: `/skill:${sk.name}`, desc: sk.description ?? '' });
-        for (const p of d.prompts ?? []) items.push({ cmd: `/${p.name}`, desc: p.description ?? '' });
-        setSlashItems(items);
-      })
-      .catch(() => undefined);
-  }, [conv.snapshot?.cwd, conv.cwd]);
+  // Live command discovery: built-ins, extension commands, prompts, and skills.
+  const slashItems = (conv.snapshot?.slashCommands ?? []).map((command) => ({
+    cmd: `/${command.name}`,
+    desc: command.description ?? '',
+  }));
 
   // external draft injection (e.g. editing a queued message)
   useEffect(() => {
@@ -87,7 +79,7 @@ export default function Composer({ conv, draft, onDraft }: Props) {
     // queue strip shows it; a premature bubble would double-display it.
     // a leading "/cmd" is a pi slash command (compact, model, session, extension
     // commands) — route it to the command executor, not the LLM
-    const slashMatch = value.match(/^\s*\/([a-z][a-z0-9-]*)(\s+.*)?$/i);
+    const slashMatch = value.match(/^\s*\/([^\s/]+)(\s+.*)?$/);
     if (slashMatch) {
       const optKey2 = streaming ? -1 : conv.addOptimistic(value, imgs.map(({ data, mimeType }) => ({ data, mimeType })));
       try {
@@ -99,7 +91,8 @@ export default function Composer({ conv, draft, onDraft }: Props) {
       } catch (err) {
         if (optKey2 >= 0) conv.removeOptimistic(optKey2);
         conv.lastError = err instanceof Error ? err.message : String(err);
-        setText(value);
+        setText((current) => restoreFailedText(current, value));
+        setImages((current) => restoreFailedImages(current, imgs));
       }
       return;
     }
@@ -113,8 +106,8 @@ export default function Composer({ conv, draft, onDraft }: Props) {
       });
     } catch (err) {
       if (optKey >= 0) conv.removeOptimistic(optKey);
-      setText(value);
-      setImages(imgs);
+      setText((current) => restoreFailedText(current, value));
+      setImages((current) => restoreFailedImages(current, imgs));
       conv.lastError = err instanceof Error ? err.message : String(err);
     }
   };

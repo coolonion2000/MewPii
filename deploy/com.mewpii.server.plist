@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.mewpii.server</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/node</string>
+    <string>server/bin/mewpii.js</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/opt/mewpii</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PII_HOST</key>
+    <string>127.0.0.1</string>
+    <key>PII_WORKSPACE_ROOTS</key>
+    <string>/Users/Shared/Projects</string>
+    <key>NODE_OPTIONS</key>
+    <string>--max-old-space-size=768</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>StandardOutPath</key>
+  <string>/tmp/mewpii-server.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/mewpii-server.log</string>
+</dict>
+</plist>

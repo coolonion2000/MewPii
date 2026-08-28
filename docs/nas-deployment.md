@@ -19,8 +19,10 @@ docker run -d --name pii \
 或 compose：`PII_PASSWORD='...' docker compose up -d --build`
 
 **重要路径说明**：
-- 容器里 pi 的状态在 `/root/.pi`（会话、凭证、设置）——务必挂卷持久化，否则重建容器会丢会话
+
+- 容器里 pi 的状态在 `/root/.pi`（会话、凭证、设置，以及网页创建在 `/root/.pi/agent/skills` 的 skills）——务必整体挂卷持久化，否则重建容器会丢数据
 - pi 的工作目录（cwd）是容器内路径；agent 的 bash/文件工具操作的是容器文件系统。要让 agent 操作 NAS 上的真实项目，把项目目录挂进去：
+
   ```bash
   -v /volume1/code:/code   # 然后在 pii 里用 /code/xxx 作为项目目录
   ```
@@ -34,9 +36,9 @@ npm ci && npm run build
 PII_PASSWORD='...' node server/bin/mewpii.js --host 0.0.0.0
 
 # 或从打包产物
-npm pack                       # 生成 pii-0.1.0.tgz
+npm pack                       # 生成 mewpii-0.1.0.tgz
 # 传到 NAS 后：
-npm install -g pii-0.1.0.tgz   # 自动装 pi SDK 依赖
+npm install -g mewpii-0.1.0.tgz   # 自动装 pi SDK 依赖
 PII_PASSWORD='...' mewpii --host 0.0.0.0
 ```
 
@@ -57,7 +59,6 @@ pi 的 RPC 是 stdio，不能跨网络直连。拓扑是：**pii 服务端必须
 
 如果确实要「UI 在 NAS、agent 在 Mac」的分离架构（pii-agent 桥接模式），可以做但属于独立特性，先按上面的代理方案用，有强需求再提。
 
-
 ## 方式三：UI 在 NAS、agent 在 Mac（隧道模式）
 
 浏览器访问 NAS 上的界面，实际驱动的是你 Mac 上的 pi（会话、bash、文件全在 Mac 本地执行）。
@@ -74,7 +75,7 @@ docker run -d --name pii -p 31041:31041   -e PII_PASSWORD='强密码'   -v pii-p
 ```bash
 cd Pii
 npm run build
-node server/bin/mewpii.js \
+PII_AGENT_INSTANCE_ID='my-mac-stable-id' node server/bin/mewpii.js \
   --agent ws://<NAS-IP>:31041/tunnel \
   --token '强密码' \
   --name my-mac
@@ -86,11 +87,12 @@ node server/bin/mewpii.js \
 要点：
 
 - token 就是 NAS 的 `PII_PASSWORD`；hub 未设密码时 tunnel 也不需要 token
-- agent 断线会自动重连；hub 在 agent 未连接时自动退回本地模式（你仍然可以单独用 NAS 的 pii）
+- agent 断线会自动重连；`PII_AGENT_INSTANCE_ID` 在同一台机器上保持稳定，避免重连身份漂移
+- hub 在 agent 未连接时自动退回本地模式（你仍然可以单独用 NAS 的 pii）
 - 浏览器侧无感知：所有 `/api` 与 `/ws` 流量经隧道转发到 agent 的本地 pii 服务执行
 - `curl http://<NAS-IP>:31041/api/agents`（带认证）可查看 agent 连接状态
+- HTTP 经 48 KiB 有界帧流式传输，单请求/响应上限 512 MiB；浏览器取消会传递到 agent
 - 安全性：隧道复用 Basic Auth；公网场景 NAS 前照常叠 HTTPS（见 remote-access.md）
-
 
 ## 多 agent（一个 UI 控制多台机器）
 
@@ -105,9 +107,9 @@ node server/bin/mewpii.js --agent ws://<NAS>:31041/tunnel --token '密码' --nam
 
 - 侧边栏底部出现 agent 选择器：本机（hub 自己）+ 所有在线 agent
 - 切换后整个界面（会话、文件、模型、Git）都切到那台机器，选择记忆在浏览器
-- 同名重连自动顶替旧连接；显式选择了一个不在线的 agent 会报 502 而不是静默回退
+- 不同 `instanceId` 使用同名时自动显示为 `name-2`、`name-3`，不会互踢
+- 同一 `instanceId` 被新进程替换时，旧进程收到 replaced 并停止重连；显式选择离线 agent 返回 502
 - `GET /api/agents`（带认证）查看在线列表
-
 
 ## 群晖 Container Manager 图形界面导入
 
@@ -125,12 +127,11 @@ sudo docker images | grep pii-web   # 确认 pii-web:0.1.0 出现
 1. 先建两个文件夹（File Station）：`docker/pii` 和 `docker/code`
 2. 容器 → 新增/导入，选择仓库里的 `deploy/pii-synology.json`
 3. 把环境变量里的 `请改成你的强密码` 换成真实密码
-4. 确认卷映射：`pii → /root/.pi`、`code → /code`
+4. 确认卷映射：`pii → /root/.pi`（包含 `/root/.pi/agent/skills`）、`code → /code`
 5. 启动，浏览器开 `http://<NAS-IP>:31041`
 
 > 不同 DSM 版本的 JSON 字段略有差异：若导入报错，按界面提示修正，
 > 或直接用上面的 SSH `docker run` 命令（最稳）。
-
 
 ## 绿联 UGOS 部署
 
@@ -142,7 +143,6 @@ sudo docker images | grep pii-web   # 确认 pii-web:0.1.0 出现
 4. 浏览器开 `http://<NAS-IP>:31041`，用户 `pi` + 密码登录
 
 > agent 的 bash 操作发生在容器文件系统里；要操作 NAS 上的真实项目就把项目目录挂进 `/code`。
-
 
 ## 如果镜像管理只收 JSON（绿联/群晖新版）
 
@@ -163,7 +163,7 @@ ssh 用户@<NAS-IP> "sudo docker load -i /tmp/pii-web-0.1.0-docker.tar.gz"
 镜像已推 GHCR（需要有 write:packages 权限的 PAT 才能更新）：
 
 ```
-coolonion2000/mewpii:0.1.0
+ghcr.io/coolonion2000/mewpii:0.1.0
 ```
 
 私有包需在 UI 里填 GHCR 用户名 + PAT。

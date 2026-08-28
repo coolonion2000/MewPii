@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
-import { t } from '../i18n';
+import { useEffect, useRef, useState } from "react";
+import { t } from "../i18n";
 
 interface FlowEvent {
   type: string;
@@ -23,26 +23,65 @@ interface Props {
   onClose: (success: boolean) => void;
 }
 
-export default function OAuthDialog({ provider, providerName, onClose }: Props) {
+export default function OAuthDialog({
+  provider,
+  providerName,
+  onClose,
+}: Props) {
   const [flowId, setFlowId] = useState<string>();
   const [status, setStatus] = useState<FlowStatus>({ events: [], done: false });
-  const [answer, setAnswer] = useState('');
+  const [answer, setAnswer] = useState("");
   const closed = useRef(false);
+  const flowIdRef = useRef<string | undefined>(undefined);
+  const flowSecretRef = useRef<string | undefined>(undefined);
+
+  const cancelFlow = (
+    id = flowIdRef.current,
+    secret = flowSecretRef.current,
+  ) => {
+    if (!id || !secret) return;
+    void fetch("/api/auth/oauth/cancel", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, secret }),
+      keepalive: true,
+    }).catch(() => undefined);
+    flowIdRef.current = undefined;
+    flowSecretRef.current = undefined;
+  };
+
+  const close = (success: boolean) => {
+    if (!success) cancelFlow();
+    onClose(success);
+  };
 
   useEffect(() => {
-    fetch('/api/auth/oauth/start', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+    fetch("/api/auth/oauth/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ provider }),
     })
       .then((r) => r.json())
-      .then((d: { id?: string; error?: string }) => {
-        if (d.id) setFlowId(d.id);
-        else setStatus((s) => ({ ...s, done: true, error: d.error ?? 'failed to start' }));
+      .then((d: { id?: string; secret?: string; error?: string }) => {
+        if (d.id && d.secret) {
+          if (closed.current) {
+            cancelFlow(d.id, d.secret);
+            return;
+          }
+          flowIdRef.current = d.id;
+          flowSecretRef.current = d.secret;
+          setFlowId(d.id);
+        } else
+          setStatus((s) => ({
+            ...s,
+            done: true,
+            error: d.error ?? "failed to start",
+          }));
       })
       .catch((e) => setStatus((s) => ({ ...s, done: true, error: String(e) })));
     return () => {
       closed.current = true;
+      cancelFlow();
     };
   }, [provider]);
 
@@ -50,13 +89,19 @@ export default function OAuthDialog({ provider, providerName, onClose }: Props) 
     if (!flowId) return;
     const timer = setInterval(async () => {
       if (closed.current) return;
-      const res = await fetch(`/api/auth/oauth/status?id=${flowId}`).catch(() => undefined);
+      const secret = flowSecretRef.current;
+      if (!secret) return;
+      const res = await fetch("/api/auth/oauth/status", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: flowId, secret }),
+      }).catch(() => undefined);
       if (!res?.ok) return;
       const s = (await res.json()) as FlowStatus;
       setStatus(s);
       if (s.done) {
         clearInterval(timer);
-        if (!s.error) setTimeout(() => onClose(true), 1200);
+        if (!s.error) setTimeout(() => close(true), 1200);
       }
     }, 800);
     return () => clearInterval(timer);
@@ -64,65 +109,103 @@ export default function OAuthDialog({ provider, providerName, onClose }: Props) 
 
   const submitAnswer = async () => {
     if (!flowId || !answer.trim()) return;
-    await fetch('/api/auth/oauth/answer', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: flowId, value: answer.trim() }),
+    await fetch("/api/auth/oauth/answer", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: flowId,
+        secret: flowSecretRef.current,
+        value: answer.trim(),
+      }),
     }).catch(() => undefined);
-    setAnswer('');
+    setAnswer("");
   };
 
   return (
-    <div className="modal-mask" onClick={() => onClose(false)}>
+    <div className="modal-mask" onClick={() => close(false)}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h3>{t('loginTitle')} · {providerName}</h3>
+        <h3>
+          {t("loginTitle")} · {providerName}
+        </h3>
 
         {status.events.map((ev, i) => {
-          if (ev.type === 'auth_url') {
+          if (ev.type === "auth_url") {
             return (
               <div key={i} className="oauth-event">
-                <div>{ev.instructions ?? t('oauthWaiting')}</div>
-                <a href={ev.url} target="_blank" rel="noreferrer">{ev.url}</a>
+                <div>{ev.instructions ?? t("oauthWaiting")}</div>
+                <a href={ev.url} target="_blank" rel="noreferrer">
+                  {ev.url}
+                </a>
               </div>
             );
           }
-          if (ev.type === 'device_code') {
+          if (ev.type === "device_code") {
             return (
               <div key={i} className="oauth-event">
-                <div>{t('oauthOpenUrl')}: <a href={ev.verificationUri} target="_blank" rel="noreferrer">{ev.verificationUri}</a></div>
+                <div>
+                  {t("oauthOpenUrl")}:{" "}
+                  <a href={ev.verificationUri} target="_blank" rel="noreferrer">
+                    {ev.verificationUri}
+                  </a>
+                </div>
                 <div className="oauth-code">{ev.userCode}</div>
               </div>
             );
           }
-          return <div key={i} className="oauth-event">{ev.message}</div>;
+          return (
+            <div key={i} className="oauth-event">
+              {ev.message}
+            </div>
+          );
         })}
 
         {status.pendingPrompt && (
-          <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+          <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
             <input
               autoFocus
               value={answer}
-              placeholder={status.pendingPrompt.placeholder ?? t('oauthEnterCode')}
+              placeholder={
+                status.pendingPrompt.placeholder ?? t("oauthEnterCode")
+              }
               onChange={(e) => setAnswer(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && void submitAnswer()}
+              onKeyDown={(e) => e.key === "Enter" && void submitAnswer()}
               style={{
-                flex: 1, border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 8,
-                padding: '7px 10px', fontSize: 13, fontFamily: 'inherit',
-                background: 'var(--dsw-alias-bg-base)', color: 'var(--dsw-alias-label-primary)', outline: 'none',
+                flex: 1,
+                border: "1px solid var(--dsw-alias-border-l2)",
+                borderRadius: 8,
+                padding: "7px 10px",
+                fontSize: 13,
+                fontFamily: "inherit",
+                background: "var(--dsw-alias-bg-base)",
+                color: "var(--dsw-alias-label-primary)",
+                outline: "none",
               }}
             />
-            <button className="btn btn-sm" onClick={() => void submitAnswer()}>{t('submit')}</button>
+            <button className="btn btn-sm" onClick={() => void submitAnswer()}>
+              {t("submit")}
+            </button>
           </div>
         )}
 
         {status.done && (
-          <div className="oauth-event" style={{ color: status.error ? 'var(--dsw-alias-state-error-primary)' : 'var(--dsw-alias-state-success-primary)' }}>
-            {status.error ?? t('loginSuccess')}
+          <div
+            className="oauth-event"
+            style={{
+              color: status.error
+                ? "var(--dsw-alias-state-error-primary)"
+                : "var(--dsw-alias-state-success-primary)",
+            }}
+          >
+            {status.error ?? t("loginSuccess")}
           </div>
         )}
 
-        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 14 }}>
-          <button className="btn btn-sm" onClick={() => onClose(false)}>{t('close')}</button>
+        <div
+          style={{ display: "flex", justifyContent: "flex-end", marginTop: 14 }}
+        >
+          <button className="btn btn-sm" onClick={() => close(false)}>
+            {t("close")}
+          </button>
         </div>
       </div>
     </div>

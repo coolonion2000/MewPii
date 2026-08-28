@@ -1,5 +1,6 @@
 /** dsh-styled login page served at /login. Plain HTML, no build step. */
-export function loginPageHtml(error = false): string {
+export function loginPageHtml(error = false, next = '/'): string {
+  const safeNextJson = JSON.stringify(next).replace(/</g, '\\u003c');
   return `<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -68,6 +69,7 @@ export function loginPageHtml(error = false): string {
 <script>
   const form = document.getElementById('form');
   const btn = document.getElementById('btn');
+  const next = ${safeNextJson};
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     btn.disabled = true;
@@ -78,10 +80,9 @@ export function loginPageHtml(error = false): string {
         body: JSON.stringify({ password: document.getElementById('password').value }),
       });
       if (res.ok) {
-        const params = new URLSearchParams(location.search);
-        location.replace(params.get('next') || '/');
+        location.replace(next);
       } else {
-        location.replace('/login?error=1' + (new URLSearchParams(location.search).get('next') ? '&next=' + encodeURIComponent(new URLSearchParams(location.search).get('next')) : ''));
+        location.replace('/login?error=1&next=' + encodeURIComponent(next));
       }
     } catch {
       btn.disabled = false;

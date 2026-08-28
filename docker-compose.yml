@@ -7,10 +7,14 @@ services:
     environment:
       # 必须设置：0.0.0.0 监听时无密码会拒绝启动
       PII_PASSWORD: ${PII_PASSWORD:?set PII_PASSWORD}
+      PII_WORKSPACE_ROOTS: /code:/app
+      NODE_OPTIONS: --max-old-space-size=768
       # PII_PORT: "31041"
     volumes:
-      # NAS 上 pi 的配置/会话/凭证持久化
+      # 配置/会话/凭证及网页创建的 skills（/root/.pi/agent/skills）
       - pii-pi-state:/root/.pi
+      - /code:/code
+    mem_limit: 1g
     restart: unless-stopped
 
 volumes:

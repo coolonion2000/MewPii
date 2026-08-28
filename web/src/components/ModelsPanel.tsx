@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { fetchModels, type ModelsResponse } from '../api';
 import OAuthDialog from './OAuthDialog';
 import { t } from '../i18n';
+import { evaluateProviderLogout } from '../model-utils';
 
 export default function ModelsPanel() {
   const [data, setData] = useState<ModelsResponse | undefined>();
@@ -51,12 +52,26 @@ export default function ModelsPanel() {
   };
 
   const logout = async (provider: string) => {
-    await fetch('/api/auth/logout', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ provider }),
-    }).catch(() => undefined);
-    refresh();
+    try {
+      const response = await fetch('/api/auth/provider/logout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider }),
+      });
+      const body = (await response.json()) as { ok?: boolean; error?: string };
+      const outcome = evaluateProviderLogout(
+        provider,
+        t('logout'),
+        response.ok,
+        response.status,
+        body,
+      );
+      setNotice(outcome.notice);
+      if (!outcome.ok) return;
+      refresh();
+    } catch (cause) {
+      setNotice(cause instanceof Error ? cause.message : String(cause));
+    }
   };
 
   const addProvider = async () => {

@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { IconX, IconBot } from '../icons';
 import { t } from '../i18n';
+import { isTerminalRun } from '../state-utils';
 
 interface RunDetail {
   runId: string;
@@ -47,27 +49,32 @@ export default function SubagentRunDialog({ runId, onClose, onOpenParent }: {
   }, []);
 
   useEffect(() => {
-    let alive = true;
-    const load = () => {
-      fetch(`/api/subagent-run?runId=${encodeURIComponent(runId)}`)
-        .then(async (r) => {
-          if (!r.ok) throw new Error(String(r.status));
-          return r.json();
-        })
-        .then((d: RunDetail) => {
-          if (alive) setDetail(d);
-        })
-        .catch(() => undefined);
+    let mounted = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let controller: AbortController | undefined;
+    const load = async (): Promise<void> => {
+      controller = new AbortController();
+      try {
+        const response = await fetch(`/api/subagent-run?runId=${encodeURIComponent(runId)}`, { signal: controller.signal });
+        if (!response.ok) throw new Error(String(response.status));
+        const next = (await response.json()) as RunDetail;
+        if (!mounted) return;
+        setDetail(next);
+        if (isTerminalRun(next.state, next.alive)) return;
+      } catch {
+        if (!mounted || controller.signal.aborted) return;
+      }
+      if (mounted) timer = setTimeout(() => void load(), 3000);
     };
-    load();
-    const timer = setInterval(load, 3000);
+    void load();
     return () => {
-      alive = false;
-      clearInterval(timer);
+      mounted = false;
+      clearTimeout(timer);
+      controller?.abort();
     };
   }, [runId]);
 
-  return (
+  const dialog = (
     <div className="modal-mask" onClick={onClose}>
       <div className="modal srun-dialog" onClick={(e) => e.stopPropagation()}>
         <div className="dp-head">
@@ -119,4 +126,6 @@ export default function SubagentRunDialog({ runId, onClose, onOpenParent }: {
       </div>
     </div>
   );
+  const main = document.querySelector<HTMLElement>('.main');
+  return main ? createPortal(dialog, main) : dialog;
 }

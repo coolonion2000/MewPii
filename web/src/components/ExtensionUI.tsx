@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import type { Conversation } from '../api';
 import { stripAnsi } from '../api';
 import { t } from '../i18n';
@@ -26,6 +26,10 @@ export default function ExtensionUI({ conv }: { conv: Conversation }) {
     });
 
   const req = conv.uiRequest;
+  useEffect(() => {
+    // Input text belongs to one concrete extension request only.
+    setInputDraft('');
+  }, [req?.id]);
 
   return (
     <>
@@ -63,6 +67,8 @@ export default function ExtensionUI({ conv }: { conv: Conversation }) {
           })}
         </div>
       )}
+
+      {conv.customUi && <CustomTerminalDialog conv={conv} />}
 
       {/* extension dialogs (question/questionnaire render inline above the composer) */}
       {req && req.kind !== 'question' && req.kind !== 'questionnaire' && (
@@ -130,6 +136,99 @@ export default function ExtensionUI({ conv }: { conv: Conversation }) {
   );
 }
 
+
+function terminalKeyData(event: KeyboardEvent<HTMLTextAreaElement>): string | undefined {
+  const { key } = event;
+  const special: Record<string, string> = {
+    Enter: event.shiftKey ? '\n' : '\r',
+    Escape: '\u001b',
+    Backspace: '\u007f',
+    Delete: '\u001b[3~',
+    Tab: '\t',
+    ArrowUp: '\u001b[A',
+    ArrowDown: '\u001b[B',
+    ArrowRight: '\u001b[C',
+    ArrowLeft: '\u001b[D',
+    Home: '\u001b[H',
+    End: '\u001b[F',
+    PageUp: '\u001b[5~',
+    PageDown: '\u001b[6~',
+  };
+  if (special[key]) return special[key];
+  if (event.ctrlKey && key.length === 1) {
+    const code = key.toLowerCase().charCodeAt(0);
+    if (code >= 97 && code <= 122) return String.fromCharCode(code - 96);
+  }
+  if (event.altKey && !event.metaKey && key.length === 1) return `\u001b${key}`;
+  return undefined;
+}
+
+function TerminalLine({ line }: { line: string }) {
+  const clean = stripAnsi(line);
+  const parts = clean.split(/(https?:\/\/[^\s]+)/g);
+  return (
+    <div className="custom-ui-line">
+      {parts.map((part, index) => part.startsWith('http://') || part.startsWith('https://')
+        ? <a key={`${index}-${part}`} href={part} target="_blank" rel="noreferrer">{part}</a>
+        : <span key={index}>{part}</span>)}
+    </div>
+  );
+}
+
+function CustomTerminalDialog({ conv }: { conv: Conversation }) {
+  const frame = conv.customUi;
+  const captureRef = useRef<HTMLTextAreaElement>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    captureRef.current?.focus();
+  }, [frame?.requestId]);
+
+  useEffect(() => {
+    const body = bodyRef.current;
+    if (!body || !frame) return;
+    const report = () => conv.customUiResize(Math.floor((body.clientWidth - 28) / 8));
+    report();
+    const observer = new ResizeObserver(report);
+    observer.observe(body);
+    return () => observer.disconnect();
+  }, [conv, frame?.requestId]);
+
+  if (!frame) return null;
+  return (
+    <div className={`modal-mask custom-ui-mask ${frame.overlay ? 'is-overlay' : ''}`} onClick={() => captureRef.current?.focus()}>
+      <div className="custom-ui-modal" onClick={(event) => event.stopPropagation()}>
+        <div className="custom-ui-head">
+          <span className="mono">Extension UI</span>
+          <span className="dim">↑↓ / Enter / Esc</span>
+          <button className="btn btn-sm btn-icon" aria-label={t('close')} onClick={() => conv.cancelCustomUi()}>×</button>
+        </div>
+        <div ref={bodyRef} className="custom-ui-terminal" onClick={() => captureRef.current?.focus()}>
+          {frame.lines.map((line, index) => <TerminalLine key={`${frame.revision}-${index}`} line={line} />)}
+        </div>
+        <textarea
+          ref={captureRef}
+          className="custom-ui-capture"
+          value=""
+          aria-label="Extension terminal input"
+          autoCapitalize="off"
+          autoCorrect="off"
+          spellCheck={false}
+          onChange={(event) => {
+            if (event.currentTarget.value) conv.customUiInput(event.currentTarget.value);
+          }}
+          onKeyDown={(event) => {
+            if (event.nativeEvent.isComposing) return;
+            const data = terminalKeyData(event);
+            if (!data) return;
+            event.preventDefault();
+            conv.customUiInput(data);
+          }}
+        />
+      </div>
+    </div>
+  );
+}
 
 interface DialogProps {
   req: import('../types').UiRequest;

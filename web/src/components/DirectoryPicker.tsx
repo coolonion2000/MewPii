@@ -14,17 +14,17 @@ interface Props {
   onClose: () => void;
 }
 
-const HOME = '/';
-
-/** Folder browser for starting a session in any directory. */
+/** Folder browser restricted to server-authorized workspace roots. */
 export default function DirectoryPicker({ initialPath, onPick, onClose }: Props) {
-  const [cwd, setCwd] = useState(initialPath || HOME);
+  const [home, setHome] = useState(initialPath && initialPath !== '/' ? initialPath : '');
+  const [cwd, setCwd] = useState(initialPath && initialPath !== '/' ? initialPath : '');
   const [dirs, setDirs] = useState<DirItem[]>([]);
   const [error, setError] = useState<string>();
-  const [pathDraft, setPathDraft] = useState(initialPath || HOME);
+  const [pathDraft, setPathDraft] = useState(initialPath && initialPath !== '/' ? initialPath : '');
 
   const load = useCallback((path: string) => {
-    fetch(`/api/files?cwd=${encodeURIComponent('/')}&path=${encodeURIComponent(path)}`)
+    if (!path) return;
+    fetch(`/api/files?cwd=${encodeURIComponent(path)}&path=.`)
       .then(async (r) => {
         const d = await r.json();
         if (r.ok && d.items) {
@@ -41,7 +41,15 @@ export default function DirectoryPicker({ initialPath, onPick, onClose }: Props)
 
   const agent = getAgent();
   useEffect(() => {
-    load(initialPath || HOME);
+    fetch('/api/workspaces')
+      .then((res) => res.json())
+      .then((data: { roots?: string[] }) => {
+        const root = initialPath && initialPath !== '/' ? initialPath : data.roots?.[0];
+        if (!root) throw new Error('no authorized workspace roots');
+        setHome(root);
+        load(root);
+      })
+      .catch((e) => setError(String(e)));
   }, [agent]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const crumbs = cwd.split('/').filter(Boolean);
@@ -60,7 +68,7 @@ export default function DirectoryPicker({ initialPath, onPick, onClose }: Props)
         <form
           onSubmit={(e) => {
             e.preventDefault();
-            load(pathDraft.trim() || '/');
+            load(pathDraft.trim() || home);
           }}
           style={{ display: 'flex', gap: 8, marginBottom: 8 }}
         >
@@ -73,7 +81,7 @@ export default function DirectoryPicker({ initialPath, onPick, onClose }: Props)
         </form>
 
         <div className="dp-crumbs">
-          <button className="btn btn-sm" onClick={() => load('/')}>⌂</button>
+          <button className="btn btn-sm" onClick={() => load(home)}>⌂</button>
           {crumbs.map((c, i) => (
             <span key={i}>
               <span className="dim">/</span>

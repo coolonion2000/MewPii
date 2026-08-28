@@ -8,7 +8,10 @@ pii web 驱动的是一个拥有 bash/文件读写权限的完整 coding agent�
 | --- | --- |
 | `PII_PASSWORD` / `--password` | HTTP Basic Auth（用户名固定 `pi`）。HTTP 与 WebSocket 都会校验 |
 | 回环保护 | 默认只监听 `127.0.0.1`；绑非回环地址时**必须**设置密码，否则拒绝启动 |
-| 路径沙箱 | 文件/Git API 限制在传入的 `cwd` 子树内 |
+| 路径沙箱 | 文件/Git API 限制在服务端可信工作区根目录内，并校验 realpath/symlink |
+| 浏览器请求防护 | 所有状态变更 API 校验 Origin 与 Fetch Metadata，阻止无密码 loopback CSRF |
+
+可信根默认是服务进程的 HOME 与工作目录；容器默认是 `/code:/app`。可用 `PII_WORKSPACE_ROOTS`（macOS/Linux 以 `:` 分隔）显式收紧。
 
 Basic Auth 是明文凭证（HTTP 下可被窃听），所以公网访问必须叠加 HTTPS 或加密隧道。
 
@@ -61,6 +64,8 @@ server {
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
         proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
         proxy_read_timeout 3600s;   # 长时间运行的 agent 需要
     }
 }
@@ -88,8 +93,12 @@ WorkingDirectory=/opt/Pii
 Environment=PII_PASSWORD=换成强密码
 Environment=PII_HOST=127.0.0.1
 Environment=PII_PORT=31041
+Environment=PII_WORKSPACE_ROOTS=/opt/projects
+Environment=NODE_OPTIONS=--max-old-space-size=768
 ExecStart=/usr/bin/node server/dist/index.js
 Restart=on-failure
+RestartSec=30
+MemoryMax=1G
 
 [Install]
 WantedBy=multi-user.target

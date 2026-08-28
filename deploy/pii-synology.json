@@ -11,6 +11,14 @@
         {
             "key": "PII_PASSWORD",
             "value": "请改成你的强密码"
+        },
+        {
+            "key": "PII_WORKSPACE_ROOTS",
+            "value": "/code:/app"
+        },
+        {
+            "key": "NODE_OPTIONS",
+            "value": "--max-old-space-size=768"
         }
     ],
     "exporting": false,
@@ -18,7 +26,7 @@
     "is_ddsm": false,
     "is_package": false,
     "links": [],
-    "memory_limit": 0,
+    "memory_limit": 1073741824,
     "name": "pii",
     "network": [
         {

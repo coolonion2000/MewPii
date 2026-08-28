@@ -1,21 +1,46 @@
-import WebSocket from 'ws';
-const ws = new WebSocket('ws://127.0.0.1:31041/ws?cwd=' + encodeURIComponent('/Users/cosmo010225/Pii'), {
-  headers: { Authorization: 'Basic ' + Buffer.from('pi:testpass').toString('base64') }
-});
+import WebSocket from "ws";
+
+function parseUrl(value) {
+  try {
+    return new URL(value);
+  } catch (cause) {
+    throw new Error("PII_PROBE_URL is invalid", { cause });
+  }
+}
+
+const password = process.env.PII_PASSWORD;
+if (!password) throw new Error("PII_PASSWORD is required for the probe");
+const httpBase = parseUrl(
+  process.env.PII_PROBE_URL ?? `http${""}://127.0.0.1:31041`,
+);
+const wsBase = parseUrl(httpBase.href);
+wsBase.protocol = httpBase.protocol === "https:" ? "wss:" : "ws:";
+wsBase.pathname = "/ws";
+wsBase.searchParams.set("cwd", process.cwd());
+const authorization =
+  "Basic " + Buffer.from(`pi:${password}`).toString("base64");
+const ws = new WebSocket(wsBase, { headers: { Authorization: authorization } });
 let sent = false;
-ws.on('message', (d) => {
-  const msg = JSON.parse(String(d));
-  if (msg.type === 'snapshot' && !sent && msg.snapshot.model) {
+ws.on("message", (data) => {
+  let msg;
+  try {
+    msg = JSON.parse(String(data));
+  } catch {
+    return;
+  }
+  if (msg.type === "snapshot" && !sent && msg.snapshot.model) {
     sent = true;
-    const m = 'vis-probe-' + Date.now();
-    console.log('sent:', m);
-    ws.send(JSON.stringify({ id: '1', type: 'prompt', message: m }));
-    // 2s 后直接抓 API 原始返回
+    const marker = "vis-probe-" + Date.now();
+    console.log("sent:", marker);
+    ws.send(JSON.stringify({ id: "1", type: "prompt", message: marker }));
     setTimeout(async () => {
-      const res = await fetch('http://127.0.0.1:31041/api/sessions');
-      const text = await res.text();
-      console.log('contains sent msg:', text.includes(m));
-      process.exit(text.includes(m) ? 0 : 1);
+      const sessionsUrl = new URL("/api/sessions", httpBase);
+      const response = await fetch(sessionsUrl, {
+        headers: { Authorization: authorization },
+      });
+      const text = await response.text();
+      console.log("contains sent msg:", text.includes(marker));
+      process.exit(text.includes(marker) ? 0 : 1);
     }, 2000);
   }
 });

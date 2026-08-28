@@ -37,7 +37,7 @@ npm install
 npm run dev        # server :31041 (tsx watch) + web :31042 (vite, 代理 /api 与 /ws)
 ```
 
-打开 http://127.0.0.1:31042 （Vite HMR）。
+打开 <http://127.0.0.1:31042> （Vite HMR）。
 
 ## 生产
 
@@ -68,7 +68,7 @@ mewpii [options]
   --port, -p <port>     端口（默认 31041）
   --password <pwd>      访问密码（用户 pi；绑非公网时必填）
   --ui-only             纯 UI + 隧道枢纽，不跑本机 pi
-  --agent <url>         作为 agent 拨入枢纽，如 ws://nas:31041/tunnel
+  --agent <url>         作为 agent 安全拨入枢纽，如 wss://nas.example/tunnel
   --name <name>         agent 显示名
   --token <token>       枢纽认证 token（默认取 PII_PASSWORD）
 ```
