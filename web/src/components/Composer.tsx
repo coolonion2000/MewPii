@@ -3,7 +3,7 @@ import type { Conversation } from '../api';
 import { fetchModels, type ModelsResponse } from '../api';
 import { t } from '../i18n';
 import { restoreFailedImages, restoreFailedText } from '../state-utils';
-import { IconPlus, IconArrowUp, IconStop, IconThink, IconChevronDown, IconX, IconWrench } from '../icons';
+import { IconPlus, IconArrowUp, IconStop, IconChevronDown, IconX, IconWrench } from '../icons';
 
 interface Props {
   conv: Conversation;
@@ -318,8 +318,9 @@ export default function Composer({ conv, draft, onDraft }: Props) {
                           className={`menu-item ${currentModel?.provider === m.provider && currentModel.id === m.id ? 'active' : ''}`}
                           onClick={() => {
                             // keep open: user usually picks the level right after
-                            conv.applyOptimisticModel(m.provider, m.id, m.name);
-                            void conv.send({ type: 'setModel', provider: m.provider, modelId: m.id }).catch(() => undefined);
+                            void conv
+                              .send({ type: 'setModel', provider: m.provider, modelId: m.id })
+                              .catch((err) => conv.reportError(err instanceof Error ? err.message : String(err)));
                           }}
                         >
                           <span>{m.name}</span>
@@ -346,8 +347,9 @@ export default function Composer({ conv, draft, onDraft }: Props) {
                         className={`menu-item ${snap?.thinkingLevel === level ? 'active' : ''}`}
                         onClick={() => {
                           setMenuOpen(undefined);
-                          conv.applyOptimisticThinking(level);
-                          void conv.send({ type: 'setThinkingLevel', level }).catch(() => undefined);
+                          void conv
+                            .send({ type: 'setThinkingLevel', level })
+                            .catch((err) => conv.reportError(err instanceof Error ? err.message : String(err)));
                         }}
                       >
                         {level}
@@ -387,7 +389,9 @@ export default function Composer({ conv, draft, onDraft }: Props) {
                   className={`menu-item ${toolMode === mode ? 'active' : ''}`}
                   onClick={() => {
                     setMenuOpen(undefined);
-                    void conv.send({ type: 'setToolMode', mode }).catch(() => undefined);
+                    void conv
+                      .send({ type: 'setToolMode', mode })
+                      .catch((err) => conv.reportError(err instanceof Error ? err.message : String(err)));
                   }}
                 >
                   <span>{label}</span>

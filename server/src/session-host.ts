@@ -241,7 +241,6 @@ export class SessionHost {
   private disposePromise?: Promise<void>;
   private queueOperation: Promise<void> = Promise.resolve();
   private commandMutationChain: Promise<void> = Promise.resolve();
-  private promptInFlight = false;
 
   static async create(
     key: string,
@@ -1174,6 +1173,15 @@ export class SessionHost {
     const [name, ...args] = text.split(/\s+/);
     const arg = args.join(" ").trim();
     const out = (o: string) => ({ ok: true, data: { output: o } });
+    if (
+      s.isStreaming &&
+      ["compact", "name", "new", "model", "login", "logout"].includes(name)
+    ) {
+      return {
+        ok: false,
+        error: `当前回复仍在运行，暂不能执行 /${name}；请先停止或等待完成。`,
+      };
+    }
     switch (name) {
       case "compact":
         await s.compact();
@@ -1264,6 +1272,73 @@ export class SessionHost {
     return result;
   }
 
+  /**
+   * Acknowledge a prompt as soon as the SDK accepts it instead of holding the
+   * host mutation lane for the entire model run. The SDK keeps the run alive;
+   * later steer/follow-up messages can then enter its live queue immediately.
+   */
+  private async acceptPrompt(
+    text: string,
+    options: Omit<
+      NonNullable<Parameters<AgentSession["prompt"]>[1]>,
+      "preflightResult"
+    > = {},
+  ): Promise<{
+    ok: boolean;
+    error?: string;
+    data?: { accepted: true; delivery: "run" | "steer" | "followUp" };
+  }> {
+    let preflightResult: boolean | undefined;
+    let resolvePreflight!: (accepted: boolean) => void;
+    const preflight = new Promise<boolean>((resolvePromise) => {
+      resolvePreflight = resolvePromise;
+    });
+    const settlePreflight = (accepted: boolean): void => {
+      if (preflightResult !== undefined) return;
+      preflightResult = accepted;
+      resolvePreflight(accepted);
+    };
+    const runOutcome = this.session
+      .prompt(text, { ...options, preflightResult: settlePreflight })
+      .then(
+        () => ({ ok: true as const }),
+        (cause) => ({
+          ok: false as const,
+          error: cause instanceof Error ? cause.message : String(cause),
+        }),
+      );
+
+    void runOutcome.then((result) => {
+      // Defensive fallback for an SDK implementation that returns without
+      // invoking preflightResult.
+      if (preflightResult === undefined) {
+        settlePreflight(result.ok);
+        return;
+      }
+      if (preflightResult && !result.ok) {
+        console.error(
+          `[session] prompt_failed key=${JSON.stringify(this.key)} error=${JSON.stringify(result.error)}`,
+        );
+        this.broadcast({
+          type: "toast",
+          message: result.error,
+          level: "error",
+        });
+      }
+    });
+
+    if (await preflight) {
+      return {
+        ok: true,
+        data: {
+          accepted: true,
+          delivery: options.streamingBehavior ?? "run",
+        },
+      };
+    }
+    return runOutcome;
+  }
+
   /** Serialize mutations across every browser attached to this Host. */
   handleOrdered(
     cmd: ClientCommand & { id?: string },
@@ -1273,10 +1348,7 @@ export class SessionHost {
       cmd.type === "ui_response" ||
       cmd.type === "custom_ui_input" ||
       cmd.type === "custom_ui_resize" ||
-      cmd.type === "custom_ui_cancel" ||
-      cmd.type === "steer" ||
-      cmd.type === "followUp" ||
-      cmd.type === "queue_clear";
+      cmd.type === "custom_ui_cancel";
     if (bypass) return this.handleCommand(cmd);
     const result = this.commandMutationChain.then(() => this.handleCommand(cmd));
     this.commandMutationChain = result.then(() => undefined, () => undefined);
@@ -1286,27 +1358,9 @@ export class SessionHost {
   async handleCommand(
     cmd: ClientCommand & { id?: string },
   ): Promise<{ ok: boolean; error?: string; data?: Record<string, unknown> }> {
-    if (cmd.type === "prompt") {
-      if (!this.session.isStreaming && !this.promptInFlight) {
-        this.promptInFlight = true;
-        try {
-          return await this.executeCommand(cmd);
-        } finally {
-          this.promptInFlight = false;
-        }
-      }
-      return this.withQueueOperation(async () => {
-        while (
-          this.promptInFlight &&
-          !this.session.isStreaming &&
-          !this.disposed
-        ) {
-          await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
-        }
-        return this.executeCommand(cmd);
-      });
-    }
+    if (this.disposed) return { ok: false, error: "session host is disposed" };
     if (
+      cmd.type === "prompt" ||
       cmd.type === "steer" ||
       cmd.type === "followUp" ||
       cmd.type === "queue_remove" ||
@@ -1322,6 +1376,21 @@ export class SessionHost {
     cmd: ClientCommand & { id?: string },
   ): Promise<{ ok: boolean; error?: string; data?: Record<string, unknown> }> {
     const s = this.session;
+    const idleOnlyMutation =
+      cmd.type === "newSession" ||
+      cmd.type === "fork" ||
+      cmd.type === "setModel" ||
+      cmd.type === "setThinkingLevel" ||
+      cmd.type === "setSessionName" ||
+      cmd.type === "branch" ||
+      cmd.type === "compact" ||
+      cmd.type === "setToolMode";
+    if (s.isStreaming && idleOnlyMutation) {
+      return {
+        ok: false,
+        error: `当前回复仍在运行，暂不能执行 ${cmd.type}；请先停止或等待完成。`,
+      };
+    }
     try {
       switch (cmd.type) {
         case "slash":
@@ -1334,7 +1403,7 @@ export class SessionHost {
                 "当前 pi SDK 无法完整读取含图片的队列消息；请等待当前回复结束后再发送图片，输入与附件已保留。",
             };
           }
-          await s.prompt(cmd.message, {
+          return this.acceptPrompt(cmd.message, {
             images: cmd.images?.map((img) => ({
               type: "image" as const,
               data: img.data,
@@ -1344,7 +1413,6 @@ export class SessionHost {
               ? (cmd.streamingBehavior ?? "steer")
               : undefined,
           });
-          return { ok: true };
         case "steer":
           await s.steer(cmd.message);
           return { ok: true };
