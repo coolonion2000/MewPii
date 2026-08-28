@@ -348,7 +348,12 @@ export class TunnelHub {
     timeoutMs = 120_000,
   ): boolean {
     const conn = this.resolve(name);
-    if (!conn || conn.ws.readyState !== WebSocket.OPEN || this.disposed) return false;
+    if (!conn || conn.ws.readyState !== WebSocket.OPEN || this.disposed) {
+      console.warn(
+        `[tunnel] proxy_http_rejected agent=${JSON.stringify(name ?? "")} known=${Boolean(conn)} readyState=${conn?.ws.readyState ?? "missing"} disposed=${this.disposed}`,
+      );
+      return false;
+    }
     const contentLength = Number(request.headers["content-length"] ?? 0);
     if (Number.isFinite(contentLength) && contentLength > TUNNEL_MAX_HTTP_BYTES) {
       response.writeHead(413, { "content-type": "application/json" });

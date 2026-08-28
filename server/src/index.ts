@@ -2544,7 +2544,15 @@ const server = createServer((req, res) => {
         const headers: Record<string, string> = {};
         if (req.headers["content-type"])
           headers["content-type"] = String(req.headers["content-type"]);
-        const proxied = hub.proxyHttp(agentParam, req.method ?? "GET", req.url, headers, req, res);
+        url0.searchParams.delete("agent");
+        const proxied = hub.proxyHttp(
+          agentParam,
+          req.method ?? "GET",
+          `${url0.pathname}${url0.search}`,
+          headers,
+          req,
+          res,
+        );
         if (proxied) return;
         // Explicit agent requested but not connected — never fall back to
         // local or a different remote workspace.
@@ -2606,8 +2614,9 @@ server.on("upgrade", (req, socket, head) => {
   const selectedAgent = url.searchParams.get("agent");
   if (selectedAgent) {
     // Only an explicit immutable agent selection may proxy this conversation.
+    url.searchParams.delete("agent");
     wss.handleUpgrade(req, socket, head, (ws) => {
-      if (!hub.proxyWs(selectedAgent, ws, req.url ?? "/ws"))
+      if (!hub.proxyWs(selectedAgent, ws, `${url.pathname}${url.search}`))
         ws.close(1001, `agent unavailable: ${selectedAgent}`);
     });
     return;

@@ -89,6 +89,14 @@ async function listen(server) {
   return server.address().port;
 }
 
+async function stopChild(child) {
+  if (!child || child.exitCode !== null || child.signalCode !== null) return;
+  const exited = once(child, "exit");
+  child.kill("SIGTERM");
+  await Promise.race([exited, delay(2000)]);
+  if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+}
+
 test("heartbeat terminates an unresponsive websocket", async () => {
   const ws = new FakeWebSocket();
   const dispose = attachWebSocketHeartbeat(ws, 10);
@@ -258,6 +266,86 @@ test("Agent buffers CONNECTING websocket input and preserves binary", { timeout:
       new Promise((resolvePromise) => hubHttp.close(resolvePromise)),
       new Promise((resolvePromise) => localHttp.close(resolvePromise)),
     ]);
+  }
+});
+
+test("ui-only hub removes its routing agent query before HTTP proxying", { timeout: 30_000 }, async () => {
+  const temp = await mkdtemp(join(tmpdir(), "mewpii-tunnel-route-"));
+  const home = join(temp, "home");
+  const workspace = join(temp, "workspace");
+  await Promise.all([mkdir(home), mkdir(workspace)]);
+  const port = 39_500 + Math.floor(Math.random() * 400);
+  const auth = `Basic ${Buffer.from("pi:integration-only").toString("base64")}`;
+  const logs = [];
+  const hub = spawn(process.execPath, [
+    "server/dist/index.js", "--host", "127.0.0.1", "--port", String(port), "--ui-only",
+  ], {
+    cwd: root,
+    env: { ...process.env, HOME: home, PII_PASSWORD: "integration-only" },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  hub.stdout.on("data", (chunk) => logs.push(String(chunk)));
+  hub.stderr.on("data", (chunk) => logs.push(String(chunk)));
+  let agent;
+  try {
+    for (let attempt = 0; attempt < 100; attempt++) {
+      try {
+        if ((await fetch(`http://127.0.0.1:${port}/api/health`, { headers: { authorization: auth } })).ok) break;
+      } catch { /* starting */ }
+      await delay(25);
+    }
+    agent = spawn(process.execPath, [
+      "server/dist/index.js", "--agent", `ws://127.0.0.1:${port}/tunnel`,
+      "--token", "integration-only", "--name", "integration-agent",
+    ], {
+      cwd: root,
+      env: { ...process.env, HOME: home, PII_PASSWORD: "", PII_WORKSPACE_ROOTS: workspace },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    agent.stdout.on("data", (chunk) => logs.push(String(chunk)));
+    agent.stderr.on("data", (chunk) => logs.push(String(chunk)));
+    for (let attempt = 0; attempt < 100; attempt++) {
+      const response = await fetch(`http://127.0.0.1:${port}/api/agents`, { headers: { authorization: auth } });
+      const body = await response.json();
+      if (body.agents?.includes("integration-agent")) break;
+      await delay(25);
+    }
+    const response = await fetch(
+      `http://127.0.0.1:${port}/api/sessions?includeArchived=1&agent=integration-agent`,
+      { headers: { authorization: auth } },
+    );
+    assert.equal(response.status, 200, `${await response.text()}\n${logs.join("")}`);
+
+    const socket = new WebSocket(
+      `ws://127.0.0.1:${port}/ws?cwd=${encodeURIComponent(workspace)}&agent=integration-agent`,
+      { headers: { authorization: auth } },
+    );
+    try {
+      const raw = await new Promise((resolvePromise, reject) => {
+        const timer = setTimeout(
+          () => reject(new Error(`proxied websocket snapshot timeout\n${logs.join("")}`)),
+          15_000,
+        );
+        socket.once("message", (message) => {
+          clearTimeout(timer);
+          resolvePromise(message);
+        });
+        socket.once("close", (code, reason) => {
+          clearTimeout(timer);
+          reject(new Error(`proxied websocket closed code=${code} reason=${String(reason)}\n${logs.join("")}`));
+        });
+        socket.once("error", (cause) => {
+          clearTimeout(timer);
+          reject(cause);
+        });
+      });
+      assert.equal(JSON.parse(String(raw)).type, "snapshot");
+    } finally {
+      socket.close();
+    }
+  } finally {
+    await Promise.all([stopChild(agent), stopChild(hub)]);
+    await rm(temp, { recursive: true, force: true });
   }
 });
 
