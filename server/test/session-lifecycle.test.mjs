@@ -554,6 +554,39 @@ test("session single-flight, init buffering, rebind index and watcher", {
   const sockets = [];
   try {
     await waitForServer(port, child, logs);
+
+    const sessionsBeforeRename = await (
+      await fetch(`http://127.0.0.1:${port}/api/sessions`)
+    ).json();
+    const beforeRename = sessionsBeforeRename.projects
+      .flatMap((project) => project.sessions)
+      .find((session) => session.path === sessionPath);
+    assert.ok(beforeRename, "seed session missing before rename");
+    const renameResponse = await fetch(
+      `http://127.0.0.1:${port}/api/sessions/rename`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          origin: `http://127.0.0.1:${port}`,
+        },
+        body: JSON.stringify({ path: sessionPath, name: "stable-position" }),
+      },
+    );
+    assert.equal(renameResponse.ok, true, await renameResponse.text());
+    const sessionsAfterRename = await (
+      await fetch(`http://127.0.0.1:${port}/api/sessions`)
+    ).json();
+    const afterRename = sessionsAfterRename.projects
+      .flatMap((project) => project.sessions)
+      .find((session) => session.path === sessionPath);
+    assert.equal(afterRename.name, "stable-position");
+    assert.equal(
+      afterRename.modified,
+      beforeRename.modified,
+      "rename changed activity ordering timestamp",
+    );
+
     const stateMutations = await Promise.all([
       fetch(`http://127.0.0.1:${port}/api/state/favorites`, {
         method: "POST",

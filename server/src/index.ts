@@ -15,6 +15,7 @@ import {
   open,
   rename,
   copyFile,
+  utimes,
 } from "node:fs/promises";
 import {
   createReadStream,
@@ -1431,11 +1432,18 @@ async function handleApi(
       return true;
     }
     const sessionPath = await trustedSessionPath(body.path);
+    // Naming is metadata, not activity: preserve the previous mtime so a
+    // rename cannot move the session to the top of the activity-sorted list.
+    const originalTimes = await stat(sessionPath);
     // A live host renames through the SDK; otherwise append a session_info
     // entry to the session file directly (pi's own persistence format).
     const liveHost = [...hosts.values()].find(
       (h) => h.session.sessionFile === sessionPath,
     );
+    if (liveHost?.isRunning) {
+      sendJson(res, 409, { error: "cannot rename a running session" });
+      return true;
+    }
     if (liveHost) {
       liveHost.session.setSessionName(body.name.slice(0, 200));
     } else {
@@ -1463,6 +1471,8 @@ async function handleApi(
       content.push(JSON.stringify(entry));
       await writeFile(sessionPath, content.join("\n") + "\n");
     }
+    await utimes(sessionPath, originalTimes.atime, originalTimes.mtime);
+    bumpSessionsVersion();
     sendJson(res, 200, { ok: true });
     return true;
   }

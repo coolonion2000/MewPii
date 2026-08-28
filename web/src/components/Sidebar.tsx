@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import type { ProjectGroup, SessionSummary } from '../types';
 import type { Selection, View } from '../App';
 import { setLang, getLang, t } from '../i18n';
@@ -73,6 +74,7 @@ export default function Sidebar(props: Props) {
   const [openProjects, setOpenProjects] = useState<Set<string>>(loadOpenProjects);
   const [renamingPath, setRenamingPath] = useState<string>();
   const [renameDraft, setRenameDraft] = useState('');
+  const [deleteTarget, setDeleteTarget] = useState<SessionSummary>();
   const [showArchived, setShowArchived] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [projectOrder, setProjectOrder] = useState<string[]>([]);
@@ -272,7 +274,7 @@ export default function Sidebar(props: Props) {
           <button
             className="btn btn-icon btn-sm"
             title={t('deleteSession')}
-            onClick={() => confirm(t('confirmDelete')) && onDelete(s.path)}
+            onClick={() => setDeleteTarget(s)}
           >
             <IconTrash size={12} />
           </button>
@@ -521,7 +523,7 @@ export default function Sidebar(props: Props) {
                     <button className="btn btn-icon btn-sm" title={t('unarchive')} onClick={() => onArchive(s.path, false)}>
                       <IconUnarchive size={12} />
                     </button>
-                    <button className="btn btn-icon btn-sm" title={t('deleteSession')} onClick={() => confirm(t('confirmDelete')) && onDelete(s.path)}>
+                    <button className="btn btn-icon btn-sm" title={t('deleteSession')} onClick={() => setDeleteTarget(s)}>
                       <IconTrash size={12} />
                     </button>
                   </span>
@@ -572,6 +574,42 @@ export default function Sidebar(props: Props) {
           )}
         </div>
       </div>
+      {deleteTarget &&
+        createPortal(
+          <div
+            className="modal-mask"
+            role="presentation"
+            onMouseDown={(event) => {
+              if (event.target === event.currentTarget) setDeleteTarget(undefined);
+            }}
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') setDeleteTarget(undefined);
+            }}
+          >
+            <div className="modal confirm-modal" role="alertdialog" aria-modal="true" aria-labelledby="delete-session-title">
+              <h3 id="delete-session-title">{t('deleteSession')}</h3>
+              <p>{t('confirmDelete')}</p>
+              <div className="confirm-modal-session" title={deleteTarget.name || deleteTarget.firstMessage}>
+                {deleteTarget.name || deleteTarget.firstMessage || '(空会话)'}
+              </div>
+              <div className="confirm-modal-actions">
+                <button className="btn" onClick={() => setDeleteTarget(undefined)}>{t('cancel')}</button>
+                <button
+                  className="btn btn-danger"
+                  autoFocus
+                  onClick={() => {
+                    const path = deleteTarget.path;
+                    setDeleteTarget(undefined);
+                    onDelete(path);
+                  }}
+                >
+                  <IconTrash size={12} /> {t('deleteSession')}
+                </button>
+              </div>
+            </div>
+          </div>,
+          document.querySelector('.main') ?? document.body,
+        )}
     </div>
   );
 }
