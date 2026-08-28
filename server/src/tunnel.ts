@@ -13,7 +13,7 @@ const TUNNEL_MAX_BUFFERED_BYTES = 8 * 1024 * 1024;
 const TUNNEL_MAX_PENDING_WS_BYTES = 1024 * 1024;
 export const TUNNEL_WS_HIGH_WATER_BYTES = 512 * 1024;
 export const TUNNEL_WS_LOW_WATER_BYTES = 128 * 1024;
-export const TUNNEL_WS_CHANNEL_MAX_BYTES = 4 * 1024 * 1024;
+export const TUNNEL_WS_CHANNEL_MAX_BYTES = 16 * 1024 * 1024;
 const REPLACED_CLOSE_CODE = 4009;
 
 export interface TunnelMsg {
@@ -99,15 +99,15 @@ export function forwardWebSocketFrame(
     onOverflow();
     return false;
   }
-  if (projectedBufferedBytes >= TUNNEL_WS_HIGH_WATER_BYTES && !canPauseSource) {
-    onOverflow();
-    return false;
-  }
   if (options) target.send(data, options);
   else target.send(data);
   flow.pendingBytes = target.bufferedAmount;
   if (Math.max(target.bufferedAmount, projectedBufferedBytes) < TUNNEL_WS_HIGH_WATER_BYTES) return true;
-  if (!canPauseSource || typeof source.pause !== "function" || typeof source.resume !== "function") {
+  // A multiplexed agent socket cannot pause one channel without blocking the
+  // others. Permit bounded buffering up to the hard per-channel cap instead
+  // of rejecting one valid snapshot at the soft pause threshold.
+  if (!canPauseSource) return true;
+  if (typeof source.pause !== "function" || typeof source.resume !== "function") {
     onOverflow();
     return false;
   }

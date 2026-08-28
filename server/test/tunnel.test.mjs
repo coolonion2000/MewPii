@@ -105,7 +105,7 @@ test("heartbeat terminates an unresponsive websocket", async () => {
   dispose();
 });
 
-test("live websocket flow pauses at high water and closes unsafe overflow", async () => {
+test("live websocket flow pauses pausable sources and bounds multiplexed channels", async () => {
   const source = new FakeWebSocket();
   const target = new FakeWebSocket();
   const flow = { pendingBytes: 0 };
@@ -118,9 +118,20 @@ test("live websocket flow pauses at high water and closes unsafe overflow", asyn
   await delay(25);
   assert.equal(source.paused, false);
 
-  target.bufferedAmount = TUNNEL_WS_HIGH_WATER_BYTES;
-  assert.equal(forwardWebSocketFrame(source, target, "unsafe", undefined, flow, false, () => { overflow = true; }), false);
-  assert.equal(overflow, true);
+  target.bufferedAmount = 0;
+  assert.equal(
+    forwardWebSocketFrame(
+      source,
+      target,
+      Buffer.alloc(7 * 1024 * 1024),
+      undefined,
+      flow,
+      false,
+      () => { overflow = true; },
+    ),
+    true,
+  );
+  assert.equal(overflow, false, "one bounded multi-megabyte snapshot was rejected at the soft threshold");
 
   target.bufferedAmount = 0;
   flow.pendingBytes = 0;
@@ -130,7 +141,7 @@ test("live websocket flow pauses at high water and closes unsafe overflow", asyn
   assert.equal(overflow, false, "historical low-pressure traffic triggered 1009");
 
   target.bufferedAmount = TUNNEL_WS_CHANNEL_MAX_BYTES;
-  assert.equal(forwardWebSocketFrame(source, target, "overflow", undefined, flow, true, () => { overflow = true; }), false);
+  assert.equal(forwardWebSocketFrame(source, target, "overflow", undefined, flow, false, () => { overflow = true; }), false);
   assert.equal(overflow, true);
 });
 
