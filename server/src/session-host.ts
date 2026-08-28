@@ -681,9 +681,24 @@ export class SessionHost {
       case 'subs':
       case 'pool':
       case 'mp-preset':
-        return { ok: false, error: `/${name} 是扩展 pi-codex-multi 的 TUI 命令，请在 pi 命令行里执行；账号管理完成后 MewPii 自动使用这些账号轮换。` };
+        // these are pi-codex-multi registered commands — dispatch to the live
+        // session's extension command handler (it builds a ctx with our UI bridge)
+        try {
+          const ran = await (s as unknown as { _tryExecuteExtensionCommand?: (t: string) => Promise<boolean> })._tryExecuteExtensionCommand?.(raw);
+          if (ran) return out(`已执行 /${name}。`);
+          return { ok: false, error: `扩展命令 /${name} 执行失败或未注册。` };
+        } catch (err) {
+          return { ok: false, error: `扩展命令 /${name} 出错: ${err instanceof Error ? err.message : String(err)}` };
+        }
       default:
-        return { ok: false, error: `未知命令 /${name}。可用内置命令：/compact /name /session /model /new` };
+        // any other registered extension command (mcp, subagents, etc.)
+        try {
+          const ran = await (s as unknown as { _tryExecuteExtensionCommand?: (t: string) => Promise<boolean> })._tryExecuteExtensionCommand?.(raw);
+          if (ran) return out(`已执行 /${name}。`);
+          return { ok: false, error: `未知命令 /${name}。可用内置命令：/compact /name /session /model /new` };
+        } catch (err) {
+          return { ok: false, error: `命令 /${name} 出错: ${err instanceof Error ? err.message : String(err)}` };
+        }
     }
   }
 
