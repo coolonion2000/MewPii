@@ -27,7 +27,7 @@ interface Props {
   onBranch: (entryId: string) => void;
   onOpenFile?: (path: string) => void;
   /** live counter data for the streaming message header (pi-web style) */
-  live?: { model?: string; tokens: number; tps: number } | undefined;
+  live?: { model?: string; tokens?: number; tps?: number } | undefined;
 }
 
 function MessageActions({ entryId, text, onFork, onBranch }: { entryId?: string; text: string; onFork: (id: string) => void; onBranch: (id: string) => void }) {
@@ -105,23 +105,25 @@ function MessageItem({ message, streaming, toolResults, tools, onFork, onBranch,
   return (
     <div className="msg-row assistant">
       {streaming && live && (
-        <div className="msg-live-header">
+        <div className="msg-live-header" title={t('liveCounter')}>
           {live.model && <span className="msg-live-model">{live.model}</span>}
-          <span className="msg-live-tokens" title={t('liveCounter')}>
-            <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
-              <line x1="5" y1="1.5" x2="5" y2="8.5" /><polyline points="2 6 5 8.5 8 6" />
-            </svg>
-            {live.tokens}
-          </span>
-          <span
-            className="msg-live-tps"
-            style={{
-              background:
-                live.tps >= 50 ? '#53b3cb' : live.tps >= 30 ? '#9bc53d' : live.tps >= 15 ? '#f9c22e' : '#e01a4f',
-            }}
-          >
-            {live.tps.toFixed(1)} t/s
-          </span>
+          {live.model && <span className="msg-live-separator" aria-hidden="true">·</span>}
+          {live.tokens === undefined ? (
+            <span className="msg-live-pending">
+              <span className="msg-live-dot" aria-hidden="true" />
+              {t('thinking')}…
+            </span>
+          ) : (
+            <span className="msg-live-metrics">
+              <span>≈{live.tokens} tok</span>
+              {live.tps !== undefined && (
+                <>
+                  <span className="msg-live-separator" aria-hidden="true">·</span>
+                  <span>{live.tps.toFixed(1)} tok/s</span>
+                </>
+              )}
+            </span>
+          )}
         </div>
       )}
       <div className="msg-assistant">

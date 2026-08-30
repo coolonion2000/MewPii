@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
 import type { ProjectGroup, SessionSummary } from '../types';
 import type { Selection, View } from '../App';
 import { setLang, getLang, t } from '../i18n';
 import { parseStoredStringArray } from '../state-utils';
+import { getUsedSessions, subscribeUsedSessions } from '../used-sessions';
 import DirectoryPicker from './DirectoryPicker';
 import {
   IconPlus, IconSearch, IconSettings, IconTrash, IconStar, IconStarFilled,
@@ -189,6 +190,22 @@ export default function Sidebar(props: Props) {
 
   const newSessionCwd = selection?.cwd ?? projects[0]?.cwd ?? '/';
   const agentOffline = Boolean(currentAgent && !agents?.includes(currentAgent));
+  const usedSessions = useSyncExternalStore(
+    subscribeUsedSessions,
+    getUsedSessions,
+    getUsedSessions,
+  );
+  const runningSessionPaths = useMemo(
+    () =>
+      new Set(
+        projects.flatMap((project) =>
+          project.sessions
+            .filter((session) => session.running)
+            .map((session) => session.path),
+        ),
+      ),
+    [projects],
+  );
 
   const toggleProject = (cwd: string) =>
     setOpenProjects((prev) => {
@@ -236,7 +253,7 @@ export default function Sidebar(props: Props) {
         className={`session-item ${selection?.sessionPath === s.path ? 'active' : ''}`}
         style={{ marginLeft: indent }}
         onClick={() => {
-          onSelect({ cwd: s.cwd || '', sessionPath: s.path });
+          onSelect({ cwd: s.cwd || '', sessionPath: s.path, sessionId: s.id });
           if (kids && !kids.open) kids.toggle();
         }}
       >
@@ -402,6 +419,42 @@ export default function Sidebar(props: Props) {
           <span className="agent-local">{t('agentLocal')}</span>
         )}
       </div>
+      {usedSessions.length > 0 && (
+        <section className="current-work" aria-label={t('currentWork')}>
+          <div className="current-work-header">{t('currentWork')}</div>
+          <div className="current-work-list">
+            {usedSessions.slice(0, 5).map((session) => {
+              const active = selection?.sessionPath === session.sessionPath;
+              const running = Boolean(
+                session.sessionPath && runningSessionPaths.has(session.sessionPath),
+              );
+              return (
+                <button
+                  type="button"
+                  key={`${session.cwd}|${session.sessionPath ?? ''}`}
+                  className={`current-work-item ${active ? 'active' : ''}`}
+                  onClick={() =>
+                    onSelect({
+                      cwd: session.cwd,
+                      sessionPath: session.sessionPath,
+                      sessionId: session.sessionId,
+                    })
+                  }
+                >
+                  <span
+                    className={`current-work-dot ${running ? 'running' : active ? 'active' : ''}`}
+                    aria-hidden="true"
+                  />
+                  <span className="current-work-copy">
+                    <span className="current-work-title">{session.title}</span>
+                    <span className="current-work-project">{basename(session.cwd)}</span>
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </section>
+      )}
       <div className="wb-header">
         <span className="wb-title">{t('workspace')}</span>
         <span className="spacer" />

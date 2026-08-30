@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   acceptsGeneration,
+  appRoutePath,
+  calculateLiveOutputMetrics,
   clearMatchingRequest,
   createGenerationGate,
   fixedAgentUrl,
@@ -11,11 +13,14 @@ import {
   mergeHistoryMessages,
   mergeSnapshotMessages,
   parseAppRoute,
+  parseStoredSelection,
   parseStoredStringArray,
+  sessionIdFromPath,
   restoreFailedImages,
   restoreFailedText,
   shouldShowDisconnected,
 } from '../src/state-utils.ts';
+import { shouldPlayCompletionSound } from '../src/completion-sound.ts';
 import { evaluateProviderLogout } from '../src/model-utils.ts';
 
 const message = (id, text = id) => ({ role: 'user', content: text, _entryId: id });
@@ -37,7 +42,17 @@ const snapshot = (messages, overrides = {}) => ({
 });
 
 test('deep-link routes and generation gate reject stale resolve results', () => {
-  assert.deepEqual(parseAppRoute('/chat/12345678-abcd'), { view: 'chat', pendingSessionId: '12345678-abcd' });
+  assert.deepEqual(parseAppRoute('/chat/12345678-ABCD/'), { view: 'chat', pendingSessionId: '12345678-abcd' });
+  const sessionPath = '/tmp/2026-01-01_12345678-abcd-4abc-8abc-123456789abc.jsonl';
+  assert.equal(sessionIdFromPath(sessionPath), '12345678-abcd-4abc-8abc-123456789abc');
+  assert.equal(appRoutePath({
+    view: 'chat',
+    selection: { cwd: '/work', sessionPath, sessionId: '12345678-abcd-4abc-8abc-123456789abc' },
+  }), '/chat/12345678-abcd-4abc-8abc-123456789abc');
+  assert.deepEqual(
+    parseStoredSelection(JSON.stringify({ cwd: '/work', sessionPath })),
+    { cwd: '/work', sessionPath, sessionId: '12345678-abcd-4abc-8abc-123456789abc' },
+  );
   assert.equal(acceptsGeneration(3, 2, false), false);
   assert.equal(acceptsGeneration(3, 3, true), false);
   assert.equal(acceptsGeneration(3, 3, false), true);
@@ -52,6 +67,38 @@ test('session switches do not flash a disconnected banner before the first snaps
   assert.equal(shouldShowDisconnected(false, true, 'connection closed'), false);
   assert.equal(shouldShowDisconnected(false, false, 'connection closed'), true);
   assert.equal(shouldShowDisconnected(true, false, 'stale error'), false);
+});
+
+test('completion sound only fires when a running reply settles away from the foreground', () => {
+  assert.equal(shouldPlayCompletionSound(true, false, 'hidden', false), true);
+  assert.equal(shouldPlayCompletionSound(true, false, 'visible', false), true);
+  assert.equal(shouldPlayCompletionSound(true, false, 'visible', true), false);
+  assert.equal(shouldPlayCompletionSound(false, false, 'hidden', false), false);
+  assert.equal(shouldPlayCompletionSound(true, true, 'hidden', false), false);
+});
+
+test('live output metrics distinguish unknown reasoning from estimated visible output', () => {
+  assert.deepEqual(calculateLiveOutputMetrics({
+    visibleChars: 0,
+    outputChars: 0,
+    firstDeltaAt: undefined,
+    deltaSamples: [],
+    now: 10_000,
+  }), {});
+  assert.deepEqual(calculateLiveOutputMetrics({
+    visibleChars: 350,
+    outputChars: 350,
+    firstDeltaAt: 9_000,
+    deltaSamples: [{ t: 9_500, n: 350 }],
+    now: 10_000,
+  }), { tokens: 100, tps: 100 });
+  assert.deepEqual(calculateLiveOutputMetrics({
+    visibleChars: 350,
+    outputChars: 350,
+    firstDeltaAt: 9_000,
+    deltaSamples: [{ t: 9_500, n: 350 }],
+    now: 16_000,
+  }), { tokens: 100, tps: 0 });
 });
 
 test('legacy sidebar storage ignores malformed and non-string values', () => {

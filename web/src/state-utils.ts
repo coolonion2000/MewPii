@@ -4,6 +4,7 @@ import type { PiiMessage, SessionSnapshot } from "./types";
 export interface SelectionState {
   cwd: string;
   sessionPath?: string;
+  sessionId?: string;
 }
 
 export type AppView =
@@ -41,18 +42,39 @@ export function parseAppRoute(path: string, hash = ""): AppRoute {
       return { view, selection: { cwd, sessionPath: session ?? undefined } };
     return { view, selection: cwd ? { cwd } : undefined };
   }
-  const match = path.match(/^\/chat\/([0-9a-f-]{8,})$/);
-  if (match) return { view: "chat", pendingSessionId: match[1] };
-  const requested = path.slice(1) as AppView;
+  const match = path.match(/^\/chat\/([0-9a-f-]{8,})\/?$/i);
+  if (match) return { view: "chat", pendingSessionId: match[1].toLowerCase() };
+  const requested = path.replace(/^\//, "").replace(/\/$/, "") as AppView;
   return VIEWS.has(requested) ? { view: requested } : { view: "chat" };
 }
 
+export function sessionIdFromPath(path: string | undefined): string | undefined {
+  return path?.match(/_([0-9a-f]{8}-[0-9a-f-]{27,})\.jsonl$/i)?.[1]?.toLowerCase();
+}
+
 export function appRoutePath(route: AppRoute, sessionId?: string): string {
-  return route.view === "chat"
-    ? sessionId
-      ? `/chat/${sessionId}`
-      : "/chat"
-    : `/${route.view}`;
+  if (route.view !== "chat") return `/${route.view}`;
+  const id = sessionId ?? route.selection?.sessionId ?? sessionIdFromPath(route.selection?.sessionPath);
+  return id ? `/chat/${id}` : "/chat";
+}
+
+export function parseStoredSelection(value: string | null): SelectionState | undefined {
+  if (!value) return undefined;
+  try {
+    const parsed = JSON.parse(value) as Partial<SelectionState>;
+    if (typeof parsed.cwd !== "string" || typeof parsed.sessionPath !== "string")
+      return undefined;
+    return {
+      cwd: parsed.cwd,
+      sessionPath: parsed.sessionPath,
+      sessionId:
+        typeof parsed.sessionId === "string"
+          ? parsed.sessionId
+          : sessionIdFromPath(parsed.sessionPath),
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 export function initialCwd(
@@ -88,6 +110,47 @@ export function shouldShowDisconnected(
   error: string | undefined,
 ): boolean {
   return !connected && !reconnecting && Boolean(error);
+}
+
+export interface LiveDeltaSample {
+  t: number;
+  n: number;
+}
+
+export interface LiveOutputMetrics {
+  tokens?: number;
+  tps?: number;
+}
+
+export interface LiveOutputMetricsInput {
+  visibleChars: number;
+  outputChars: number;
+  firstDeltaAt: number | undefined;
+  deltaSamples: readonly LiveDeltaSample[];
+  now: number;
+}
+
+/** Estimate visible output only; hidden provider reasoning remains unknown. */
+export function calculateLiveOutputMetrics({
+  visibleChars,
+  outputChars,
+  firstDeltaAt,
+  deltaSamples,
+  now,
+}: LiveOutputMetricsInput): LiveOutputMetrics {
+  const chars = Math.max(0, visibleChars, outputChars);
+  if (chars === 0) return {};
+
+  const tokens = Math.round(chars / 3.5);
+  if (!firstDeltaAt) return { tokens };
+
+  const cutoff = now - 5000;
+  const recentChars = deltaSamples
+    .filter((sample) => sample.t >= cutoff)
+    .reduce((sum, sample) => sum + sample.n, 0);
+  const windowStart = Math.max(firstDeltaAt, cutoff);
+  const elapsedSeconds = Math.max(0.5, (now - windowStart) / 1000);
+  return { tokens, tps: recentChars / 3.5 / elapsedSeconds };
 }
 
 export interface GenerationGate {

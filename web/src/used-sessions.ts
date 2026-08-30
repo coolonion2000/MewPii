@@ -3,6 +3,7 @@
 export interface UsedSession {
   cwd: string;
   sessionPath?: string;
+  sessionId?: string;
   title: string;
   at: number;
 }

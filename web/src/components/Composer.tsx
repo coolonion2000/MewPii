@@ -4,6 +4,13 @@ import { fetchModels, type ModelsResponse } from '../api';
 import { t } from '../i18n';
 import { restoreFailedImages, restoreFailedText } from '../state-utils';
 import { IconPlus, IconArrowUp, IconStop, IconChevronDown, IconX, IconWrench } from '../icons';
+import {
+  clearComposerDraft,
+  conversationDraftKey,
+  getComposerDraft,
+  setComposerDraft,
+  type ComposerDraftImage,
+} from '../draft-store';
 
 interface Props {
   conv: Conversation;
@@ -13,20 +20,35 @@ interface Props {
 
 const THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
 
-interface PendingImage {
-  data: string;
-  mimeType: string;
-  name: string;
-}
+type PendingImage = ComposerDraftImage;
 
 export default function Composer({ conv, draft, onDraft }: Props) {
-  const [text, setText] = useState('');
-  const [images, setImages] = useState<PendingImage[]>([]);
+  const initialDraftKey = conversationDraftKey(
+    conv.agent,
+    conv.cwd,
+    conv.sessionPath ?? conv.snapshot?.sessionFile,
+  );
+  const [initialDraft] = useState(() => getComposerDraft(initialDraftKey));
+  const [text, setText] = useState(initialDraft?.text ?? '');
+  const [images, setImages] = useState<PendingImage[]>(initialDraft?.images ?? []);
   const [models, setModels] = useState<ModelsResponse | undefined>();
   const [menuOpen, setMenuOpen] = useState<'model' | 'thinking' | 'tools' | undefined>();
   const [queueMode, setQueueMode] = useState<'steer' | 'followUp'>('steer');
   const taRef = useRef<HTMLTextAreaElement>(null);
   const imgInputRef = useRef<HTMLInputElement>(null);
+  const draftKey = conversationDraftKey(
+    conv.agent,
+    conv.cwd,
+    conv.sessionPath ?? conv.snapshot?.sessionFile,
+  );
+  const previousDraftKey = useRef(draftKey);
+
+  useEffect(() => {
+    if (previousDraftKey.current !== draftKey)
+      clearComposerDraft(previousDraftKey.current);
+    setComposerDraft(draftKey, { text, images });
+    previousDraftKey.current = draftKey;
+  }, [draftKey, text, images]);
 
   useEffect(() => {
     fetchModels().then(setModels).catch(() => undefined);
@@ -71,6 +93,7 @@ export default function Composer({ conv, draft, onDraft }: Props) {
     const value = text.trim();
     if (!canSend) return;
     const imgs = images;
+    clearComposerDraft(draftKey);
     setText('');
     setImages([]);
     requestAnimationFrame(autoResize);

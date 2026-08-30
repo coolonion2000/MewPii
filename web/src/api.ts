@@ -164,6 +164,7 @@ const COMMAND_TIMEOUT_MS = 120_000;
 export class Conversation {
   private ws?: WebSocket;
   private listeners = new Set<() => void>();
+  private revision = 0;
   private commandSeq = 0;
   private pending = new Map<
     string,
@@ -243,7 +244,10 @@ export class Conversation {
     return () => this.listeners.delete(fn);
   };
 
+  getRevision = (): number => this.revision;
+
   private emit(): void {
+    this.revision++;
     for (const fn of this.listeners) fn();
   }
 
@@ -597,6 +601,13 @@ export class Conversation {
   /** Surface an error to the message area. */
   reportError(message: string): void {
     this.lastError = message;
+    this.emit();
+  }
+
+  /** Dismiss the persistent message-area error without changing connection state. */
+  clearError(): void {
+    if (!this.lastError) return;
+    this.lastError = undefined;
     this.emit();
   }
 

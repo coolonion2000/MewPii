@@ -21,6 +21,8 @@ import {
   createGenerationGate,
   initialCwd,
   parseAppRoute,
+  parseStoredSelection,
+  sessionIdFromPath,
   type AppRoute,
   type AppView,
   type SelectionState,
@@ -39,10 +41,32 @@ export type View = AppView;
 type Route = AppRoute;
 
 const LAST_CWD_KEY = "pii-last-cwd";
+const LAST_SESSION_KEY = "pii-last-session";
+
+function normalizeSelection(selection: Selection | undefined): Selection | undefined {
+  if (!selection?.sessionPath || selection.sessionId) return selection;
+  return { ...selection, sessionId: sessionIdFromPath(selection.sessionPath) };
+}
+
+function rememberSession(selection: Selection | undefined): void {
+  if (!selection?.sessionPath) {
+    localStorage.removeItem(LAST_SESSION_KEY);
+    return;
+  }
+  localStorage.setItem(LAST_SESSION_KEY, JSON.stringify(normalizeSelection(selection)));
+}
 
 /** Clean path routes: /chat/<sessionId>, /chat, /files, /settings|models|skills|extensions. */
 function parsePath(): Route {
   const route = parseAppRoute(location.pathname, location.hash);
+  if (
+    route.view === "chat" &&
+    !route.selection &&
+    !route.pendingSessionId &&
+    /^\/chat\/?$/.test(location.pathname)
+  ) {
+    route.selection = parseStoredSelection(localStorage.getItem(LAST_SESSION_KEY));
+  }
   if (location.hash.startsWith("#/"))
     history.replaceState(null, "", appRoutePath(route));
   return route;
@@ -87,11 +111,15 @@ export default function App() {
     });
   }, []);
 
-  const setRoute = useCallback((r: Route) => {
-    setRouteState(r);
-    if (r.selection?.cwd) localStorage.setItem(LAST_CWD_KEY, r.selection.cwd);
-    // session id is appended once the session file is known (see effect below)
-    history.replaceState(null, "", appRoutePath(r));
+  const setRoute = useCallback((route: Route) => {
+    const next = route.selection
+      ? { ...route, selection: normalizeSelection(route.selection) }
+      : route;
+    setRouteState(next);
+    if (next.selection?.cwd)
+      localStorage.setItem(LAST_CWD_KEY, next.selection.cwd);
+    if (next.view === "chat") rememberSession(next.selection);
+    history.replaceState(null, "", appRoutePath(next));
   }, []);
 
   const setSelection = useCallback(
@@ -194,8 +222,11 @@ export default function App() {
     void fetch(`/api/sessions/resolve?id=${encodeURIComponent(id)}`, {
       signal: controller.signal,
     })
-      .then((r) => r.json())
-      .then((d: { cwd?: string; path?: string }) => {
+      .then((response) => {
+        if (!response.ok) throw new Error(`resolve session: ${response.status}`);
+        return response.json();
+      })
+      .then((d: { cwd?: string; path?: string; id?: string }) => {
         if (
           !acceptsGeneration(
             resolveGeneration.current,
@@ -208,10 +239,13 @@ export default function App() {
           if (current.pendingSessionId !== id) return current;
           if (d.cwd && d.path) {
             localStorage.setItem(LAST_CWD_KEY, d.cwd);
-            return {
-              view: "chat",
-              selection: { cwd: d.cwd, sessionPath: d.path },
+            const resolved = {
+              cwd: d.cwd,
+              sessionPath: d.path,
+              sessionId: d.id ?? id,
             };
+            rememberSession(resolved);
+            return { view: "chat", selection: resolved };
           }
           return { view: "chat" };
         });
@@ -234,55 +268,46 @@ export default function App() {
     return () => controller.abort();
   }, [route.pendingSessionId]);
 
-  // New sessions start in the last used directory.
-  const effectiveSelection: Selection | undefined = selection?.cwd
-    ? selection
-    : selection;
+  const effectiveSelection = selection;
 
   // One Conversation per chat selection. View changes keep it alive and never
   // create a new host; only cwd/session/agent identity may replace it.
   const conv = useMemo(() => {
     if (!effectiveSelection?.cwd) return undefined;
-    const c = new Conversation(
+    return new Conversation(
       effectiveSelection.cwd,
       effectiveSelection.sessionPath,
       appAgent,
     );
-    c.connect();
-    return c;
   }, [effectiveSelection?.cwd, effectiveSelection?.sessionPath, appAgent]);
 
-  useEffect(() => () => conv?.dispose(), [conv]);
-
-  // When the host switches session files (newSession / fork / import), follow it:
-  // otherwise navigating away and back would reconnect to the OLD session.
+  // Connect after React commits so ChatView can subscribe before the first
+  // snapshot arrives. Connecting during render can lose a fast initial frame.
   useEffect(() => {
-    const file = conv?.snapshot?.sessionFile;
-    if (!file || !selection) return;
-    if (selection.sessionPath !== file) {
-      setRouteState((prev) =>
-        prev.selection
-          ? {
-              ...prev,
-              selection: { cwd: prev.selection.cwd, sessionPath: file },
-            }
-          : prev,
-      );
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [conv?.snapshot?.sessionFile]);
+    if (!conv) return;
+    conv.connect();
+    return () => conv.dispose();
+  }, [conv]);
 
-  // Keep the address bar clean: /chat/<sessionId> once the file is known.
+  // Follow host-side session changes and persist a canonical refresh route.
   useEffect(() => {
-    if (route.view !== "chat") return;
+    if (route.view !== "chat" || !selection) return;
     const file = conv?.snapshot?.sessionFile;
     if (!file) return;
-    const m = file.match(/_([0-9a-f]{8}-[0-9a-f-]{27,})\.jsonl$/);
-    const id = m?.[1] ?? conv?.snapshot?.sessionId;
-    if (id && !location.pathname.endsWith(`/${id}`)) {
-      history.replaceState(null, "", `/chat/${id}`);
+    const id = conv?.snapshot?.sessionId ?? sessionIdFromPath(file);
+    const next = { cwd: selection.cwd, sessionPath: file, sessionId: id };
+    if (selection.sessionPath !== file || selection.sessionId !== id) {
+      setRouteState((current) => ({ ...current, selection: next }));
     }
-  }, [route.view, conv?.snapshot?.sessionFile, conv?.snapshot?.sessionId]);
+    rememberSession(next);
+    if (id && !location.pathname.endsWith(`/${id}`))
+      history.replaceState(null, "", `/chat/${id}`);
+  }, [
+    route.view,
+    selection,
+    conv?.snapshot?.sessionFile,
+    conv?.snapshot?.sessionId,
+  ]);
 
   // App-level conv subscription: only re-render on meaningful transitions
   // (stream start/stop, first message, session file change) — never per delta.
@@ -312,6 +337,7 @@ export default function App() {
         addUsedSession({
           cwd: conv.snapshot?.cwd ?? conv.cwd,
           sessionPath: file ?? conv.sessionPath,
+          sessionId: conv.snapshot?.sessionId,
           title: conv.snapshot?.name || firstText.slice(0, 40) || "(新会话)",
         });
       }
@@ -580,15 +606,20 @@ export default function App() {
           <FilesPanel key={defaultCwd} cwd={defaultCwd} />
         )}
         {route.view === "chat" &&
-          (conv ? (
+          (route.pendingSessionId ? (
+            <div className="session-loading" role="status">
+              <span className="working-dot" aria-hidden="true" />
+              <span>{t("loadingSession")}</span>
+            </div>
+          ) : conv ? (
             <ChatView
               key={`${effectiveSelection?.cwd}|${effectiveSelection?.sessionPath ?? "new"}`}
               conv={conv}
               onRefresh={refreshProjects}
-              onForked={(cwd, sessionFile) =>
+              onForked={(cwd, sessionFile, sessionId) =>
                 setRoute({
                   view: "chat",
-                  selection: { cwd, sessionPath: sessionFile },
+                  selection: { cwd, sessionPath: sessionFile, sessionId },
                 })
               }
               projects={projects}

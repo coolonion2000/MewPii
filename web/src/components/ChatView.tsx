@@ -1,11 +1,10 @@
-import { useEffect, useReducer, useRef, useState } from 'react';
+import { useEffect, useReducer, useRef, useState, useSyncExternalStore } from 'react';
 import type { Conversation } from '../api';
 import MessageItem from './MessageItem';
 import Composer from './Composer';
 import StatsBar from './StatsBar';
 import RunsChip, { type RunInfo } from './RunsChip';
 import SubagentPanel from './SubagentPanel';
-import { getUsedSessions, subscribeUsedSessions } from '../used-sessions';
 import { IconFolder, IconChevronDown } from '../icons';
 import Trajectory from './Trajectory';
 import ExtensionUI, { InlineQuestions } from './ExtensionUI';
@@ -13,20 +12,59 @@ import FilePreview from './FilePreview';
 import { IconTrash, IconPencil, IconX } from '../icons';
 import { exportHtml } from '../export';
 import type { PiiMessage, ProjectGroup } from '../types';
-import { shouldShowDisconnected } from '../state-utils';
+import { calculateLiveOutputMetrics, shouldShowDisconnected } from '../state-utils';
+import {
+  armCompletionSound,
+  playCompletionSound,
+  shouldPlayCompletionSound,
+} from '../completion-sound';
 import { t } from '../i18n';
 
 interface Props {
   conv: Conversation;
   onRefresh: () => void;
-  onForked?: (cwd: string, sessionFile: string) => void;
+  onForked?: (cwd: string, sessionFile: string, sessionId?: string) => void;
   projects?: ProjectGroup[];
   onSelectProject?: (cwd: string) => void;
 }
 
 export default function ChatView({ conv, onRefresh, onForked, projects, onSelectProject }: Props) {
   const [, force] = useReducer((x: number) => x + 1, 0);
-  useEffect(() => conv.subscribe(force), [conv]);
+  // React rechecks the revision after subscribing, so even a snapshot arriving
+  // between render and commit cannot leave this view on stale empty state.
+  useSyncExternalStore(conv.subscribe, conv.getRevision, conv.getRevision);
+
+  const runIsStreaming = Boolean(conv.snapshot?.isStreaming);
+  const completionStateRef = useRef({ conversation: conv, isStreaming: runIsStreaming });
+  useEffect(() => {
+    const arm = () => {
+      armCompletionSound();
+      window.removeEventListener('pointerdown', arm);
+      window.removeEventListener('keydown', arm);
+    };
+    window.addEventListener('pointerdown', arm);
+    window.addEventListener('keydown', arm);
+    return () => {
+      window.removeEventListener('pointerdown', arm);
+      window.removeEventListener('keydown', arm);
+    };
+  }, []);
+  useEffect(() => {
+    const previous = completionStateRef.current;
+    if (
+      previous.conversation === conv &&
+      shouldPlayCompletionSound(
+        previous.isStreaming,
+        runIsStreaming,
+        document.visibilityState,
+        document.hasFocus(),
+      )
+    ) {
+      playCompletionSound();
+    }
+    completionStateRef.current = { conversation: conv, isStreaming: runIsStreaming };
+  }, [conv, runIsStreaming]);
+
   // 1s ticker while streaming so the live t/s decays smoothly between deltas
   useEffect(() => {
     if (!conv.snapshot?.isStreaming) return;
@@ -42,22 +80,10 @@ export default function ChatView({ conv, onRefresh, onForked, projects, onSelect
     if (!el) return true;
     return el.scrollHeight - el.scrollTop - el.clientHeight < 80;
   };
-  const [editingTitle, setEditingTitle] = useState(false);
-  const [titleDraft, setTitleDraft] = useState('');
   const [showTraj, setShowTraj] = useState(false);
   const [draft, setDraft] = useState<string>();
   const [previewPath, setPreviewPath] = useState<string>();
   const [projMenuOpen, setProjMenuOpen] = useState(false);
-  const [usedMenuOpen, setUsedMenuOpen] = useState(false);
-  const [, forceUsed] = useReducer((x: number) => x + 1, 0);
-  useEffect(() => subscribeUsedSessions(forceUsed), []);
-  useEffect(() => {
-    if (!usedMenuOpen) return;
-    const close = () => setUsedMenuOpen(false);
-    window.addEventListener('click', close);
-    return () => window.removeEventListener('click', close);
-  }, [usedMenuOpen]);
-  const usedList = usedMenuOpen ? getUsedSessions() : [];
   useEffect(() => {
     if (!projMenuOpen) return;
     const close = () => setProjMenuOpen(false);
@@ -119,13 +145,16 @@ export default function ChatView({ conv, onRefresh, onForked, projects, onSelect
     };
   }, [title]);
 
-  const saveTitle = () => {
-    setEditingTitle(false);
-    const name = titleDraft.trim();
-    if (name && name !== snap?.name) {
-      void conv.send({ type: 'setSessionName', name }).then(onRefresh).catch(() => undefined);
-    }
-  };
+  // Existing sessions should show a loading state until their first snapshot;
+  // rendering the new-session hero here makes a successful refresh look empty.
+  if (!snap && conv.sessionPath) {
+    return (
+      <div className="session-loading" role="status">
+        <span className="working-dot" aria-hidden="true" />
+        <span>{t('loadingSession')}</span>
+      </div>
+    );
+  }
 
   // custom/system injections (e.g. ADHD ruleset) don't count as conversation
   const hasUserMessage = allMessages.some((m) => m.role === 'user');
@@ -179,61 +208,7 @@ export default function ChatView({ conv, onRefresh, onForked, projects, onSelect
   return (
     <>
       <div className="chat-header">
-        <div style={{ minWidth: 0 }}>
-          {editingTitle ? (
-            <input
-              autoFocus
-              value={titleDraft}
-              onChange={(e) => setTitleDraft(e.target.value)}
-              onBlur={saveTitle}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') saveTitle();
-                if (e.key === 'Escape') setEditingTitle(false);
-              }}
-              style={{
-                font: 'inherit', fontWeight: 600, fontSize: 14, width: 360, maxWidth: '60vw',
-                background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)',
-                border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 6, padding: '2px 8px', outline: 'none',
-              }}
-            />
-          ) : (
-            <div className="menu-anchor">
-              <button
-                className="title title-btn"
-                title={t('doubleClickRename')}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setUsedMenuOpen((o) => !o);
-                }}
-                onDoubleClick={() => {
-                  setTitleDraft(snap?.name ?? title);
-                  setEditingTitle(true);
-                }}
-              >
-                {title}
-                <IconChevronDown size={11} />
-              </button>
-              {usedMenuOpen && usedList.length > 0 && (
-                <div className="menu menu-down" onClick={(e) => e.stopPropagation()}>
-                  {usedList.map((u) => (
-                    <button
-                      key={(u.sessionPath ?? '') + u.cwd}
-                      className={`menu-item used-item ${u.sessionPath === snap?.sessionFile ? 'active' : ''}`}
-                      onClick={() => {
-                        setUsedMenuOpen(false);
-                        if (onForked && u.sessionPath) onForked(u.cwd, u.sessionPath);
-                      }}
-                    >
-                      <span className="used-title">{u.title}</span>
-                      <span className="dim used-proj">{u.cwd.split('/').filter(Boolean).pop()}</span>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-          <div className="sub" title={snap?.cwd ?? conv.cwd}>{(snap?.cwd ?? conv.cwd).split('/').filter(Boolean).pop()}</div>
-        </div>
+        <div className="chat-session-title" title={title}>{title}</div>
         <div className="spacer" />
         {snap?.isStreaming && (
           <span style={{ fontSize: 12, color: 'var(--dsw-alias-state-business-primary)', display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -323,13 +298,14 @@ export default function ChatView({ conv, onRefresh, onForked, projects, onSelect
                             0,
                           )
                         : 0;
-                      const tokens = Math.round(Math.max(partialLen, run.outputChars) / 3.5);
-                      const nowMs = Date.now();
-                      const recentChars = conv.deltaSamples
-                        .filter((d) => nowMs - d.t <= 5000)
-                        .reduce((sum, d) => sum + d.n, 0);
-                      const tps = run.firstDeltaAt ? recentChars / 3.5 / 5 : 0;
-                      return { model: snap?.model?.name, tokens, tps };
+                      const metrics = calculateLiveOutputMetrics({
+                        visibleChars: partialLen,
+                        outputChars: run.outputChars,
+                        firstDeltaAt: run.firstDeltaAt,
+                        deltaSamples: conv.deltaSamples,
+                        now: Date.now(),
+                      });
+                      return { model: snap?.model?.name, ...metrics };
                     })()
                   : undefined
               }
@@ -412,7 +388,19 @@ export default function ChatView({ conv, onRefresh, onForked, projects, onSelect
               </span>
             </div>
           )}
-          {conv.lastError && <div className="msg-error">{conv.lastError}</div>}
+          {conv.lastError && (
+            <div className="msg-error msg-error-dismissible" role="alert">
+              <span className="msg-error-text">{conv.lastError}</span>
+              <button
+                type="button"
+                className="msg-error-close"
+                aria-label={t('close')}
+                onClick={() => conv.clearError()}
+              >
+                <IconX size={14} />
+              </button>
+            </div>
+          )}
           {conv.reconnecting && <div className="msg-error">{t('reconnecting')}</div>}
           {shouldShowDisconnected(conv.connected, conv.reconnecting, conv.error) && (
             <div className="msg-error">{t('disconnected')}</div>

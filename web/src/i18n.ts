@@ -4,6 +4,7 @@ export type Lang = 'zh' | 'en';
 const dict = {
   zh: {
     newSession: '新会话',
+    currentWork: '当前工作',
     searchSessions: '搜索会话…',
     noSessions: '还没有会话',
     noMatch: '没有匹配的会话',
@@ -136,7 +137,8 @@ const dict = {
     disconnected: '未连接',
     customAnswer: '自己输入…',
     pkgEnabled: '启用该扩展包',
-    liveCounter: '本次输出 token 数与速度',
+    liveCounter: '流式输出 token 估算与速度；尚无可见输出时显示为未知',
+    loadingSession: '正在加载聊天记录…',
     queueClear: '清空队列',
     queueEdit: '编辑（移回输入框）',
     queueRemove: '删除',
@@ -201,6 +203,7 @@ const dict = {
   },
   en: {
     newSession: 'New session',
+    currentWork: 'Current work',
     searchSessions: 'Search sessions…',
     noSessions: 'No sessions yet',
     noMatch: 'No matching sessions',
@@ -331,7 +334,8 @@ const dict = {
     disconnected: 'Disconnected',
     customAnswer: 'Type your own…',
     pkgEnabled: 'Enable this package',
-    liveCounter: 'Output tokens and rate for this run',
+    liveCounter: 'Estimated streamed output tokens and rate; unknown before visible output',
+    loadingSession: 'Loading conversation history…',
     queueClear: 'Clear queue',
     queueEdit: 'Edit (move to input)',
     queueRemove: 'Remove',
