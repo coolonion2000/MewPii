@@ -10,6 +10,7 @@ interface Props {
   path: string;
   width: number;
   agent?: string;
+  sessionId?: string;
   onClose: () => void;
 }
 
@@ -39,7 +40,7 @@ function formatJson(raw: string, ext: string): string {
 }
 
 /** Right-side file preview drawer (pi-web style): markdown rendering, JSON formatting, raw toggle. */
-export default function FilePreview({ cwd, path, width, agent, onClose }: Props) {
+export default function FilePreview({ cwd, path, width, agent, sessionId, onClose }: Props) {
   const requestGeneration = useRef(0);
   const [content, setContent] = useState<string>();
   const [error, setError] = useState<string>();
@@ -51,6 +52,13 @@ export default function FilePreview({ cwd, path, width, agent, onClose }: Props)
   const isMd = MD_EXTS.has(ext);
   const isJson = JSON_EXTS.has(ext);
   const hasRichView = isMd || isJson;
+  const sessionQuery = sessionId
+    ? `&sessionId=${encodeURIComponent(sessionId)}`
+    : '';
+  const fileUrl = withAgent(
+    `/api/file?cwd=${encodeURIComponent(cwd)}&path=${encodeURIComponent(path)}${sessionQuery}`,
+    agent,
+  );
 
   useEffect(() => {
     const generation = ++requestGeneration.current;
@@ -63,8 +71,7 @@ export default function FilePreview({ cwd, path, width, agent, onClose }: Props)
       setLoading(false);
       return () => controller.abort();
     }
-    const url = withAgent(`/api/file?cwd=${encodeURIComponent(cwd)}&path=${encodeURIComponent(path)}`, agent);
-    void fetch(url, { signal: controller.signal })
+    void fetch(fileUrl, { signal: controller.signal })
       .then(async (r) => {
         const d = (await r.json()) as { content?: string; error?: string };
         if (controller.signal.aborted || generation !== requestGeneration.current) return;
@@ -78,7 +85,7 @@ export default function FilePreview({ cwd, path, width, agent, onClose }: Props)
         if (!controller.signal.aborted && generation === requestGeneration.current) setLoading(false);
       });
     return () => controller.abort();
-  }, [agent, cwd, path, isImage]);
+  }, [fileUrl, isImage]);
 
   const fileName = path.split('/').pop() ?? path;
 
@@ -99,7 +106,7 @@ export default function FilePreview({ cwd, path, width, agent, onClose }: Props)
         {error && <div className="msg-error">{error}</div>}
         {isImage && (
           <img
-            src={withAgent(`/api/file?cwd=${encodeURIComponent(cwd)}&path=${encodeURIComponent(path)}`, agent)}
+            src={fileUrl}
             alt={path}
             style={{ maxWidth: '100%', borderRadius: 8, padding: '0 12px' }}
           />

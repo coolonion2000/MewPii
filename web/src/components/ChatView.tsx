@@ -11,7 +11,7 @@ import ExtensionUI, { InlineQuestions } from './ExtensionUI';
 import FilePreview from './FilePreview';
 import { IconTrash, IconPencil, IconX } from '../icons';
 import { exportHtml } from '../export';
-import type { PiiMessage, ProjectGroup } from '../types';
+import type { PiiMessage, ProjectGroup, SessionSnapshot } from '../types';
 import { calculateLiveOutputMetrics, shouldShowDisconnected } from '../state-utils';
 import {
   armCompletionSound,
@@ -475,6 +475,7 @@ export default function ChatView({ conv, onRefresh, onForked, projects, onSelect
             path={previewPath}
             width={previewWidth}
             agent={conv.agent}
+            sessionId={snap?.sessionId}
             onClose={() => setPreviewPath(undefined)}
           />
         </>
@@ -505,7 +506,7 @@ function QueueItem({ kind, index, msg, conv, capabilities, onEdit }: {
   index: number;
   msg: string;
   conv: Conversation;
-  capabilities?: { reorder: boolean; remove: boolean; reason?: string };
+  capabilities?: SessionSnapshot['queueCapabilities'];
   onEdit: (m: string) => void;
 }) {
   const other = kind === 'steer' ? 'followUp' : 'steer';
@@ -519,18 +520,34 @@ function QueueItem({ kind, index, msg, conv, capabilities, onEdit }: {
         <button
           className="btn btn-icon btn-sm"
           title={capabilities?.reason ?? t('queueMove', { mode: other === 'steer' ? t('queuedSteer') : t('queuedFollowUp') })}
-          disabled={capabilities?.reorder === false}
-          onClick={() => void conv.send({ type: 'queue_move', from: apiQueue, to: apiOther, index }).catch(() => undefined)}
+          disabled={!capabilities?.reorder}
+          onClick={() => {
+            if (!capabilities) return;
+            void conv.send({
+              type: 'queue_move',
+              from: apiQueue,
+              to: apiOther,
+              index,
+              expectedMessage: msg,
+              revision: capabilities.revision,
+            }).catch(() => undefined);
+          }}
         >
           ⇄
         </button>
         <button
           className="btn btn-icon btn-sm"
           title={capabilities?.reason ?? t('queueEdit')}
-          disabled={capabilities?.remove === false}
+          disabled={!capabilities?.remove}
           onClick={() => {
-            onEdit(msg);
-            void conv.send({ type: 'queue_remove', queue: apiQueue, index }).catch(() => undefined);
+            if (!capabilities) return;
+            void conv.send({
+              type: 'queue_remove',
+              queue: apiQueue,
+              index,
+              expectedMessage: msg,
+              revision: capabilities.revision,
+            }).then(() => onEdit(msg)).catch(() => undefined);
           }}
         >
           <IconPencil size={11} />
@@ -538,8 +555,17 @@ function QueueItem({ kind, index, msg, conv, capabilities, onEdit }: {
         <button
           className="btn btn-icon btn-sm"
           title={capabilities?.reason ?? t('queueRemove')}
-          disabled={capabilities?.remove === false}
-          onClick={() => void conv.send({ type: 'queue_remove', queue: apiQueue, index }).catch(() => undefined)}
+          disabled={!capabilities?.remove}
+          onClick={() => {
+            if (!capabilities) return;
+            void conv.send({
+              type: 'queue_remove',
+              queue: apiQueue,
+              index,
+              expectedMessage: msg,
+              revision: capabilities.revision,
+            }).catch(() => undefined);
+          }}
         >
           <IconX size={11} />
         </button>

@@ -34,6 +34,8 @@ export default function Composer({ conv, draft, onDraft }: Props) {
   const [models, setModels] = useState<ModelsResponse | undefined>();
   const [menuOpen, setMenuOpen] = useState<'model' | 'thinking' | 'tools' | undefined>();
   const [queueMode, setQueueMode] = useState<'steer' | 'followUp'>('steer');
+  const [submitPending, setSubmitPending] = useState(false);
+  const submitPendingRef = useRef(false);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const imgInputRef = useRef<HTMLInputElement>(null);
   const draftKey = conversationDraftKey(
@@ -80,7 +82,8 @@ export default function Composer({ conv, draft, onDraft }: Props) {
 
   const snap = conv.snapshot;
   const streaming = Boolean(snap?.isStreaming);
-  const canSend = (text.trim().length > 0 || images.length > 0) && conv.connected;
+  const hasPayload = text.trim().length > 0 || images.length > 0;
+  const canSend = hasPayload && !submitPending;
 
   const autoResize = () => {
     const ta = taRef.current;
@@ -91,47 +94,61 @@ export default function Composer({ conv, draft, onDraft }: Props) {
 
   const submit = async () => {
     const value = text.trim();
-    if (!canSend) return;
+    if (!canSend || submitPendingRef.current) return;
     const imgs = images;
-    clearComposerDraft(draftKey);
-    setText('');
-    setImages([]);
-    requestAnimationFrame(autoResize);
-    // optimistic render: show the message now, not after the server round-trip.
-    // while streaming the message only enters the queue (steer/followUp) — the
-    // queue strip shows it; a premature bubble would double-display it.
-    // a leading "/cmd" is a pi slash command (compact, model, session, extension
-    // commands) — route it to the command executor, not the LLM
-    const slashMatch = value.match(/^\s*\/([^\s/]+)(\s+.*)?$/);
-    if (slashMatch) {
-      const optKey2 = streaming ? -1 : conv.addOptimistic(value, imgs.map(({ data, mimeType }) => ({ data, mimeType })));
-      try {
+    submitPendingRef.current = true;
+    setSubmitPending(true);
+    let cleared = false;
+    let optimisticKey = -1;
+    try {
+      // A new host may need several seconds to load extensions and emit its
+      // first snapshot. Accept the click now and deliver once it is ready.
+      await conv.waitUntilReady();
+      clearComposerDraft(draftKey);
+      setText('');
+      setImages([]);
+      cleared = true;
+      requestAnimationFrame(autoResize);
+
+      const activeStreaming = Boolean(conv.snapshot?.isStreaming);
+      // optimistic render: show the message now, not after the server round-trip.
+      // while streaming the message only enters the queue (steer/followUp) — the
+      // queue strip shows it; a premature bubble would double-display it.
+      // a leading "/cmd" is a pi slash command (compact, model, session, extension
+      // commands) — route it to the command executor, not the LLM
+      const slashMatch = value.match(/^\s*\/([^\s/]+)(\s+.*)?$/);
+      optimisticKey = activeStreaming
+        ? -1
+        : conv.addOptimistic(
+            value,
+            imgs.map(({ data, mimeType }) => ({ data, mimeType })),
+          );
+      if (slashMatch) {
         const res = await conv.send({ type: 'slash', raw: value });
         const output = (res as { output?: string } | undefined)?.output;
         if (output) conv.toast(output);
         else if (!conv.lastError) conv.toast(t('slashDone'));
-        if (optKey2 >= 0) conv.removeOptimistic(optKey2);
-      } catch (err) {
-        if (optKey2 >= 0) conv.removeOptimistic(optKey2);
-        conv.lastError = err instanceof Error ? err.message : String(err);
-        setText((current) => restoreFailedText(current, value));
-        setImages((current) => restoreFailedImages(current, imgs));
+        if (optimisticKey >= 0) conv.removeOptimistic(optimisticKey);
+        return;
       }
-      return;
-    }
-    const optKey = streaming ? -1 : conv.addOptimistic(value, imgs.map(({ data, mimeType }) => ({ data, mimeType })));
-    try {
       await conv.send({
         type: 'prompt',
         message: value,
-        images: imgs.length ? imgs.map(({ data, mimeType }) => ({ data, mimeType })) : undefined,
-        streamingBehavior: streaming ? queueMode : undefined,
+        images: imgs.length
+          ? imgs.map(({ data, mimeType }) => ({ data, mimeType }))
+          : undefined,
+        streamingBehavior: activeStreaming ? queueMode : undefined,
       });
     } catch (err) {
-      if (optKey >= 0) conv.removeOptimistic(optKey);
-      setText((current) => restoreFailedText(current, value));
-      setImages((current) => restoreFailedImages(current, imgs));
-      conv.lastError = err instanceof Error ? err.message : String(err);
+      if (optimisticKey >= 0) conv.removeOptimistic(optimisticKey);
+      if (cleared) {
+        setText((current) => restoreFailedText(current, value));
+        setImages((current) => restoreFailedImages(current, imgs));
+      }
+      conv.reportError(err instanceof Error ? err.message : String(err));
+    } finally {
+      submitPendingRef.current = false;
+      setSubmitPending(false);
     }
   };
 
@@ -216,7 +233,14 @@ export default function Composer({ conv, draft, onDraft }: Props) {
       <textarea
         ref={taRef}
         value={text}
-        placeholder={streaming ? t('steerPlaceholder') : t('sendPlaceholder')}
+        readOnly={submitPending}
+        placeholder={
+          submitPending
+            ? t('connectingSession')
+            : streaming
+              ? t('steerPlaceholder')
+              : t('sendPlaceholder')
+        }
         onChange={(e) => {
           setText(e.target.value);
           autoResize();
@@ -436,8 +460,18 @@ export default function Composer({ conv, draft, onDraft }: Props) {
             <IconStop size={16} />
           </button>
         ) : (
-          <button className="send-circle send-sm" title={t('send')} disabled={!canSend} onClick={() => void submit()}>
-<IconArrowUp size={17} />
+          <button
+            className={`send-circle send-sm ${submitPending ? 'waiting' : ''}`}
+            title={submitPending ? t('connectingSession') : t('send')}
+            aria-busy={submitPending}
+            disabled={!canSend}
+            onClick={() => void submit()}
+          >
+            {submitPending ? (
+              <span className="composer-spinner" />
+            ) : (
+              <IconArrowUp size={17} />
+            )}
           </button>
         )}
       </div>

@@ -10,10 +10,12 @@ import type {
 } from "./types";
 import {
   clearMatchingRequest,
+  conversationSnapshotCacheKey,
   fixedAgentUrl,
   mergeHistoryMessages,
   mergeSnapshotMessages,
 } from "./state-utils";
+import { ReadinessWaiters } from "./readiness-waiters";
 
 // ---------------------------------------------------------------------------
 // multi-agent routing: when an agent is selected, all /api and /ws traffic is
@@ -174,6 +176,7 @@ export class Conversation {
       timer: ReturnType<typeof setTimeout>;
     }
   >();
+  private readyWaiters = new ReadinessWaiters();
 
   snapshot?: SessionSnapshot;
   /** Finalized messages (from snapshot / message_end). */
@@ -233,9 +236,8 @@ export class Conversation {
   ) {
     // Agent identity is immutable for this Conversation; reconnects must never
     // jump to local or another remote workspace.
-    const cached = snapshotCache.get(
-      `${agent ?? "local"}|${cwd}|${sessionPath ?? ""}`,
-    );
+    const cacheKey = conversationSnapshotCacheKey(agent, cwd, sessionPath);
+    const cached = cacheKey ? snapshotCache.get(cacheKey) : undefined;
     if (cached) this.applySnapshot(cached);
   }
 
@@ -245,6 +247,14 @@ export class Conversation {
   };
 
   getRevision = (): number => this.revision;
+
+  /** Wait for the first host snapshot so a prompt may be submitted during startup. */
+  waitUntilReady(timeoutMs = 60_000): Promise<void> {
+    if (this.connected) return Promise.resolve();
+    if (this.closedIntentionally)
+      return Promise.reject(new Error("conversation disposed"));
+    return this.readyWaiters.wait(timeoutMs);
+  }
 
   private emit(): void {
     this.revision++;
@@ -318,6 +328,7 @@ export class Conversation {
       pending.reject(new Error("conversation disposed"));
     }
     this.pending.clear();
+    this.readyWaiters.rejectAll(new Error("conversation disposed"));
     this.ws?.close(1000);
     this.listeners.clear();
   }
@@ -328,16 +339,21 @@ export class Conversation {
       this.reconnecting = false;
       this.reconnectAttempts = 0;
       this.applySnapshot(msg.snapshot);
-      const cacheKey = this.agent ?? "local";
-      snapshotCache.set(
-        `${cacheKey}|${this.cwd}|${this.sessionPath ?? ""}`,
-        this.snapshot!,
-      );
-      if (msg.snapshot.sessionFile) {
-        snapshotCache.set(
-          `${cacheKey}|${this.cwd}|${msg.snapshot.sessionFile}`,
-          this.snapshot!,
+      this.readyWaiters.resolveAll();
+      const snapshot = this.snapshot;
+      if (snapshot) {
+        const requestedCacheKey = conversationSnapshotCacheKey(
+          this.agent,
+          this.cwd,
+          this.sessionPath,
         );
+        if (requestedCacheKey) snapshotCache.set(requestedCacheKey, snapshot);
+        const canonicalCacheKey = conversationSnapshotCacheKey(
+          this.agent,
+          this.cwd,
+          msg.snapshot.sessionFile,
+        );
+        if (canonicalCacheKey) snapshotCache.set(canonicalCacheKey, snapshot);
       }
     } else if (msg.type === "event") {
       this.applyEvent(msg.event);
@@ -454,12 +470,27 @@ export class Conversation {
       case "compaction_end":
         this.compaction = undefined;
         break;
-      case "queue_update":
+      case "queue_update": {
         this.queue = {
           steering: [...((event.steering as string[]) ?? [])],
           followUp: [...((event.followUp as string[]) ?? [])],
         };
+        const capabilities = event.queueCapabilities;
+        if (
+          this.snapshot &&
+          capabilities &&
+          typeof capabilities === "object" &&
+          typeof (capabilities as { revision?: unknown }).revision === "number" &&
+          typeof (capabilities as { reorder?: unknown }).reorder === "boolean" &&
+          typeof (capabilities as { remove?: unknown }).remove === "boolean"
+        )
+          this.snapshot = {
+            ...this.snapshot,
+            queueCapabilities:
+              capabilities as SessionSnapshot["queueCapabilities"],
+          };
         break;
+      }
       case "agent_start":
         this.runStats = {
           agentStartedAt: now,

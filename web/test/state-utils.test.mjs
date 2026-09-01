@@ -6,6 +6,7 @@ import {
   appRoutePath,
   calculateLiveOutputMetrics,
   clearMatchingRequest,
+  conversationSnapshotCacheKey,
   createGenerationGate,
   fixedAgentUrl,
   initialCwd,
@@ -67,6 +68,14 @@ test('session switches do not flash a disconnected banner before the first snaps
   assert.equal(shouldShowDisconnected(false, true, 'connection closed'), false);
   assert.equal(shouldShowDisconnected(false, false, 'connection closed'), true);
   assert.equal(shouldShowDisconnected(true, false, 'stale error'), false);
+});
+
+test('a blank conversation never reuses the last created session snapshot', () => {
+  assert.equal(conversationSnapshotCacheKey('local', '/work', undefined), undefined);
+  assert.equal(
+    conversationSnapshotCacheKey('local', '/work', '/sessions/one.jsonl'),
+    'local|/work|/sessions/one.jsonl',
+  );
 });
 
 test('completion sound only fires when a running reply settles away from the foreground', () => {

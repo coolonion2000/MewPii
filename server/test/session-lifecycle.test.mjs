@@ -107,9 +107,11 @@ test("SessionHost queue safety and dispose are deterministic", async () => {
     from: "steering",
     to: "followUp",
     index: 0,
+    expectedMessage: "missing",
+    revision: 1,
   });
   assert.equal(moveResult.ok, false);
-  assert.match(moveResult.error, /原子修改 API/);
+  assert.match(moveResult.error, /SDK 队列结构不兼容/);
   assert.deepEqual(
     activeToolsForMode(["read", "bash", "extension_tool", "grep"], "read-only"),
     ["read", "grep"],
@@ -125,6 +127,48 @@ test("SessionHost queue safety and dispose are deterministic", async () => {
 
   await Promise.all([host.dispose(), host.dispose()]);
   assert.equal(disposeCalls, 1, "runtime disposed more than once");
+});
+
+test("detached sessions stay alive until parent and background work finish", async () => {
+  const delay = (ms) =>
+    new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
+
+  async function verifyRetention({ parentRunning, backgroundRunning }) {
+    let disposeCalls = 0;
+    let emptyCalls = 0;
+    let background = backgroundRunning;
+    const session = { isStreaming: parentRunning };
+    const runtime = {
+      session,
+      dispose: async () => {
+        disposeCalls += 1;
+      },
+    };
+    const host = new SessionHost(
+      "detached-retention",
+      runtime,
+      {},
+      () => {
+        emptyCalls += 1;
+      },
+      undefined,
+      () => background,
+      10,
+      10,
+    );
+
+    host.detach({});
+    await delay(25);
+    assert.equal(disposeCalls, 0, "active detached session was disposed");
+    session.isStreaming = false;
+    background = false;
+    await delay(35);
+    assert.equal(disposeCalls, 1, "completed detached session was not disposed");
+    assert.equal(emptyCalls, 1, "disposed host was not removed exactly once");
+  }
+
+  await verifyRetention({ parentRunning: true, backgroundRunning: false });
+  await verifyRetention({ parentRunning: false, backgroundRunning: true });
 });
 
 test("SessionHost orders newSession, setModel and prompt across socket callers", async () => {
@@ -501,17 +545,25 @@ test("session single-flight, init buffering, rebind index and watcher", {
   const home = join(temp, "home");
   const workspace = join(temp, "workspace");
   const wrongCwd = join(temp, "wrong-cwd");
+  const externalDir = join(temp, "external");
+  const externalPreview = join(externalDir, "preview.md");
+  const unauthorizedPreview = join(externalDir, "unauthorized.md");
   const sessionDir = join(home, ".pi", "agent", "sessions", "test");
   await Promise.all([
     mkdir(home, { recursive: true }),
     mkdir(workspace, { recursive: true }),
     mkdir(wrongCwd, { recursive: true }),
+    mkdir(externalDir, { recursive: true }),
     mkdir(sessionDir, { recursive: true }),
   ]);
   const manager = SessionManager.create(workspace, sessionDir);
   const sessionPath = manager.getSessionFile();
   assert.ok(sessionPath);
   const now = new Date().toISOString();
+  await Promise.all([
+    writeFile(externalPreview, "# authorized external preview\n"),
+    writeFile(unauthorizedPreview, "must stay private\n"),
+  ]);
   await writeFile(
     sessionPath,
     [
@@ -528,6 +580,38 @@ test("session single-flight, init buffering, rebind index and watcher", {
         parentId: null,
         timestamp: now,
         message: { role: "user", content: "seed", timestamp: Date.now() },
+      }),
+      JSON.stringify({
+        type: "message",
+        id: "preview-tool-call",
+        parentId: "seed-entry",
+        timestamp: now,
+        message: {
+          role: "assistant",
+          content: [
+            {
+              type: "toolCall",
+              id: "preview-read",
+              name: "read",
+              arguments: { path: externalPreview },
+            },
+          ],
+          timestamp: Date.now(),
+        },
+      }),
+      JSON.stringify({
+        type: "message",
+        id: "preview-tool-result",
+        parentId: "preview-tool-call",
+        timestamp: now,
+        message: {
+          role: "toolResult",
+          toolCallId: "preview-read",
+          toolName: "read",
+          content: [{ type: "text", text: "# authorized external preview" }],
+          isError: false,
+          timestamp: Date.now(),
+        },
       }),
     ].join("\n") + "\n",
   );
@@ -772,9 +856,28 @@ test("session single-flight, init buffering, rebind index and watcher", {
       workspace,
       "client cwd overrode session header cwd",
     );
-    assert.equal(snap1.snapshot.queueCapabilities.reorder, false);
-    assert.equal(snap1.snapshot.queueCapabilities.remove, false);
-    assert.match(snap1.snapshot.queueCapabilities.reason, /SDK/);
+    assert.equal(snap1.snapshot.queueCapabilities.reorder, true);
+    assert.equal(snap1.snapshot.queueCapabilities.remove, true);
+    assert.equal(typeof snap1.snapshot.queueCapabilities.revision, "number");
+    assert.equal(snap1.snapshot.queueCapabilities.reason, undefined);
+
+    const previewParams = new URLSearchParams({
+      cwd: workspace,
+      path: externalPreview,
+      sessionId: snap1.snapshot.sessionId,
+    });
+    const externalResponse = await fetch(
+      `http://127.0.0.1:${port}/api/file?${previewParams}`,
+    );
+    const externalBody = await externalResponse.json();
+    assert.equal(externalResponse.status, 200, JSON.stringify(externalBody));
+    assert.equal(externalBody.content, "# authorized external preview\n");
+    previewParams.set("path", unauthorizedPreview);
+    const deniedResponse = await fetch(
+      `http://127.0.0.1:${port}/api/file?${previewParams}`,
+    );
+    assert.equal(deniedResponse.status, 403);
+    assert.match((await deniedResponse.json()).error, /not authorized/);
 
     const [init1, init2] = await Promise.all([
       inbox1.waitFor(
@@ -818,19 +921,62 @@ test("session single-flight, init buffering, rebind index and watcher", {
 
     ws1.send(
       JSON.stringify({
+        id: "queue-steer",
+        type: "steer",
+        message: "queue integration item",
+      }),
+    );
+    const queueSteer = await inbox1.waitFor(
+      (message) =>
+        message.type === "command_result" && message.id === "queue-steer",
+    );
+    assert.equal(queueSteer.ok, true, queueSteer.error);
+    const stableQueue = await inbox1.waitFor(
+      (message) =>
+        message.type === "snapshot" &&
+        message.snapshot.queue.steering.includes("queue integration item") &&
+        message.snapshot.queueCapabilities.reorder,
+    );
+
+    ws1.send(
+      JSON.stringify({
         id: "queue-move",
         type: "queue_move",
         from: "steering",
         to: "followUp",
         index: 0,
+        expectedMessage: "queue integration item",
+        revision: stableQueue.snapshot.queueCapabilities.revision,
       }),
     );
     const queueMove = await inbox1.waitFor(
       (message) =>
         message.type === "command_result" && message.id === "queue-move",
     );
-    assert.equal(queueMove.ok, false);
-    assert.match(queueMove.error, /原子修改 API/);
+    assert.equal(queueMove.ok, true, queueMove.error);
+    const movedQueue = await inbox1.waitFor(
+      (message) =>
+        message.type === "event" &&
+        message.event.type === "queue_update" &&
+        message.event.followUp.includes("queue integration item"),
+    );
+
+    ws1.send(
+      JSON.stringify({
+        id: "queue-remove",
+        type: "queue_remove",
+        queue: "followUp",
+        index: 0,
+        expectedMessage: "queue integration item",
+        revision: movedQueue.event.queueCapabilities.revision,
+      }),
+    );
+    const queueRemove = await inbox1.waitFor(
+      (message) =>
+        message.type === "command_result" && message.id === "queue-remove",
+    );
+    assert.equal(queueRemove.ok, true, queueRemove.error);
+    assert.equal(queueRemove.data.removed, "queue integration item");
 
     const entryId = snap1.snapshot.messages[0]?._entryId;
     assert.ok(entryId, "seed entry missing");

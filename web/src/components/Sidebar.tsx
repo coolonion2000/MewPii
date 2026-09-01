@@ -4,7 +4,11 @@ import type { ProjectGroup, SessionSummary } from '../types';
 import type { Selection, View } from '../App';
 import { setLang, getLang, t } from '../i18n';
 import { parseStoredStringArray } from '../state-utils';
-import { getUsedSessions, subscribeUsedSessions } from '../used-sessions';
+import {
+  getUsedSessions,
+  resolveUsedSessionTitle,
+  subscribeUsedSessions,
+} from '../used-sessions';
 import DirectoryPicker from './DirectoryPicker';
 import {
   IconPlus, IconSearch, IconSettings, IconTrash, IconStar, IconStarFilled,
@@ -446,7 +450,9 @@ export default function Sidebar(props: Props) {
                     aria-hidden="true"
                   />
                   <span className="current-work-copy">
-                    <span className="current-work-title">{session.title}</span>
+                    <span className="current-work-title">
+                      {resolveUsedSessionTitle(session, projects)}
+                    </span>
                     <span className="current-work-project">{basename(session.cwd)}</span>
                   </span>
                 </button>
@@ -605,7 +611,7 @@ export default function Sidebar(props: Props) {
           <button className={`btn btn-icon ${view !== 'chat' && view !== 'files' ? 'tab-active' : ''}`} title={t('navSettings')} onClick={() => onNavigate('settings')}>
             <IconSettings size={14} />
           </button>
-          <span className="build-tag">v0.1.9</span>
+          <span className="build-tag">v0.1.15</span>
           <span style={{ flex: 1 }} />
           <button className="btn btn-icon" title={t('refresh')} onClick={onRefresh}><IconRefresh size={13} /></button>
           <button className="btn btn-icon" title="Language" onClick={() => setLang(getLang() === 'zh' ? 'en' : 'zh')} style={{ fontSize: 11 }}>

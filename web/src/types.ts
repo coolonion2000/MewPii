@@ -87,12 +87,20 @@ export type ClientCommand =
   | { type: "setSessionName"; name: string }
   | { type: "branch"; entryId: string; summarize?: boolean }
   | { type: "compact" }
-  | { type: "queue_remove"; queue: "steering" | "followUp"; index: number }
+  | {
+      type: "queue_remove";
+      queue: "steering" | "followUp";
+      index: number;
+      expectedMessage: string;
+      revision: number;
+    }
   | {
       type: "queue_move";
       from: "steering" | "followUp";
       to: "steering" | "followUp";
       index: number;
+      expectedMessage: string;
+      revision: number;
     }
   | { type: "queue_clear" }
   | { type: "history"; before: number; requestId: string }
@@ -191,6 +199,7 @@ export interface SessionSnapshot {
   historyFrom: number;
   queue: { steering: string[]; followUp: string[] };
   queueCapabilities: {
+    revision: number;
     reorder: boolean;
     remove: boolean;
     reason?: string;

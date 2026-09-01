@@ -1,5 +1,7 @@
 /** Sessions used (messaged) in this browser tab; cleared on refresh. */
 
+import type { ProjectGroup } from './types';
+
 export interface UsedSession {
   cwd: string;
   sessionPath?: string;
@@ -28,4 +30,19 @@ export function getUsedSessions(): UsedSession[] {
 export function subscribeUsedSessions(fn: () => void): () => void {
   listeners.add(fn);
   return () => listeners.delete(fn);
+}
+
+/** Prefer the canonical workspace title over a paged conversation fallback. */
+export function resolveUsedSessionTitle(
+  session: UsedSession,
+  projects: readonly ProjectGroup[],
+): string {
+  if (!session.sessionPath) return session.title;
+  for (const project of projects) {
+    const canonical = project.sessions.find(
+      (candidate) => candidate.path === session.sessionPath,
+    );
+    if (canonical) return canonical.name || canonical.firstMessage || session.title;
+  }
+  return session.title;
 }

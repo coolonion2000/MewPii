@@ -31,6 +31,7 @@ import type {
   UiRequest,
   WidgetState,
 } from "./protocol.js";
+import { SessionQueueAdapter } from "./queue-adapter.js";
 
 /** Short human-readable summary of a tool call's main argument. */
 function toolSummary(toolName: string, args: Record<string, unknown>): string {
@@ -146,6 +147,11 @@ export interface SessionHostOptions {
     previousFile: string | undefined,
     nextFile: string | undefined,
   ) => void | Promise<void>;
+  /** Keep detached sessions alive while owned background work is active. */
+  hasBackgroundWork?: (host: SessionHost) => boolean | Promise<boolean>;
+  /** Override lifecycle delays in deterministic tests. */
+  idleGraceMs?: number;
+  activeRecheckMs?: number;
 }
 
 interface LoginChoice {
@@ -199,11 +205,15 @@ export class SessionHost {
     private modelRegistry: ModelRegistry,
     private onEmpty?: (host: SessionHost) => void,
     private onSessionChanged?: SessionHostOptions["onSessionChanged"],
+    private hasBackgroundWork?: SessionHostOptions["hasBackgroundWork"],
+    private readonly idleGraceMs = 5 * 60_000,
+    private readonly activeRecheckMs = 30_000,
   ) {}
 
   private sockets = new Set<WebSocket>();
   private unsubscribe?: () => void;
   private idleTimer?: NodeJS.Timeout;
+  private retainedForBackgroundWork = false;
   /** Extension-provided widgets (string-lines form) keyed by widget key. */
   private widgets = new Map<string, WidgetState>();
   /** Extension-provided status bar entries. */
@@ -241,6 +251,7 @@ export class SessionHost {
   private disposePromise?: Promise<void>;
   private queueOperation: Promise<void> = Promise.resolve();
   private commandMutationChain: Promise<void> = Promise.resolve();
+  private readonly queueAdapter = new SessionQueueAdapter(() => this.session);
 
   static async create(
     key: string,
@@ -279,6 +290,9 @@ export class SessionHost {
       modelRegistry,
       opts.onEmpty,
       opts.onSessionChanged,
+      opts.hasBackgroundWork,
+      opts.idleGraceMs,
+      opts.activeRecheckMs,
     );
     host.indexedSessionFile = runtime.session.sessionFile;
 
@@ -687,7 +701,14 @@ export class SessionHost {
     this.unsubscribe?.();
     const session = this.runtime.session;
     this.unsubscribe = session.subscribe((event) => {
-      this.broadcast({ type: "event", event: serializeEvent(event) });
+      const serializedEvent = serializeEvent(event);
+      if (event.type === "queue_update") {
+        const queue = this.queueAdapter.view();
+        serializedEvent.steering = queue.steering;
+        serializedEvent.followUp = queue.followUp;
+        serializedEvent.queueCapabilities = queue.capabilities;
+      }
+      this.broadcast({ type: "event", event: serializedEvent });
       // Keep late-joining clients consistent after meaningful state changes.
       // agent_end fires before the session manager finishes appending entries,
       // so defer the snapshot slightly; agent_settled marks full quiescence.
@@ -796,6 +817,8 @@ export class SessionHost {
 
   attach(ws: WebSocket): void {
     clearTimeout(this.idleTimer);
+    this.idleTimer = undefined;
+    this.retainedForBackgroundWork = false;
     this.sockets.add(ws);
     this.send(ws, { type: "snapshot", snapshot: this.snapshot() });
     this.send(ws, { type: "widgets", widgets: [...this.widgets.values()] });
@@ -814,14 +837,54 @@ export class SessionHost {
 
   detach(ws: WebSocket): void {
     this.sockets.delete(ws);
-    if (this.sockets.size === 0) {
-      // Dispose the runtime after a grace period with no viewers.
-      this.idleTimer = setTimeout(() => {
-        if (this.sockets.size === 0) {
-          void this.dispose().finally(() => this.onEmpty?.(this));
-        }
-      }, 5 * 60_000);
+    if (this.sockets.size === 0) this.scheduleIdleCheck(this.idleGraceMs);
+  }
+
+  private scheduleIdleCheck(delayMs: number): void {
+    clearTimeout(this.idleTimer);
+    this.idleTimer = setTimeout(() => {
+      this.idleTimer = undefined;
+      void this.checkDetachedActivity();
+    }, delayMs);
+    this.idleTimer.unref();
+  }
+
+  private async checkDetachedActivity(): Promise<void> {
+    if (this.disposed || this.sockets.size > 0) return;
+    const parentRunning = this.isRunning;
+    let backgroundRunning = false;
+    try {
+      backgroundRunning = parentRunning
+        ? false
+        : Boolean(await this.hasBackgroundWork?.(this));
+    } catch (cause) {
+      // Fail safe: a detector failure must not abort work that may still run.
+      console.error(
+        `[session] background_check_failed key=${JSON.stringify(this.key)}`,
+        cause,
+      );
+      backgroundRunning = true;
     }
+    if (this.disposed || this.sockets.size > 0) return;
+    if (parentRunning || backgroundRunning) {
+      if (!this.retainedForBackgroundWork)
+        process.stdout.write(
+          `[session] detached_keepalive key=${JSON.stringify(this.key)} parent_running=${parentRunning} background_running=${backgroundRunning}\n`,
+        );
+      this.retainedForBackgroundWork = true;
+      this.scheduleIdleCheck(this.activeRecheckMs);
+      return;
+    }
+    if (this.retainedForBackgroundWork) {
+      this.retainedForBackgroundWork = false;
+      process.stdout.write(
+        `[session] detached_work_completed key=${JSON.stringify(this.key)} idle_grace_ms=${this.idleGraceMs}\n`,
+      );
+      this.scheduleIdleCheck(this.idleGraceMs);
+      return;
+    }
+    await this.dispose();
+    this.onEmpty?.(this);
   }
 
   /** Active tool executions in this session (what is literally running right now). */
@@ -956,6 +1019,7 @@ export class SessionHost {
     )
       this.restartFileWatch();
 
+    const queue = this.queueAdapter.view();
     return {
       sessionId: s.sessionId,
       sessionFile: s.sessionFile,
@@ -982,14 +1046,10 @@ export class SessionHost {
       totalMessages: total,
       historyFrom: from,
       queue: {
-        steering: [...s.getSteeringMessages()],
-        followUp: [...s.getFollowUpMessages()],
+        steering: queue.steering,
+        followUp: queue.followUp,
       },
-      queueCapabilities: {
-        reorder: false,
-        remove: false,
-        reason: "当前 pi SDK 不提供稳定队列 ID、完整图片消息和原子修改 API。",
-      },
+      queueCapabilities: queue.capabilities,
       stats,
       tools: s.getActiveToolNames(),
       slashCommands: this.slashCommands(),
@@ -1395,7 +1455,7 @@ export class SessionHost {
       switch (cmd.type) {
         case "slash":
           return this.runSlash(cmd.raw);
-        case "prompt":
+        case "prompt": {
           if (s.isStreaming && (cmd.images?.length ?? 0) > 0) {
             return {
               ok: false,
@@ -1403,7 +1463,7 @@ export class SessionHost {
                 "当前 pi SDK 无法完整读取含图片的队列消息；请等待当前回复结束后再发送图片，输入与附件已保留。",
             };
           }
-          return this.acceptPrompt(cmd.message, {
+          const result = await this.acceptPrompt(cmd.message, {
             images: cmd.images?.map((img) => ({
               type: "image" as const,
               data: img.data,
@@ -1413,11 +1473,17 @@ export class SessionHost {
               ? (cmd.streamingBehavior ?? "steer")
               : undefined,
           });
+          if (result.ok && result.data?.delivery !== "run")
+            this.broadcastSnapshot();
+          return result;
+        }
         case "steer":
           await s.steer(cmd.message);
+          this.broadcastSnapshot();
           return { ok: true };
         case "followUp":
           await s.followUp(cmd.message);
+          this.broadcastSnapshot();
           return { ok: true };
         case "abort":
           await s.abort();
@@ -1476,13 +1542,30 @@ export class SessionHost {
         case "compact":
           await s.compact();
           return { ok: true };
-        case "queue_remove":
+        case "queue_remove": {
+          const removed = this.queueAdapter.remove(
+            cmd.queue,
+            cmd.index,
+            cmd.expectedMessage,
+            cmd.revision,
+          );
+          process.stdout.write(
+            `[session] queue_remove key=${JSON.stringify(this.key)} queue=${cmd.queue} index=${cmd.index} chars=${removed.length}\n`,
+          );
+          return { ok: true, data: { removed } };
+        }
         case "queue_move":
-          return {
-            ok: false,
-            error:
-              "当前 pi SDK 不提供完整队列消息与原子修改 API；为避免图片或并发消息丢失，暂不支持移动或删除单条队列消息。",
-          };
+          this.queueAdapter.move(
+            cmd.from,
+            cmd.to,
+            cmd.index,
+            cmd.expectedMessage,
+            cmd.revision,
+          );
+          process.stdout.write(
+            `[session] queue_move key=${JSON.stringify(this.key)} from=${cmd.from} to=${cmd.to} index=${cmd.index}\n`,
+          );
+          return { ok: true };
         case "setToolMode": {
           const allNames = s.getAllTools().map((tool) => tool.name);
           s.setActiveToolsByName(activeToolsForMode(allNames, cmd.mode));

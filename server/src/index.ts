@@ -41,6 +41,8 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { ClientCommand, ProjectGroup, ServerMessage } from "./protocol.js";
 import { SessionHost } from "./session-host.js";
+import { hasRunningSubagentRuns } from "./subagent-activity.js";
+import { resolveToolAuthorizedPreviewPath } from "./file-preview-access.js";
 import {
   TunnelHub,
   attachWebSocketHeartbeat,
@@ -223,6 +225,59 @@ function removeHost(host: SessionHost): void {
   }
 }
 
+class PreviewAuthorizationError extends Error {}
+
+function hostForSessionId(sessionId: string): SessionHost | undefined {
+  return [...new Set(hosts.values())].find(
+    (host) => host.session.sessionId === sessionId,
+  );
+}
+
+async function resolvePreviewFile(
+  cwd: string,
+  target: string,
+  sessionId: string | undefined,
+): Promise<string> {
+  try {
+    return (
+      await resolveWorkspacePath(cwd, target, {
+        extraRoots: await knownWorkspaceRoots(),
+      })
+    ).path;
+  } catch (cause) {
+    if (
+      !(cause instanceof Error) ||
+      !/^(path|symlink) escapes workspace$/.test(cause.message) ||
+      !sessionId
+    )
+      throw cause;
+  }
+
+  const host = hostForSessionId(sessionId);
+  if (!host)
+    throw new PreviewAuthorizationError("preview session is not active");
+  const [requestedCwd, hostCwd] = await Promise.all([
+    realpath(resolve(cwd)),
+    realpath(resolve(host.cwd)),
+  ]);
+  if (requestedCwd !== hostCwd)
+    throw new PreviewAuthorizationError("preview session workspace mismatch");
+  const file = await resolveToolAuthorizedPreviewPath(
+    hostCwd,
+    target,
+    host.session.messages,
+  );
+  if (!file)
+    throw new PreviewAuthorizationError(
+      "file was not authorized by this session",
+    );
+  const pathHash = createHash("sha256").update(file).digest("hex").slice(0, 12);
+  process.stdout.write(
+    `[files] external_preview_granted session_id=${sessionId.slice(0, 12)} path_hash=${pathHash}\n`,
+  );
+  return file;
+}
+
 async function reindexHost(
   host: SessionHost,
   _previousFile: string | undefined,
@@ -275,6 +330,8 @@ async function acquireHost(
     sessionPath: normalizedSession,
     onEmpty: removeHost,
     onSessionChanged: reindexHost,
+    hasBackgroundWork: (activeHost) =>
+      hasRunningSubagentRuns(activeHost.session.sessionFile),
   }).then((host) => {
     hosts.set(key, host);
     host.onToolExecution = (toolName, _phase) => {
@@ -2338,9 +2395,11 @@ async function handleApi(
       sendJson(res, 400, { error: "missing cwd or path" });
       return true;
     }
-    const { path: file } = await resolveWorkspacePath(cwd, rel, {
-      extraRoots: await knownWorkspaceRoots(),
-    });
+    const file = await resolvePreviewFile(
+      cwd,
+      rel,
+      url.searchParams.get("sessionId") ?? undefined,
+    );
     const st = await stat(file);
     const ext = extname(file).toLowerCase();
     if (IMAGE_EXTS.has(ext)) {
@@ -2566,12 +2625,16 @@ const server = createServer((req, res) => {
       }
       await serveStatic(req, res);
     } catch (err) {
-      console.error(err);
+      if (!(err instanceof PreviewAuthorizationError)) console.error(err);
       if (res.headersSent) res.end();
-      else
-        sendJson(res, err instanceof InvalidJsonBodyError ? 400 : 500, {
+      else {
+        let status = 500;
+        if (err instanceof InvalidJsonBodyError) status = 400;
+        else if (err instanceof PreviewAuthorizationError) status = 403;
+        sendJson(res, status, {
           error: err instanceof Error ? err.message : String(err),
         });
+      }
     }
   })();
 });

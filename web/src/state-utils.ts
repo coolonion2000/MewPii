@@ -180,6 +180,15 @@ export function fixedAgentUrl(url: string, agent?: string): string {
   return `${url}${url.includes("?") ? "&" : "?"}agent=${encodeURIComponent(agent)}`;
 }
 
+/** Only persisted sessions may reuse snapshots; every blank session must start fresh. */
+export function conversationSnapshotCacheKey(
+  agent: string | undefined,
+  cwd: string,
+  sessionPath: string | undefined,
+): string | undefined {
+  return sessionPath ? `${agent ?? "local"}|${cwd}|${sessionPath}` : undefined;
+}
+
 export function restoreFailedText(current: string, submitted: string): string {
   return current.length > 0 ? current : submitted;
 }
