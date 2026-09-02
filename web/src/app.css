@@ -250,7 +250,12 @@
 /* ------------------------------------------------------------------ */
 /* message list                                                        */
 /* ------------------------------------------------------------------ */
-.chat-scroll { flex: 1; overflow-y: auto; }
+.chat-scroll {
+  flex: 1; overflow-y: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.chat-scroll::-webkit-scrollbar { display: none; width: 0; height: 0; }
 .chat-column { max-width: 800px; margin: 0 auto; padding: 20px 24px 12px; display: flex; flex-direction: column; gap: 18px; }
 
 .msg-user {
@@ -320,26 +325,31 @@ body[data-ds-dark-theme] .tag-assistant { background: var(--dsw-static-deepseek-
 .traj-detail { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dsw-alias-label-secondary); }
 .traj-dur { color: var(--dsw-alias-label-caption); font-size: 11.5px; text-align: right; }
 
-/* extension widgets (pi-web style floating chips) */
-.widget-stack {
-  position: fixed; right: 16px; bottom: 110px; z-index: 60;
-  display: flex; flex-direction: column; align-items: flex-end; gap: 6px;
-  max-width: 420px;
+/* Pi showStatus output is plain transcript content, never a floating toast. */
+.transcript-notice {
+  margin: 0; padding: 0 8px;
+  color: var(--dsw-alias-label-tertiary); font-size: 13px; line-height: 1.55;
+  max-height: none; overflow: visible;
+  white-space: pre-wrap; overflow-wrap: anywhere;
 }
-.widget-chip {
-  display: inline-flex; align-items: center; gap: 7px;
-  border: 1px solid var(--dsw-alias-border-l2); border-radius: 8px;
-  background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary);
-  font-size: 12px; padding: 5px 10px; cursor: pointer; font-family: inherit;
-  box-shadow: 0 2px 10px rgba(0,0,0,0.18);
+.transcript-notice-warning { color: var(--dsw-alias-state-warn-label); }
+.transcript-notice-error { color: var(--dsw-alias-state-error-primary); }
+.hero-transcript-notices {
+  width: 720px; max-width: 92vw; margin: 0 0 12px;
+  display: flex; flex-direction: column; gap: 18px;
 }
-.widget-arrow { font-size: 9px; color: var(--dsw-alias-label-tertiary); }
-.widget-body {
-  margin: 0; padding: 8px 12px; font-size: 11.5px; line-height: 1.5;
-  background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-secondary);
-  border: 1px solid var(--dsw-alias-border-l2); border-radius: 8px;
-  max-height: 240px; overflow: auto; white-space: pre-wrap; word-break: break-word;
-  box-shadow: 0 4px 16px rgba(0,0,0,0.2);
+
+/* Pi setWidget() arrays are unframed text in the editor dock. */
+.editor-widget-stack {
+  max-width: 800px; width: 100%; margin: 0 auto; flex-shrink: 0;
+  padding: 0 32px 6px;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.editor-widget-belowEditor { padding-top: 0; padding-bottom: 10px; }
+.editor-widget-body {
+  margin: 0; padding: 0;
+  color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 1.5;
+  max-height: 240px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere;
 }
 
 /* toasts */
@@ -760,6 +770,15 @@ body[data-ds-dark-theme] .composer:focus-within { box-shadow: 0 2px 14px rgba(0,
 .session-item:hover .session-actions { display: flex; }
 .session-item:hover .time { visibility: hidden; }
 .session-item .time { transition: visibility 0s; }
+.session-actions .btn:disabled,
+.session-rename .btn:disabled { opacity: 0.35; cursor: not-allowed; }
+.session-rename {
+  display: flex; align-items: center; gap: 3px; min-width: 0; padding-right: 4px;
+}
+.session-rename .sidebar-search {
+  width: auto; min-width: 0; flex: 1; padding: 5px 8px; font-size: 12.5px;
+}
+.session-rename-actions { display: flex; align-items: center; flex-shrink: 0; }
 
 /* subagent nesting */
 .subagent-icon { color: var(--dsw-alias-label-caption); flex-shrink: 0; }

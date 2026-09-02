@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { Conversation } from '../api';
 import { fetchModels, type ModelsResponse } from '../api';
 import { t } from '../i18n';
-import { restoreFailedImages, restoreFailedText } from '../state-utils';
+import { commandNoticeFallback, restoreFailedImages, restoreFailedText } from '../state-utils';
 import { IconPlus, IconArrowUp, IconStop, IconChevronDown, IconX, IconWrench } from '../icons';
 import {
   clearComposerDraft,
@@ -117,17 +117,25 @@ export default function Composer({ conv, draft, onDraft }: Props) {
       // a leading "/cmd" is a pi slash command (compact, model, session, extension
       // commands) — route it to the command executor, not the LLM
       const slashMatch = value.match(/^\s*\/([^\s/]+)(\s+.*)?$/);
-      optimisticKey = activeStreaming
+      // Pi executes slash commands outside persisted chat messages. Their
+      // non-persisted output is inserted separately into the transcript.
+      optimisticKey = activeStreaming || slashMatch
         ? -1
         : conv.addOptimistic(
             value,
             imgs.map(({ data, mimeType }) => ({ data, mimeType })),
           );
       if (slashMatch) {
+        const noticeRevision = conv.transcriptNoticeRevision;
         const res = await conv.send({ type: 'slash', raw: value });
         const output = (res as { output?: string } | undefined)?.output;
-        if (output) conv.toast(output);
-        else if (!conv.lastError) conv.toast(t('slashDone'));
+        const notice = commandNoticeFallback(
+          noticeRevision,
+          conv.transcriptNoticeRevision,
+          output,
+          t('slashDone'),
+        );
+        if (notice) conv.showTranscriptNotice(notice);
         if (optimisticKey >= 0) conv.removeOptimistic(optimisticKey);
         return;
       }
@@ -140,6 +148,10 @@ export default function Composer({ conv, draft, onDraft }: Props) {
         streamingBehavior: activeStreaming ? queueMode : undefined,
       });
     } catch (err) {
+      // Session navigation disposes only this browser connection; the host may
+      // already have accepted the prompt. Keep its cached optimistic message
+      // until the fresh session snapshot acknowledges it.
+      if (err instanceof Error && err.message === 'conversation disposed') return;
       if (optimisticKey >= 0) conv.removeOptimistic(optimisticKey);
       if (cleared) {
         setText((current) => restoreFailedText(current, value));

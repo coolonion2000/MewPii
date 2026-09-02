@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import type { Conversation } from '../api';
 import { stripAnsi } from '../api';
 import { t } from '../i18n';
+import { dedupeLatestByKey, type TranscriptNotice } from '../state-utils';
 
 /** Inline question/questionnaire panel, docked above the composer (dsh-style). */
 export function InlineQuestions({ conv }: { conv: Conversation }) {
@@ -12,18 +13,47 @@ export function InlineQuestions({ conv }: { conv: Conversation }) {
   return null;
 }
 
-/** Extension-provided UI: widget chips (bottom-right), toasts (top-right), dialogs (modal). */
-export default function ExtensionUI({ conv }: { conv: Conversation }) {
-  const [openWidgets, setOpenWidgets] = useState<Set<string>>(new Set());
-  const [inputDraft, setInputDraft] = useState('');
+/** Pi-style persistent widgets rendered adjacent to the editor. */
+export function EditorWidgets({
+  conv,
+  placement,
+}: {
+  conv: Conversation;
+  placement: 'aboveEditor' | 'belowEditor';
+}) {
+  const widgets = dedupeLatestByKey(conv.widgets).filter(
+    (widget) => widget.placement === placement,
+  );
+  if (widgets.length === 0) return null;
+  return (
+    <div className={`editor-widget-stack editor-widget-${placement}`}>
+      {widgets.map((widget) => (
+        <pre key={widget.key} className="editor-widget-body mono" data-widget-key={widget.key}>
+          {widget.lines.map(stripAnsi).join('\n')}
+        </pre>
+      ))}
+    </div>
+  );
+}
 
-  const toggle = (key: string) =>
-    setOpenWidgets((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
+/** Non-persisted command output rendered as a plain Pi transcript row. */
+export function TranscriptNoticeView({ notice }: { notice: TranscriptNotice }) {
+  const level = notice.level === 'error' || notice.level === 'warning'
+    ? notice.level
+    : 'info';
+  return (
+    <pre
+      className={`transcript-notice transcript-notice-${level} mono`}
+      role={level === 'error' ? 'alert' : 'status'}
+    >
+      {stripAnsi(notice.message)}
+    </pre>
+  );
+}
+
+/** Extension-provided browser toasts/dialogs; transcript rows render in ChatView. */
+export default function ExtensionUI({ conv }: { conv: Conversation }) {
+  const [inputDraft, setInputDraft] = useState('');
 
   const req = conv.uiRequest;
   useEffect(() => {
@@ -44,29 +74,6 @@ export default function ExtensionUI({ conv }: { conv: Conversation }) {
         </div>
       )}
 
-      {/* extension widgets, pi-web style bottom-right chips */}
-      {conv.widgets.length > 0 && (
-        <div className="widget-stack">
-          {conv.widgets.map((w) => {
-            const open = openWidgets.has(w.key);
-            return (
-              <div key={w.key} className={`widget ${open ? 'open' : ''}`}>
-                <button className="widget-chip" onClick={() => toggle(w.key)}>
-                  <span className="widget-arrow">{open ? '▼' : '▲'}</span>
-                  <span className="mono">{w.key}</span>
-                </button>
-                {open && (
-                  <pre className="widget-body mono">
-                    {w.lines.map((l, i) => (
-                      <div key={i}>{stripAnsi(l)}</div>
-                    ))}
-                  </pre>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
 
       {conv.customUi && <CustomTerminalDialog conv={conv} />}
 

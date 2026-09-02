@@ -3,7 +3,10 @@ import { createPortal } from 'react-dom';
 import type { ProjectGroup, SessionSummary } from '../types';
 import type { Selection, View } from '../App';
 import { setLang, getLang, t } from '../i18n';
-import { parseStoredStringArray } from '../state-utils';
+import {
+  normalizeSessionRename,
+  parseStoredStringArray,
+} from '../state-utils';
 import {
   getUsedSessions,
   resolveUsedSessionTitle,
@@ -14,6 +17,7 @@ import {
   IconPlus, IconSearch, IconSettings, IconTrash, IconStar, IconStarFilled,
   IconArchive, IconUnarchive, IconPencil, IconFolder, IconChevronLeft,
   IconChevronRight, IconRefresh, IconSun, IconMoon, IconExport, IconChat, IconLogout,
+  IconCheck, IconX,
 } from '../icons';
 
 interface Props {
@@ -226,29 +230,67 @@ export default function Sidebar(props: Props) {
   ) => {
     const indent = 4 + depth * 8;
     if (renamingPath === s.path) {
+      const renameValue = normalizeSessionRename(renameDraft, s.running);
+      const cancelRename = () => setRenamingPath(undefined);
+      const submitRename = () => {
+        if (!renameValue) return;
+        onRename(s.path, renameValue);
+        setRenamingPath(undefined);
+      };
       return (
-        <input
+        <div
           key={s.path}
-          autoFocus
-          className="sidebar-search"
-          style={{ margin: `2px 0 2px ${indent + 14}px`, padding: '5px 8px', fontSize: 12.5 }}
-          value={renameDraft}
-          draggable={false}
-          onDragStart={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-          }}
+          className="session-rename"
+          style={{ margin: `2px 0 2px ${indent + 14}px` }}
+          onClick={(e) => e.stopPropagation()}
           onMouseDown={(e) => e.stopPropagation()}
-          onChange={(e) => setRenameDraft(e.target.value)}
-          onBlur={() => setRenamingPath(undefined)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') {
-              if (renameDraft.trim()) onRename(s.path, renameDraft.trim());
-              setRenamingPath(undefined);
-            }
-            if (e.key === 'Escape') setRenamingPath(undefined);
-          }}
-        />
+        >
+          <input
+            autoFocus
+            className="sidebar-search"
+            value={renameDraft}
+            disabled={s.running}
+            draggable={false}
+            aria-label={t('rename')}
+            onDragStart={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+            }}
+            onChange={(e) => setRenameDraft(e.target.value)}
+            onBlur={(e) => {
+              const nextFocus = e.relatedTarget as Node | null;
+              if (!e.currentTarget.parentElement?.contains(nextFocus)) cancelRename();
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                submitRename();
+              }
+              if (e.key === 'Escape') cancelRename();
+            }}
+          />
+          <span className="session-rename-actions">
+            <button
+              type="button"
+              className="btn btn-icon btn-sm"
+              title={s.running ? t('renameRunning') : t('save')}
+              aria-label={s.running ? t('renameRunning') : t('save')}
+              disabled={!renameValue}
+              onClick={submitRename}
+            >
+              <IconCheck size={13} />
+            </button>
+            <button
+              type="button"
+              className="btn btn-icon btn-sm"
+              title={t('cancel')}
+              aria-label={t('cancel')}
+              onClick={cancelRename}
+            >
+              <IconX size={13} />
+            </button>
+          </span>
+        </div>
       );
     }
     return (
@@ -281,7 +323,9 @@ export default function Sidebar(props: Props) {
         <span className="session-actions" onClick={(e) => e.stopPropagation()}>
           <button
             className="btn btn-icon btn-sm"
-            title={t('rename')}
+            title={s.running ? t('renameRunning') : t('rename')}
+            aria-label={s.running ? t('renameRunning') : t('rename')}
+            disabled={s.running}
             onClick={() => {
               setRenameDraft(s.name || '');
               setRenamingPath(s.path);

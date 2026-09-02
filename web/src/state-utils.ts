@@ -175,6 +175,72 @@ export function clearMatchingRequest<T extends { id: string }>(
   return current?.id === requestId ? undefined : current;
 }
 
+/** Match pi's widget maps: the latest value for a key replaces the old one. */
+export function dedupeLatestByKey<T extends { key: string }>(
+  items: readonly T[],
+): T[] {
+  const byKey = new Map<string, T>();
+  for (const item of items) byKey.set(item.key, item);
+  return [...byKey.values()];
+}
+
+export interface TranscriptNotice {
+  id: number;
+  message: string;
+  level: string;
+  afterMessageKey?: string;
+}
+
+/** Stable-enough anchor for inserting non-persisted Pi status text into the transcript. */
+export function messageTimelineKey(message: PiiMessage, index: number): string {
+  if (message._entryId) return `entry:${message._entryId}`;
+  const timestamp = (message as { timestamp?: unknown }).timestamp;
+  if (typeof timestamp === "number" || typeof timestamp === "string") {
+    return `time:${message.role}:${String(timestamp)}`;
+  }
+  const id = (message as { id?: unknown; toolCallId?: unknown }).id ??
+    (message as { toolCallId?: unknown }).toolCallId;
+  if (typeof id === "string" || typeof id === "number") {
+    return `id:${message.role}:${String(id)}`;
+  }
+  return `index:${index}:${message.role}`;
+}
+
+/**
+ * Match Pi's showStatus(): consecutive info lines update the prior transcript
+ * item; warnings/errors and normal chat content break that replacement chain.
+ */
+export function applyTranscriptNotice(
+  notices: readonly TranscriptNotice[],
+  replaceableInfoId: number | undefined,
+  notification: TranscriptNotice,
+): { notices: TranscriptNotice[]; replaceableInfoId: number | undefined } {
+  if (notification.level === "info" && replaceableInfoId !== undefined) {
+    const index = notices.findIndex((notice) => notice.id === replaceableInfoId);
+    if (index !== -1) {
+      const next = [...notices];
+      next[index] = { ...next[index], message: notification.message };
+      return { notices: next, replaceableInfoId };
+    }
+  }
+  return {
+    notices: [...notices, notification],
+    replaceableInfoId:
+      notification.level === "info" ? notification.id : undefined,
+  };
+}
+
+/** A generic slash result must not overwrite output emitted by its handler. */
+export function commandNoticeFallback(
+  revisionBefore: number,
+  revisionAfter: number,
+  output: string | undefined,
+  fallback: string,
+): string | undefined {
+  if (revisionAfter !== revisionBefore) return undefined;
+  return output || fallback;
+}
+
 export function fixedAgentUrl(url: string, agent?: string): string {
   if (!agent || /(?:[?&])agent=/.test(url)) return url;
   return `${url}${url.includes("?") ? "&" : "?"}agent=${encodeURIComponent(agent)}`;
@@ -187,6 +253,15 @@ export function conversationSnapshotCacheKey(
   sessionPath: string | undefined,
 ): string | undefined {
   return sessionPath ? `${agent ?? "local"}|${cwd}|${sessionPath}` : undefined;
+}
+
+/** Normalize an allowed rename and fail closed while the session is running. */
+export function normalizeSessionRename(
+  draft: string,
+  running: boolean,
+): string | undefined {
+  const name = draft.trim();
+  return !running && name ? name : undefined;
 }
 
 export function restoreFailedText(current: string, submitted: string): string {
@@ -202,6 +277,39 @@ export function restoreFailedImages<
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
+  });
+}
+
+function messageText(message: PiiMessage): string {
+  if (typeof message.content === "string") return message.content;
+  if (!Array.isArray(message.content)) return "";
+  return (message.content as { type?: string; text?: string }[])
+    .filter((part) => part.type === "text")
+    .map((part) => part.text ?? "")
+    .join("");
+}
+
+/**
+ * Keep locally submitted messages while a returned snapshot is still stale.
+ * Once totalMessages advances, only the newly-added tail may acknowledge them.
+ */
+export function reconcileOptimisticMessages<
+  T extends { text: string; baseTotalMessages: number },
+>(optimistic: readonly T[], finalized: PiiMessage[], totalMessages: number): T[] {
+  const consumed = new Set<number>();
+  return optimistic.filter((pending) => {
+    const added = Math.max(0, totalMessages - pending.baseTotalMessages);
+    if (added === 0) return true;
+    const start = Math.max(0, finalized.length - added);
+    const match = finalized.findIndex((message, index) =>
+      index >= start &&
+      !consumed.has(index) &&
+      message.role === "user" &&
+      messageText(message) === pending.text,
+    );
+    if (match === -1) return true;
+    consumed.add(match);
+    return false;
   });
 }
 
@@ -228,6 +336,21 @@ export function mergeHistoryMessages(
     return false;
   });
   return [...prefix, ...current];
+}
+
+/** A reconnect may briefly return an older snapshot than the local event stream. */
+export function isStaleConversationSnapshot(
+  previousSessionId: string | undefined,
+  previousBranchHeadId: string | undefined,
+  previousTotalMessages: number,
+  snapshot: SessionSnapshot,
+): boolean {
+  if (
+    previousSessionId !== snapshot.sessionId ||
+    previousBranchHeadId !== snapshot.branchHeadId
+  )
+    return false;
+  return (snapshot.totalMessages ?? snapshot.messages.length) < previousTotalMessages;
 }
 
 /** Preserve loaded history only when the new snapshot overlaps the same session branch. */

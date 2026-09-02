@@ -3,19 +3,26 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   acceptsGeneration,
+  applyTranscriptNotice,
   appRoutePath,
   calculateLiveOutputMetrics,
   clearMatchingRequest,
+  commandNoticeFallback,
   conversationSnapshotCacheKey,
   createGenerationGate,
+  dedupeLatestByKey,
   fixedAgentUrl,
   initialCwd,
+  isStaleConversationSnapshot,
   isTerminalRun,
   mergeHistoryMessages,
   mergeSnapshotMessages,
+  messageTimelineKey,
+  normalizeSessionRename,
   parseAppRoute,
   parseStoredSelection,
   parseStoredStringArray,
+  reconcileOptimisticMessages,
   sessionIdFromPath,
   restoreFailedImages,
   restoreFailedText,
@@ -78,6 +85,12 @@ test('a blank conversation never reuses the last created session snapshot', () =
   );
 });
 
+test('session rename trims valid names and rejects running or blank sessions', () => {
+  assert.equal(normalizeSessionRename('  release notes  ', false), 'release notes');
+  assert.equal(normalizeSessionRename('release notes', true), undefined);
+  assert.equal(normalizeSessionRename('   ', false), undefined);
+});
+
 test('completion sound only fires when a running reply settles away from the foreground', () => {
   assert.equal(shouldPlayCompletionSound(true, false, 'hidden', false), true);
   assert.equal(shouldPlayCompletionSound(true, false, 'visible', false), true);
@@ -114,6 +127,68 @@ test('legacy sidebar storage ignores malformed and non-string values', () => {
   assert.deepEqual(parseStoredStringArray('["/a", 1, null, "/b"]'), ['/a', '/b']);
   assert.deepEqual(parseStoredStringArray('{bad json'), []);
   assert.deepEqual(parseStoredStringArray(null), []);
+});
+
+test('extension widgets keep one latest value per key', () => {
+  assert.deepEqual(
+    dedupeLatestByKey([
+      { key: 'stats', lines: ['old'], placement: 'aboveEditor' },
+      { key: 'other', lines: ['kept'], placement: 'belowEditor' },
+      { key: 'stats', lines: ['new'], placement: 'aboveEditor' },
+    ]),
+    [
+      { key: 'stats', lines: ['new'], placement: 'aboveEditor' },
+      { key: 'other', lines: ['kept'], placement: 'belowEditor' },
+    ],
+  );
+});
+
+test('consecutive Pi info output replaces one transcript row', () => {
+  let state = { notices: [], replaceableInfoId: undefined };
+  state = applyTranscriptNotice(state.notices, state.replaceableInfoId, {
+    id: 1,
+    message: 'first',
+    level: 'info',
+    afterMessageKey: 'entry:answer-1',
+  });
+  state = applyTranscriptNotice(state.notices, state.replaceableInfoId, {
+    id: 2,
+    message: 'second',
+    level: 'info',
+    afterMessageKey: 'entry:answer-1',
+  });
+  assert.deepEqual(state, {
+    notices: [{
+      id: 1,
+      message: 'second',
+      level: 'info',
+      afterMessageKey: 'entry:answer-1',
+    }],
+    replaceableInfoId: 1,
+  });
+
+  state = applyTranscriptNotice(state.notices, state.replaceableInfoId, {
+    id: 3,
+    message: 'warning',
+    level: 'warning',
+    afterMessageKey: 'entry:answer-1',
+  });
+  assert.equal(state.notices.length, 2);
+  assert.equal(state.replaceableInfoId, undefined);
+});
+
+test('transcript output anchors to stable message identity', () => {
+  assert.equal(messageTimelineKey(message('answer-1'), 8), 'entry:answer-1');
+  assert.equal(
+    messageTimelineKey({ role: 'assistant', timestamp: 42 }, 8),
+    'time:assistant:42',
+  );
+});
+
+test('extension command output wins over generic slash output', () => {
+  assert.equal(commandNoticeFallback(4, 5, 'generic', 'done'), undefined);
+  assert.equal(commandNoticeFallback(4, 4, 'specific', 'done'), 'specific');
+  assert.equal(commandNoticeFallback(4, 4, undefined, 'done'), 'done');
 });
 
 test('provider logout failures preserve server errors and never report success', () => {
@@ -158,6 +233,38 @@ test('failed submission restores payload without overwriting a newer draft or im
   const newer = { data: 'new', mimeType: 'image/png', name: 'new.png' };
   assert.deepEqual(restoreFailedImages([newer], [sent]), [sent, newer]);
   assert.deepEqual(restoreFailedImages([sent], [sent]), [sent]);
+});
+
+test('session revisit keeps local messages until the server snapshot catches up', () => {
+  const stale = snapshot([message('a'), message('b')], {
+    branchHeadId: 'head-a',
+    totalMessages: 2,
+  });
+  assert.equal(
+    isStaleConversationSnapshot('session-a', 'head-a', 3, stale),
+    true,
+  );
+  assert.equal(
+    isStaleConversationSnapshot('session-a', 'other-head', 3, stale),
+    false,
+  );
+
+  const pending = [{ text: 'repeat', baseTotalMessages: 2 }];
+  assert.deepEqual(
+    reconcileOptimisticMessages(pending, [
+      { role: 'user', content: 'repeat' },
+      { role: 'assistant', content: 'old answer' },
+    ], 2),
+    pending,
+  );
+  assert.deepEqual(
+    reconcileOptimisticMessages(pending, [
+      { role: 'user', content: 'repeat' },
+      { role: 'assistant', content: 'old answer' },
+      { role: 'user', content: 'repeat' },
+    ], 3),
+    [],
+  );
 });
 
 test('history and overlapping snapshots merge by entryId without duplicates', () => {

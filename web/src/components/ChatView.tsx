@@ -1,4 +1,4 @@
-import { useEffect, useReducer, useRef, useState, useSyncExternalStore } from 'react';
+import { Fragment, useEffect, useReducer, useRef, useState, useSyncExternalStore } from 'react';
 import type { Conversation } from '../api';
 import MessageItem from './MessageItem';
 import Composer from './Composer';
@@ -7,12 +7,12 @@ import RunsChip, { type RunInfo } from './RunsChip';
 import SubagentPanel from './SubagentPanel';
 import { IconFolder, IconChevronDown } from '../icons';
 import Trajectory from './Trajectory';
-import ExtensionUI, { InlineQuestions } from './ExtensionUI';
+import ExtensionUI, { EditorWidgets, InlineQuestions, TranscriptNoticeView } from './ExtensionUI';
 import FilePreview from './FilePreview';
 import { IconTrash, IconPencil, IconX } from '../icons';
 import { exportHtml } from '../export';
 import type { PiiMessage, ProjectGroup, SessionSnapshot } from '../types';
-import { calculateLiveOutputMetrics, shouldShowDisconnected } from '../state-utils';
+import { calculateLiveOutputMetrics, messageTimelineKey, shouldShowDisconnected } from '../state-utils';
 import {
   armCompletionSound,
   playCompletionSound,
@@ -120,6 +120,16 @@ export default function ChatView({ conv, onRefresh, onForked, projects, onSelect
   const allMessages: PiiMessage[] = conv.streaming
     ? [...baseMessages, conv.streaming]
     : baseMessages;
+  const messageKeys = allMessages.map(messageTimelineKey);
+  const noticesBeforeMessages = conv.transcriptNotices.filter(
+    (notice) => notice.afterMessageKey === undefined,
+  );
+  const noticesByMessage = new Map<string, typeof conv.transcriptNotices>();
+  for (const notice of conv.transcriptNotices) {
+    if (!notice.afterMessageKey) continue;
+    const existing = noticesByMessage.get(notice.afterMessageKey) ?? [];
+    noticesByMessage.set(notice.afterMessageKey, [...existing, notice]);
+  }
 
   // toolCallId → toolResult message
   const toolResults = new Map<string, PiiMessage>();
@@ -134,7 +144,7 @@ export default function ChatView({ conv, onRefresh, onForked, projects, onSelect
     const el = scrollRef.current;
     if (el && atBottomRef.current) el.scrollTop = el.scrollHeight;
     setShowJump(!atBottomRef.current);
-  }, [lastMsg, conv.streaming, conv.tools, conv.snapshot?.isStreaming]);
+  }, [lastMsg, conv.streaming, conv.tools, conv.snapshot?.isStreaming, conv.transcriptNoticeRevision]);
 
   const title = snap?.name || firstUserText(allMessages) || '新会话';
 
@@ -196,6 +206,13 @@ export default function ChatView({ conv, onRefresh, onForked, projects, onSelect
               )}
             </div>
           </div>
+          {conv.transcriptNotices.length > 0 && (
+            <div className="hero-transcript-notices">
+              {conv.transcriptNotices.map((notice) => (
+                <TranscriptNoticeView key={notice.id} notice={notice} />
+              ))}
+            </div>
+          )}
           <div className="hero-composer">
             <Composer conv={conv} draft={draft} onDraft={setDraft} />
           </div>
@@ -282,9 +299,12 @@ export default function ChatView({ conv, onRefresh, onForked, projects, onSelect
               <div>{t('piWorksIn')} {snap?.cwd ?? conv.cwd}</div>
             </div>
           )}
+          {noticesBeforeMessages.map((notice) => (
+            <TranscriptNoticeView key={notice.id} notice={notice} />
+          ))}
           {allMessages.map((m, i) => (
+            <Fragment key={`${messageKeys[i]}-${i}`}>
             <MessageItem
-              key={`${m._entryId ?? (m as { timestamp?: number }).timestamp ?? i}-${i}`}
               message={m}
               streaming={conv.streaming === m}
               live={
@@ -341,6 +361,10 @@ export default function ChatView({ conv, onRefresh, onForked, projects, onSelect
                   .catch((err) => conv.reportError(err instanceof Error ? err.message : String(err)))
               }
             />
+            {(noticesByMessage.get(messageKeys[i]) ?? []).map((notice) => (
+              <TranscriptNoticeView key={notice.id} notice={notice} />
+            ))}
+            </Fragment>
           ))}
           {conv.snapshot?.isStreaming && (() => {
             const c = conv.streaming?.content;
@@ -457,10 +481,12 @@ export default function ChatView({ conv, onRefresh, onForked, projects, onSelect
           ↓ {t('jumpToBottom')}
         </button>
       )}
+      <EditorWidgets conv={conv} placement="aboveEditor" />
       <div className="composer-wrap">
         <InlineQuestions conv={conv} />
         <Composer conv={conv} draft={draft} onDraft={setDraft} />
       </div>
+      <EditorWidgets conv={conv} placement="belowEditor" />
       <SubagentPanel
         sessionFile={snap?.sessionFile}
         cwd={snap?.cwd ?? conv.cwd}

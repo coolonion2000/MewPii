@@ -32,6 +32,7 @@ export const IconPlus = (p: IconProps) => base(p, <path d="M12 5v14M5 12h14" />)
 export const IconSearch = (p: IconProps) => base(p, <><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></>);
 export const IconSettings = (p: IconProps) => base(p, <><path d="M4 8h10M18 8h2M4 16h2M10 16h10" /><circle cx="16" cy="8" r="2" /><circle cx="8" cy="16" r="2" /></>);
 export const IconX = (p: IconProps) => base(p, <path d="M18 6 6 18M6 6l12 12" />);
+export const IconCheck = (p: IconProps) => base(p, <path d="m5 12 4 4L19 6" />);
 export const IconStar = (p: IconProps) => base(p, <path d="m12 2 3.1 6.3 6.9 1-5 4.9 1.2 6.8L12 17.8 5.8 21l1.2-6.8-5-4.9 6.9-1z" />);
 export const IconStarFilled = (p: IconProps) => base(p, <path d="m12 2 3.1 6.3 6.9 1-5 4.9 1.2 6.8L12 17.8 5.8 21l1.2-6.8-5-4.9 6.9-1z" />, true);
 export const IconArchive = (p: IconProps) => base(p, <><rect x="3" y="4" width="18" height="4" rx="1" /><path d="M5 8v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8" /><path d="M10 12h4" /></>);

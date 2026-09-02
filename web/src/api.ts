@@ -9,11 +9,16 @@ import type {
   WidgetState,
 } from "./types";
 import {
+  applyTranscriptNotice,
   clearMatchingRequest,
   conversationSnapshotCacheKey,
   fixedAgentUrl,
+  isStaleConversationSnapshot,
   mergeHistoryMessages,
   mergeSnapshotMessages,
+  messageTimelineKey,
+  reconcileOptimisticMessages,
+  type TranscriptNotice,
 } from "./state-utils";
 import { ReadinessWaiters } from "./readiness-waiters";
 
@@ -158,9 +163,22 @@ interface StreamSub {
   message?: PiiMessage;
 }
 
-// Last-known snapshot per conversation, shown instantly on revisit while the
-// fresh snapshot streams in (stale-while-revalidate).
-const snapshotCache = new Map<string, SessionSnapshot>();
+interface OptimisticMessage {
+  key: number;
+  text: string;
+  message: PiiMessage;
+  /** Finalized branch size when this message was submitted. */
+  baseTotalMessages: number;
+}
+
+interface CachedConversationState {
+  snapshot: SessionSnapshot;
+  optimistic: OptimisticMessage[];
+}
+
+// Last-known finalized + pending state, shown instantly while a fresh snapshot
+// streams in after switching back to a conversation.
+const conversationStateCache = new Map<string, CachedConversationState>();
 const COMMAND_TIMEOUT_MS = 120_000;
 
 export class Conversation {
@@ -182,7 +200,7 @@ export class Conversation {
   /** Finalized messages (from snapshot / message_end). */
   messages: PiiMessage[] = [];
   /** Optimistically rendered user messages awaiting server echo (remote latency). */
-  optimistic: { key: number; text: string; message: PiiMessage }[] = [];
+  optimistic: OptimisticMessage[] = [];
   private optimisticSeq = 0;
   /** In-flight assistant message being streamed. */
   streaming?: PiiMessage;
@@ -224,8 +242,15 @@ export class Conversation {
   };
   widgets: WidgetState[] = [];
   statuses: Record<string, string> = {};
+  /** Non-persisted Pi status/warning/error rows anchored in the transcript. */
+  transcriptNotices: TranscriptNotice[] = [];
+  /** Increments for every notice, even when a consecutive info row is replaced. */
+  transcriptNoticeRevision = 0;
+  private noticeSeq = 0;
+  private replaceableInfoNoticeId?: number;
   uiRequest?: UiRequest;
   customUi?: CustomUiFrame;
+  /** Browser-only notifications; extension command output never enters this list. */
   toasts: { id: number; message: string; level: string }[] = [];
   private toastSeq = 0;
 
@@ -237,8 +262,18 @@ export class Conversation {
     // Agent identity is immutable for this Conversation; reconnects must never
     // jump to local or another remote workspace.
     const cacheKey = conversationSnapshotCacheKey(agent, cwd, sessionPath);
-    const cached = cacheKey ? snapshotCache.get(cacheKey) : undefined;
-    if (cached) this.applySnapshot(cached);
+    const cached = cacheKey ? conversationStateCache.get(cacheKey) : undefined;
+    if (cached) {
+      this.optimistic = cached.optimistic.map((item) => ({
+        ...item,
+        message: { ...item.message },
+      }));
+      this.optimisticSeq = Math.max(
+        0,
+        ...this.optimistic.map((item) => item.key),
+      );
+      this.applySnapshot(cached.snapshot);
+    }
   }
 
   subscribe = (fn: () => void): (() => void) => {
@@ -320,7 +355,34 @@ export class Conversation {
     this.reconnectTimer = setTimeout(() => this.connect(), delay);
   }
 
+  private syncSnapshotMessages(): void {
+    if (!this.snapshot) return;
+    this.snapshot = {
+      ...this.snapshot,
+      messages: [...this.messages],
+      historyFrom: this.historyFrom,
+      totalMessages: this.totalMessages,
+    };
+  }
+
+  private cacheCurrentState(): void {
+    if (!this.snapshot) return;
+    this.syncSnapshotMessages();
+    const state: CachedConversationState = {
+      snapshot: this.snapshot,
+      optimistic: this.optimistic.map((item) => ({
+        ...item,
+        message: { ...item.message },
+      })),
+    };
+    for (const path of [this.sessionPath, this.snapshot.sessionFile]) {
+      const key = conversationSnapshotCacheKey(this.agent, this.cwd, path);
+      if (key) conversationStateCache.set(key, state);
+    }
+  }
+
   dispose(): void {
+    this.cacheCurrentState();
     this.closedIntentionally = true;
     clearTimeout(this.reconnectTimer);
     for (const [, pending] of this.pending) {
@@ -333,6 +395,36 @@ export class Conversation {
     this.listeners.clear();
   }
 
+  private currentTranscriptAnchor(): string | undefined {
+    const messages = [
+      ...this.messages,
+      ...this.optimistic.map((item) => item.message),
+      ...(this.streaming ? [this.streaming] : []),
+    ];
+    const last = messages.at(-1);
+    return last ? messageTimelineKey(last, messages.length - 1) : undefined;
+  }
+
+  private breakTranscriptNoticeSequence(): void {
+    this.replaceableInfoNoticeId = undefined;
+  }
+
+  private receiveTranscriptNotice(message: string, level: string): void {
+    const update = applyTranscriptNotice(
+      this.transcriptNotices,
+      this.replaceableInfoNoticeId,
+      {
+        id: ++this.noticeSeq,
+        message,
+        level,
+        afterMessageKey: this.currentTranscriptAnchor(),
+      },
+    );
+    this.transcriptNotices = update.notices;
+    this.replaceableInfoNoticeId = update.replaceableInfoId;
+    this.transcriptNoticeRevision++;
+  }
+
   private handleMessage(msg: ServerMessage): void {
     if (msg.type === "snapshot") {
       this.connected = true;
@@ -340,21 +432,6 @@ export class Conversation {
       this.reconnectAttempts = 0;
       this.applySnapshot(msg.snapshot);
       this.readyWaiters.resolveAll();
-      const snapshot = this.snapshot;
-      if (snapshot) {
-        const requestedCacheKey = conversationSnapshotCacheKey(
-          this.agent,
-          this.cwd,
-          this.sessionPath,
-        );
-        if (requestedCacheKey) snapshotCache.set(requestedCacheKey, snapshot);
-        const canonicalCacheKey = conversationSnapshotCacheKey(
-          this.agent,
-          this.cwd,
-          msg.snapshot.sessionFile,
-        );
-        if (canonicalCacheKey) snapshotCache.set(canonicalCacheKey, snapshot);
-      }
     } else if (msg.type === "event") {
       this.applyEvent(msg.event);
     } else if (msg.type === "widgets") {
@@ -362,15 +439,9 @@ export class Conversation {
     } else if (msg.type === "statuses") {
       this.statuses = msg.statuses;
     } else if (msg.type === "toast") {
-      const id = ++this.toastSeq;
-      this.toasts = [
-        ...this.toasts,
-        { id, message: msg.message, level: msg.level },
-      ];
-      setTimeout(() => {
-        this.toasts = this.toasts.filter((t) => t.id !== id);
-        this.emit();
-      }, 5000);
+      // Despite the protocol name, Pi renders extension notifications in the
+      // transcript. Only browser-owned notifications use the floating stack.
+      this.receiveTranscriptNotice(msg.message, msg.level);
     } else if (msg.type === "history") {
       if (msg.requestId !== this.historyRequestId) return;
       this.historyInFlight = false;
@@ -384,12 +455,8 @@ export class Conversation {
       }
       this.messages = mergeHistoryMessages(this.messages, msg.messages);
       this.historyFrom = msg.before;
-      if (this.snapshot)
-        this.snapshot = {
-          ...this.snapshot,
-          messages: this.messages,
-          historyFrom: this.historyFrom,
-        };
+      this.syncSnapshotMessages();
+      this.cacheCurrentState();
     } else if (msg.type === "ui_request") {
       this.uiRequest = msg.request;
     } else if (msg.type === "ui_close") {
@@ -407,14 +474,19 @@ export class Conversation {
         if (msg.ok) p.resolve(msg.data);
         else p.reject(new Error(msg.error ?? "command failed"));
       }
-      if (!msg.ok && msg.error) this.lastError = msg.error;
+      if (!msg.ok && msg.error) {
+        this.breakTranscriptNoticeSequence();
+        this.lastError = msg.error;
+      }
     }
     this.emit();
   }
 
   private applySnapshot(snap: SessionSnapshot): void {
+    const previousAnchor = this.currentTranscriptAnchor();
     const previousSessionId = this.snapshot?.sessionId;
     const previousBranchHeadId = this.snapshot?.branchHeadId;
+    const previousTotalMessages = this.totalMessages;
     if (
       this.historyInFlight &&
       (previousSessionId !== snap.sessionId ||
@@ -423,11 +495,15 @@ export class Conversation {
       this.historyInFlight = false;
       this.historyRequestId = undefined;
     }
-    const merged = mergeSnapshotMessages(
-      this.messages,
+    const staleSnapshot = isStaleConversationSnapshot(
       previousSessionId,
+      previousBranchHeadId,
+      previousTotalMessages,
       snap,
     );
+    const merged = staleSnapshot
+      ? { messages: this.messages, historyFrom: this.historyFrom }
+      : mergeSnapshotMessages(this.messages, previousSessionId, snap);
     this.messages = merged.messages;
     this.historyFrom = merged.historyFrom;
     this.snapshot = {
@@ -435,7 +511,9 @@ export class Conversation {
       messages: this.messages,
       historyFrom: this.historyFrom,
     };
-    this.totalMessages = snap.totalMessages ?? snap.messages.length;
+    this.totalMessages = staleSnapshot
+      ? previousTotalMessages
+      : (snap.totalMessages ?? snap.messages.length);
     this.queue = {
       steering: [...(snap.queue?.steering ?? [])],
       followUp: [...(snap.queue?.followUp ?? [])],
@@ -446,6 +524,21 @@ export class Conversation {
       this.deltaSamples = [];
       for (const t of this.tools.values()) t.running = false;
     }
+    if (previousSessionId && previousSessionId !== snap.sessionId) {
+      this.optimistic = [];
+      this.transcriptNotices = [];
+      this.replaceableInfoNoticeId = undefined;
+    } else {
+      this.optimistic = reconcileOptimisticMessages(
+        this.optimistic,
+        this.messages,
+        this.totalMessages,
+      );
+      if (previousAnchor !== this.currentTranscriptAnchor()) {
+        this.breakTranscriptNoticeSequence();
+      }
+    }
+    this.cacheCurrentState();
   }
 
   private applyEvent(event: Record<string, unknown>): void {
@@ -508,6 +601,7 @@ export class Conversation {
       case "message_start": {
         const message = event.message as PiiMessage | undefined;
         if (!message) break;
+        this.breakTranscriptNoticeSequence();
         if (message.role === "assistant") {
           this.streaming = { ...message, content: [] };
         }
@@ -549,6 +643,7 @@ export class Conversation {
       case "message_end": {
         const message = event.message as PiiMessage | undefined;
         if (!message) break;
+        this.breakTranscriptNoticeSequence();
         if (message.role === "user" && this.optimistic.length > 0) {
           const text =
             typeof message.content === "string"
@@ -575,7 +670,15 @@ export class Conversation {
           last.role === message.role &&
           (last as { timestamp?: number }).timestamp ===
             (message as { timestamp?: number }).timestamp;
-        if (!dup) this.messages = [...this.messages, message];
+        if (!dup) {
+          this.messages = [...this.messages, message];
+          this.totalMessages = Math.max(
+            this.totalMessages + 1,
+            this.messages.length,
+          );
+        }
+        this.syncSnapshotMessages();
+        this.cacheCurrentState();
         break;
       }
       case "tool_execution_start": {
@@ -631,6 +734,7 @@ export class Conversation {
 
   /** Surface an error to the message area. */
   reportError(message: string): void {
+    this.breakTranscriptNoticeSequence();
     this.lastError = message;
     this.emit();
   }
@@ -642,12 +746,18 @@ export class Conversation {
     this.emit();
   }
 
-  /** Transient toast. */
+  /** Add or replace Pi-style command output in the transcript. */
+  showTranscriptNotice(message: string, level = "info"): void {
+    this.receiveTranscriptNotice(message, level);
+    this.emit();
+  }
+
+  /** Browser-owned transient notification, intentionally separate from Pi output. */
   toast(message: string, level = "info"): void {
-    const id = ++this.toastSeq;
-    this.toasts = [...this.toasts, { id, message, level }];
+    const notification = { id: ++this.toastSeq, message, level };
+    this.toasts = [...this.toasts, notification];
     setTimeout(() => {
-      this.toasts = this.toasts.filter((t) => t.id !== id);
+      this.toasts = this.toasts.filter((item) => item.id !== notification.id);
       this.emit();
     }, 4000);
     this.emit();
@@ -658,6 +768,7 @@ export class Conversation {
     text: string,
     images?: { data: string; mimeType: string }[],
   ): number {
+    this.breakTranscriptNoticeSequence();
     const key = ++this.optimisticSeq;
     const content = images?.length
       ? [
@@ -674,6 +785,7 @@ export class Conversation {
       {
         key,
         text,
+        baseTotalMessages: this.totalMessages,
         message: {
           role: "user",
           content,
@@ -682,12 +794,14 @@ export class Conversation {
         } as PiiMessage,
       },
     ];
+    this.cacheCurrentState();
     this.emit();
     return key;
   }
 
   removeOptimistic(key: number): void {
     this.optimistic = this.optimistic.filter((o) => o.key !== key);
+    this.cacheCurrentState();
     this.emit();
   }
 
