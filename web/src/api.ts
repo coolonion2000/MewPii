@@ -12,15 +12,28 @@ import {
   applyTranscriptNotice,
   clearMatchingRequest,
   conversationSnapshotCacheKey,
+  conversationStateCacheKeys,
   fixedAgentUrl,
   isStaleConversationSnapshot,
+  isSessionSnapshotReady,
   mergeHistoryMessages,
   mergeSnapshotMessages,
   messageTimelineKey,
-  reconcileOptimisticMessages,
+  reanchorTranscriptNotices,
+  reconcileReadyPaging,
+  reconcileOptimisticMessageState,
+  sameMessageTimelineIdentity,
+  setLruMapEntry,
+  synchronizeSnapshotQueue,
+  timestampAnchorReplacements,
   type TranscriptNotice,
 } from "./state-utils";
 import { ReadinessWaiters } from "./readiness-waiters";
+import {
+  appendPartialEvent,
+  isBatchablePartialEvent,
+  type PendingPartialEvent,
+} from "./partial-events";
 
 // ---------------------------------------------------------------------------
 // multi-agent routing: when an agent is selected, all /api and /ws traffic is
@@ -68,8 +81,14 @@ export function withAgent(
   };
 }
 
-export async function fetchProjects(signal?: AbortSignal): Promise<ProjectGroup[]> {
-  const res = await fetch("/api/sessions", { signal });
+export async function fetchProjects(
+  signal?: AbortSignal,
+  includeArchived = false,
+): Promise<ProjectGroup[]> {
+  const res = await fetch(
+    includeArchived ? "/api/sessions?includeArchived=1" : "/api/sessions",
+    { signal },
+  );
   if (!res.ok) throw new Error(`sessions: ${res.status}`);
   const data = (await res.json()) as { projects: ProjectGroup[] };
   return data.projects;
@@ -93,10 +112,39 @@ export interface ModelsResponse {
   models: import("./types").ModelInfoLite[];
 }
 
-export async function fetchModels(): Promise<ModelsResponse> {
-  const res = await fetch("/api/models");
-  if (!res.ok) throw new Error(`models: ${res.status}`);
-  return (await res.json()) as ModelsResponse;
+const MODELS_CACHE_TTL_MS = 15_000;
+let modelsCache:
+  | { value: ModelsResponse; loadedAt: number }
+  | undefined;
+let modelsRequest: Promise<ModelsResponse> | undefined;
+let modelsGeneration = 0;
+
+/** Deduplicate Composer/Settings model discovery across rapid view changes. */
+export async function fetchModels(force = false): Promise<ModelsResponse> {
+  if (force) {
+    modelsCache = undefined;
+    modelsRequest = undefined;
+    modelsGeneration += 1;
+  }
+  if (
+    modelsCache &&
+    Date.now() - modelsCache.loadedAt < MODELS_CACHE_TTL_MS
+  )
+    return modelsCache.value;
+  if (modelsRequest) return modelsRequest;
+  const generation = modelsGeneration;
+  const loading = fetch("/api/models").then(async (res) => {
+    if (!res.ok) throw new Error(`models: ${res.status}`);
+    const value = (await res.json()) as ModelsResponse;
+    if (generation === modelsGeneration)
+      modelsCache = { value, loadedAt: Date.now() };
+    return value;
+  });
+  const tracked = loading.finally(() => {
+    if (modelsRequest === tracked) modelsRequest = undefined;
+  });
+  modelsRequest = tracked;
+  return tracked;
 }
 
 // ---------------------------------------------------------------------------
@@ -124,6 +172,45 @@ export interface RunStats {
   turns: number;
   steps: number;
   outputChars: number;
+}
+
+function sameStringArray(
+  left: readonly string[],
+  right: readonly string[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((value, index) => value === right[index])
+  );
+}
+
+function sameWidgets(
+  left: readonly WidgetState[],
+  right: readonly WidgetState[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((widget, index) => {
+      const other = right[index];
+      return (
+        widget.key === other?.key &&
+        widget.placement === other.placement &&
+        sameStringArray(widget.lines, other.lines)
+      );
+    })
+  );
+}
+
+function sameStatuses(
+  left: Readonly<Record<string, string>>,
+  right: Readonly<Record<string, string>>,
+): boolean {
+  const leftKeys = Object.keys(left);
+  const rightKeys = Object.keys(right);
+  return (
+    leftKeys.length === rightKeys.length &&
+    leftKeys.every((key) => left[key] === right[key])
+  );
 }
 
 function extractText(value: unknown): string {
@@ -174,12 +261,18 @@ interface OptimisticMessage {
 interface CachedConversationState {
   snapshot: SessionSnapshot;
   optimistic: OptimisticMessage[];
+  transcriptNotices: TranscriptNotice[];
+  transcriptNoticeRevision: number;
+  noticeSeq: number;
+  replaceableInfoNoticeId?: number;
 }
 
 // Last-known finalized + pending state, shown instantly while a fresh snapshot
 // streams in after switching back to a conversation.
 const conversationStateCache = new Map<string, CachedConversationState>();
+const CONVERSATION_STATE_CACHE_CAPACITY = 24;
 const COMMAND_TIMEOUT_MS = 120_000;
+const PARTIAL_UPDATE_FLUSH_MS = 40;
 
 export class Conversation {
   private ws?: WebSocket;
@@ -195,6 +288,8 @@ export class Conversation {
     }
   >();
   private readyWaiters = new ReadinessWaiters();
+  private pendingPartialEvents: PendingPartialEvent[] = [];
+  private partialFlushTimer?: ReturnType<typeof setTimeout>;
 
   snapshot?: SessionSnapshot;
   /** Finalized messages (from snapshot / message_end). */
@@ -263,7 +358,13 @@ export class Conversation {
     // jump to local or another remote workspace.
     const cacheKey = conversationSnapshotCacheKey(agent, cwd, sessionPath);
     const cached = cacheKey ? conversationStateCache.get(cacheKey) : undefined;
-    if (cached) {
+    if (cached && cacheKey) {
+      setLruMapEntry(
+        conversationStateCache,
+        cacheKey,
+        cached,
+        CONVERSATION_STATE_CACHE_CAPACITY,
+      );
       this.optimistic = cached.optimistic.map((item) => ({
         ...item,
         message: { ...item.message },
@@ -272,6 +373,27 @@ export class Conversation {
         0,
         ...this.optimistic.map((item) => item.key),
       );
+      this.transcriptNotices = cached.transcriptNotices.map((notice) => ({
+        ...notice,
+      }));
+      this.transcriptNoticeRevision = cached.transcriptNoticeRevision;
+      this.noticeSeq = cached.noticeSeq;
+      this.replaceableInfoNoticeId = cached.replaceableInfoNoticeId;
+      // Seed the prior identity before reconciliation so a same-session cache
+      // hydrate is not mistaken for new chat content that breaks showStatus().
+      this.messages = [...cached.snapshot.messages];
+      this.historyFrom = cached.snapshot.historyFrom ?? 0;
+      this.totalMessages =
+        cached.snapshot.totalMessages ?? cached.snapshot.messages.length;
+      this.queue = {
+        steering: [...(cached.snapshot.queue?.steering ?? [])],
+        followUp: [...(cached.snapshot.queue?.followUp ?? [])],
+      };
+      this.snapshot = {
+        ...cached.snapshot,
+        messages: this.messages,
+        queue: this.queue,
+      };
       this.applySnapshot(cached.snapshot);
     }
   }
@@ -283,11 +405,13 @@ export class Conversation {
 
   getRevision = (): number => this.revision;
 
-  /** Wait for the first host snapshot so a prompt may be submitted during startup. */
+  /** Wait for extension/resource initialization while keeping startup UI interactive. */
   waitUntilReady(timeoutMs = 60_000): Promise<void> {
-    if (this.connected) return Promise.resolve();
+    if (this.connected && isSessionSnapshotReady(this.snapshot))
+      return Promise.resolve();
     if (this.closedIntentionally)
       return Promise.reject(new Error("conversation disposed"));
+    if (this.error) return Promise.reject(new Error(this.error));
     return this.readyWaiters.wait(timeoutMs);
   }
 
@@ -296,11 +420,40 @@ export class Conversation {
     for (const fn of this.listeners) fn();
   }
 
+  private enqueuePartialEvent(event: Record<string, unknown>): void {
+    const receivedAt = Date.now();
+    this.pendingPartialEvents = appendPartialEvent(
+      this.pendingPartialEvents,
+      event,
+      receivedAt,
+    );
+    if (this.partialFlushTimer !== undefined) return;
+    this.partialFlushTimer = setTimeout(() => {
+      this.partialFlushTimer = undefined;
+      this.flushPendingPartialEvents(true);
+    }, PARTIAL_UPDATE_FLUSH_MS);
+  }
+
+  /** Apply queued visual deltas before any lifecycle/control event. */
+  private flushPendingPartialEvents(shouldEmit: boolean): boolean {
+    if (this.partialFlushTimer !== undefined) {
+      clearTimeout(this.partialFlushTimer);
+      this.partialFlushTimer = undefined;
+    }
+    if (this.pendingPartialEvents.length === 0) return false;
+    const pending = this.pendingPartialEvents;
+    this.pendingPartialEvents = [];
+    for (const { event, receivedAt } of pending)
+      this.applyEvent(event, receivedAt);
+    if (shouldEmit) this.emit();
+    return true;
+  }
+
   connect(): void {
     if (this.closedIntentionally) return;
     clearTimeout(this.reconnectTimer);
     const proto = location.protocol === "https:" ? "wss" : "ws";
-    let url = `${proto}://${location.host}/ws?cwd=${encodeURIComponent(this.cwd)}${
+    let url = `${proto}://${location.host}/ws?snapshotDelta=1&cwd=${encodeURIComponent(this.cwd)}${
       this.sessionPath ? `&session=${encodeURIComponent(this.sessionPath)}` : ""
     }`;
     url = withAgent(url, this.agent);
@@ -308,12 +461,13 @@ export class Conversation {
     this.ws = ws;
     this.connected = false;
     ws.onopen = () => {
-      // The transport is open, but commands remain blocked until the host's
-      // first snapshot proves that session initialization completed.
+      // The transport is open, but commands remain blocked until a ready
+      // snapshot arrives. An earlier initializing snapshot may still carry UI.
       this.error = undefined;
       this.emit();
     };
     ws.onclose = (ev) => {
+      this.flushPendingPartialEvents(false);
       const wasConnected = this.connected;
       this.connected = false;
       // fail all in-flight commands so the UI unblocks
@@ -325,8 +479,9 @@ export class Conversation {
       this.historyInFlight = false;
       this.historyRequestId = undefined;
       if (!this.closedIntentionally) {
+        this.error = `connection closed (${ev.code})`;
+        this.readyWaiters.rejectAll(new Error(this.error));
         if (ev.code !== 1000 || wasConnected) this.scheduleReconnect();
-        else this.error = `connection closed (${ev.code})`;
       }
       this.emit();
     };
@@ -374,14 +529,28 @@ export class Conversation {
         ...item,
         message: { ...item.message },
       })),
+      transcriptNotices: this.transcriptNotices.map((notice) => ({ ...notice })),
+      transcriptNoticeRevision: this.transcriptNoticeRevision,
+      noticeSeq: this.noticeSeq,
+      replaceableInfoNoticeId: this.replaceableInfoNoticeId,
     };
-    for (const path of [this.sessionPath, this.snapshot.sessionFile]) {
-      const key = conversationSnapshotCacheKey(this.agent, this.cwd, path);
-      if (key) conversationStateCache.set(key, state);
+    for (const key of conversationStateCacheKeys(
+      this.agent,
+      this.cwd,
+      this.sessionPath,
+      this.snapshot.sessionFile,
+    )) {
+      setLruMapEntry(
+        conversationStateCache,
+        key,
+        state,
+        CONVERSATION_STATE_CACHE_CAPACITY,
+      );
     }
   }
 
   dispose(): void {
+    this.flushPendingPartialEvents(false);
     this.cacheCurrentState();
     this.closedIntentionally = true;
     clearTimeout(this.reconnectTimer);
@@ -409,6 +578,16 @@ export class Conversation {
     this.replaceableInfoNoticeId = undefined;
   }
 
+  private migrateTranscriptNoticeAnchors(
+    replacements: readonly { from: string; to: string }[],
+  ): void {
+    if (replacements.length === 0) return;
+    this.transcriptNotices = reanchorTranscriptNotices(
+      this.transcriptNotices,
+      replacements,
+    );
+  }
+
   private receiveTranscriptNotice(message: string, level: string): void {
     const update = applyTranscriptNotice(
       this.transcriptNotices,
@@ -426,24 +605,73 @@ export class Conversation {
   }
 
   private handleMessage(msg: ServerMessage): void {
+    if (msg.type === "event" && isBatchablePartialEvent(msg.event)) {
+      this.enqueuePartialEvent(msg.event);
+      return;
+    }
+    const flushedPartials = this.flushPendingPartialEvents(false);
     if (msg.type === "snapshot") {
       this.connected = true;
       this.reconnecting = false;
       this.reconnectAttempts = 0;
       this.applySnapshot(msg.snapshot);
+      if (isSessionSnapshotReady(msg.snapshot)) this.readyWaiters.resolveAll();
+    } else if (msg.type === "session_ready") {
+      if (this.snapshot?.sessionId !== msg.snapshot.sessionId) {
+        if (flushedPartials) this.emit();
+        return;
+      }
+      const readyPaging = reconcileReadyPaging(
+        this.snapshot,
+        this.historyFrom,
+        this.totalMessages,
+        msg.snapshot,
+      );
+      this.connected = true;
+      this.reconnecting = false;
+      this.reconnectAttempts = 0;
+      this.snapshot = {
+        ...this.snapshot,
+        ...msg.snapshot,
+        pagingProvisional: false,
+        messages: this.messages,
+        // A pre-open raw preview knows only the visible suffix. No history
+        // request can complete while initialization is pending, so the first
+        // ready delta can safely replace its provisional paging metadata.
+        historyFrom: readyPaging.historyFrom,
+        totalMessages: readyPaging.totalMessages,
+      };
+      this.historyFrom = readyPaging.historyFrom;
+      this.totalMessages = readyPaging.totalMessages;
+      this.queue = {
+        steering: [...(msg.snapshot.queue?.steering ?? [])],
+        followUp: [...(msg.snapshot.queue?.followUp ?? [])],
+      };
+      this.cacheCurrentState();
       this.readyWaiters.resolveAll();
     } else if (msg.type === "event") {
       this.applyEvent(msg.event);
     } else if (msg.type === "widgets") {
+      if (sameWidgets(this.widgets, msg.widgets)) {
+        if (flushedPartials) this.emit();
+        return;
+      }
       this.widgets = msg.widgets;
     } else if (msg.type === "statuses") {
+      if (sameStatuses(this.statuses, msg.statuses)) {
+        if (flushedPartials) this.emit();
+        return;
+      }
       this.statuses = msg.statuses;
     } else if (msg.type === "toast") {
       // Despite the protocol name, Pi renders extension notifications in the
       // transcript. Only browser-owned notifications use the floating stack.
       this.receiveTranscriptNotice(msg.message, msg.level);
     } else if (msg.type === "history") {
-      if (msg.requestId !== this.historyRequestId) return;
+      if (msg.requestId !== this.historyRequestId) {
+        if (flushedPartials) this.emit();
+        return;
+      }
       this.historyInFlight = false;
       this.historyRequestId = undefined;
       if (
@@ -484,6 +712,8 @@ export class Conversation {
 
   private applySnapshot(snap: SessionSnapshot): void {
     const previousAnchor = this.currentTranscriptAnchor();
+    const previousMessages = this.messages;
+    const previousOptimistic = this.optimistic;
     const previousSessionId = this.snapshot?.sessionId;
     const previousBranchHeadId = this.snapshot?.branchHeadId;
     const previousTotalMessages = this.totalMessages;
@@ -494,6 +724,11 @@ export class Conversation {
     ) {
       this.historyInFlight = false;
       this.historyRequestId = undefined;
+    }
+    // Preserve A under A's canonical path before an in-host newSession rebinds
+    // this Conversation to B.
+    if (previousSessionId && previousSessionId !== snap.sessionId) {
+      this.cacheCurrentState();
     }
     const staleSnapshot = isStaleConversationSnapshot(
       previousSessionId,
@@ -522,28 +757,56 @@ export class Conversation {
       this.streaming = undefined;
       this.runStats.agentStartedAt = undefined;
       this.deltaSamples = [];
-      for (const t of this.tools.values()) t.running = false;
+      this.tools = new Map(
+        [...this.tools].map(([id, activity]) => [
+          id,
+          activity.running ? { ...activity, running: false } : activity,
+        ]),
+      );
     }
     if (previousSessionId && previousSessionId !== snap.sessionId) {
       this.optimistic = [];
       this.transcriptNotices = [];
       this.replaceableInfoNoticeId = undefined;
     } else {
-      this.optimistic = reconcileOptimisticMessages(
-        this.optimistic,
+      const reconciliation = reconcileOptimisticMessageState(
+        previousOptimistic,
         this.messages,
         this.totalMessages,
       );
-      if (previousAnchor !== this.currentTranscriptAnchor()) {
+      const replacements = timestampAnchorReplacements(
+        previousMessages,
+        this.messages,
+      );
+      for (const match of reconciliation.matches) {
+        const pending = previousOptimistic[match.pendingIndex];
+        const finalized = this.messages[match.finalizedIndex];
+        if (!pending || !finalized) continue;
+        replacements.push({
+          from: messageTimelineKey(
+            pending.message,
+            previousMessages.length + match.pendingIndex,
+          ),
+          to: messageTimelineKey(finalized, match.finalizedIndex),
+        });
+      }
+      this.optimistic = reconciliation.remaining;
+      this.migrateTranscriptNoticeAnchors(replacements);
+      const migratedPreviousAnchor =
+        replacements.find(({ from }) => from === previousAnchor)?.to ??
+        previousAnchor;
+      if (migratedPreviousAnchor !== this.currentTranscriptAnchor()) {
         this.breakTranscriptNoticeSequence();
       }
     }
     this.cacheCurrentState();
   }
 
-  private applyEvent(event: Record<string, unknown>): void {
+  private applyEvent(
+    event: Record<string, unknown>,
+    now = Date.now(),
+  ): void {
     const type = event.type as string;
-    const now = Date.now();
     switch (type) {
       case "auto_retry_start":
         this.retry = {
@@ -569,19 +832,22 @@ export class Conversation {
           followUp: [...((event.followUp as string[]) ?? [])],
         };
         const capabilities = event.queueCapabilities;
-        if (
-          this.snapshot &&
+        const validCapabilities =
           capabilities &&
           typeof capabilities === "object" &&
           typeof (capabilities as { revision?: unknown }).revision === "number" &&
           typeof (capabilities as { reorder?: unknown }).reorder === "boolean" &&
           typeof (capabilities as { remove?: unknown }).remove === "boolean"
-        )
-          this.snapshot = {
-            ...this.snapshot,
-            queueCapabilities:
-              capabilities as SessionSnapshot["queueCapabilities"],
-          };
+            ? (capabilities as SessionSnapshot["queueCapabilities"])
+            : undefined;
+        if (this.snapshot) {
+          this.snapshot = synchronizeSnapshotQueue(
+            this.snapshot,
+            this.queue,
+            validCapabilities,
+          );
+          this.cacheCurrentState();
+        }
         break;
       }
       case "agent_start":
@@ -644,6 +910,8 @@ export class Conversation {
         const message = event.message as PiiMessage | undefined;
         if (!message) break;
         this.breakTranscriptNoticeSequence();
+        const replacements: { from: string; to: string }[] = [];
+        let optimisticAnchor: string | undefined;
         if (message.role === "user" && this.optimistic.length > 0) {
           const text =
             typeof message.content === "string"
@@ -656,33 +924,64 @@ export class Conversation {
                 : "";
           const idx = this.optimistic.findIndex((o) => o.text === text);
           if (idx !== -1) {
+            optimisticAnchor = messageTimelineKey(
+              this.optimistic[idx].message,
+              this.messages.length + idx,
+            );
             this.optimistic = [
               ...this.optimistic.slice(0, idx),
               ...this.optimistic.slice(idx + 1),
             ];
           }
         }
+        const streaming = this.streaming;
+        const streamingAnchor =
+          streaming &&
+          streaming.role === message.role &&
+          (streaming as { timestamp?: unknown }).timestamp ===
+            (message as { timestamp?: unknown }).timestamp
+            ? messageTimelineKey(
+                streaming,
+                this.messages.length + this.optimistic.length,
+              )
+            : undefined;
         if (message.role === "assistant") this.streaming = undefined;
-        // Avoid duplicates when a snapshot already carried this message.
-        const last = this.messages[this.messages.length - 1];
-        const dup =
-          last &&
-          last.role === message.role &&
-          (last as { timestamp?: number }).timestamp ===
-            (message as { timestamp?: number }).timestamp;
-        if (!dup) {
+        // Replace a timestamp-only duplicate with the persisted entry identity.
+        const lastIndex = this.messages.length - 1;
+        const last = this.messages[lastIndex];
+        const dup = Boolean(
+          last && sameMessageTimelineIdentity(last, message),
+        );
+        const previousDuplicateAnchor = dup && last
+          ? messageTimelineKey(last, lastIndex)
+          : undefined;
+        if (dup) {
+          this.messages = [...this.messages.slice(0, lastIndex), message];
+        } else {
           this.messages = [...this.messages, message];
           this.totalMessages = Math.max(
             this.totalMessages + 1,
             this.messages.length,
           );
         }
+        const finalizedIndex = this.messages.length - 1;
+        const finalizedAnchor = messageTimelineKey(message, finalizedIndex);
+        for (const from of [
+          optimisticAnchor,
+          streamingAnchor,
+          previousDuplicateAnchor,
+        ]) {
+          if (from && from !== finalizedAnchor)
+            replacements.push({ from, to: finalizedAnchor });
+        }
+        this.migrateTranscriptNoticeAnchors(replacements);
         this.syncSnapshotMessages();
         this.cacheCurrentState();
         break;
       }
       case "tool_execution_start": {
         const id = String(event.toolCallId ?? "");
+        this.tools = new Map(this.tools);
         this.tools.set(id, {
           toolCallId: id,
           toolName: String(event.toolName ?? ""),
@@ -690,17 +989,19 @@ export class Conversation {
           running: true,
           startedAt: now,
         });
-        this.tools = new Map(this.tools);
         break;
       }
       case "tool_execution_update": {
         const id = String(event.toolCallId ?? "");
         const t = this.tools.get(id);
         if (t) {
-          t.liveOutput = stripAnsi(
-            extractText(event.partialResult ?? event.update),
-          );
           this.tools = new Map(this.tools);
+          this.tools.set(id, {
+            ...t,
+            liveOutput: stripAnsi(
+              extractText(event.partialResult ?? event.update),
+            ),
+          });
         }
         break;
       }
@@ -708,12 +1009,15 @@ export class Conversation {
         const id = String(event.toolCallId ?? "");
         const t = this.tools.get(id);
         if (t) {
-          t.running = false;
-          t.isError = Boolean(event.isError);
-          t.endedAt = now;
           this.runStats.steps += 1;
           if (t.startedAt) this.runStats.toolMs += now - t.startedAt;
           this.tools = new Map(this.tools);
+          this.tools.set(id, {
+            ...t,
+            running: false,
+            isError: Boolean(event.isError),
+            endedAt: now,
+          });
         }
         break;
       }

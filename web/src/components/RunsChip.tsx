@@ -37,21 +37,50 @@ export default function RunsChip({ onOpenRun }: { onOpenRun: (run: RunInfo) => v
 
   useEffect(() => {
     let alive = true;
-    const load = () => {
-      fetch('/api/runs')
-        .then((r) => r.json())
-        .then((d: { runs?: RunInfo[] }) => {
-          if (alive) setRuns(d.runs ?? []);
-        })
-        .catch(() => undefined);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let controller: AbortController | undefined;
+    let generation = 0;
+    const schedule = (delayMs: number) => {
+      clearTimeout(timer);
+      if (alive && !document.hidden)
+        timer = setTimeout(() => void load(), delayMs);
     };
-    load();
-    const timer = setInterval(load, 5000);
-    const tick = setInterval(() => alive && force((x) => x + 1), 1000);
+    const load = async () => {
+      if (!alive || document.hidden) return;
+      controller?.abort();
+      const request = new AbortController();
+      const currentGeneration = ++generation;
+      controller = request;
+      let nextDelay = 15_000;
+      try {
+        const response = await fetch('/api/runs', { signal: request.signal });
+        const data = (await response.json()) as { runs?: RunInfo[] };
+        if (!alive || currentGeneration !== generation) return;
+        const next = data.runs ?? [];
+        setRuns(next);
+        if (next.some((run) => run.isStreaming)) nextDelay = 5_000;
+      } catch {
+        // A hidden tab aborts its request; visibility restoration reloads it.
+      } finally {
+        if (currentGeneration === generation) schedule(nextDelay);
+      }
+    };
+    const onVisibility = () => {
+      clearTimeout(timer);
+      if (document.hidden) {
+        generation++;
+        controller?.abort();
+      }
+      else void load();
+    };
+    void load();
+    document.addEventListener('visibilitychange', onVisibility);
     return () => {
       alive = false;
-      clearInterval(timer);
-      clearInterval(tick);
+      generation++;
+      clearTimeout(timer);
+      controller?.abort();
+      document.removeEventListener('visibilitychange', onVisibility);
     };
   }, []);
 
@@ -65,6 +94,26 @@ export default function RunsChip({ onOpenRun }: { onOpenRun: (run: RunInfo) => v
   }, [open]);
 
   const active = runs.filter((r) => r.isStreaming).length;
+  useEffect(() => {
+    if (!open || active === 0) return;
+    let tick: ReturnType<typeof setTimeout> | undefined;
+    const schedule = () => {
+      clearTimeout(tick);
+      if (document.hidden) return;
+      tick = setTimeout(() => {
+        force((value) => value + 1);
+        schedule();
+      }, 1000);
+    };
+    const onVisibility = () => schedule();
+    schedule();
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      clearTimeout(tick);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [active, open]);
+
   // only surface the chip when something is actually running; idle hosts are noise
   if (active === 0) return null;
   const now = Date.now();

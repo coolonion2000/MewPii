@@ -9,11 +9,13 @@ import {
   clearMatchingRequest,
   commandNoticeFallback,
   conversationSnapshotCacheKey,
+  conversationStateCacheKeys,
   createGenerationGate,
   dedupeLatestByKey,
   fixedAgentUrl,
   initialCwd,
   isStaleConversationSnapshot,
+  isSessionSnapshotReady,
   isTerminalRun,
   mergeHistoryMessages,
   mergeSnapshotMessages,
@@ -22,11 +24,21 @@ import {
   parseAppRoute,
   parseStoredSelection,
   parseStoredStringArray,
+  reanchorTranscriptNotices,
+  reconcileReadyPaging,
   reconcileOptimisticMessages,
+  reconcileOptimisticMessageState,
+  sameMessageTimelineIdentity,
   sessionIdFromPath,
+  setLruMapEntry,
   restoreFailedImages,
   restoreFailedText,
+  sameOrderedStrings,
   shouldShowDisconnected,
+  shouldRefreshSessionCatalog,
+  synchronizeSnapshotQueue,
+  timestampAnchorReplacements,
+  uniqueMessageTimelineKeys,
 } from '../src/state-utils.ts';
 import { shouldPlayCompletionSound } from '../src/completion-sound.ts';
 import { evaluateProviderLogout } from '../src/model-utils.ts';
@@ -47,6 +59,41 @@ const snapshot = (messages, overrides = {}) => ({
   tools: [],
   slashCommands: [],
   ...overrides,
+});
+
+test('ready paging replaces only a provisional raw preview', () => {
+  assert.deepEqual(
+    reconcileReadyPaging(
+      { pagingProvisional: true },
+      0,
+      50,
+      { historyFrom: 3719, totalMessages: 3769 },
+    ),
+    { historyFrom: 3719, totalMessages: 3769 },
+  );
+  assert.deepEqual(
+    reconcileReadyPaging(
+      { pagingProvisional: false },
+      0,
+      3769,
+      { historyFrom: 3719, totalMessages: 3769 },
+    ),
+    { historyFrom: 0, totalMessages: 3769 },
+    'history loaded during initialization was reset to the newest page',
+  );
+});
+
+test('snapshot readiness is backward compatible but honors initialization', () => {
+  assert.equal(isSessionSnapshotReady(undefined), false);
+  assert.equal(isSessionSnapshotReady(snapshot([])), true);
+  assert.equal(
+    isSessionSnapshotReady(snapshot([], { initializing: true })),
+    false,
+  );
+  assert.equal(
+    isSessionSnapshotReady(snapshot([], { initializing: false })),
+    true,
+  );
 });
 
 test('deep-link routes and generation gate reject stale resolve results', () => {
@@ -77,12 +124,53 @@ test('session switches do not flash a disconnected banner before the first snaps
   assert.equal(shouldShowDisconnected(true, false, 'stale error'), false);
 });
 
-test('a blank conversation never reuses the last created session snapshot', () => {
+test('conversation cache follows the snapshot session path and evicts least-recent entries', () => {
   assert.equal(conversationSnapshotCacheKey('local', '/work', undefined), undefined);
   assert.equal(
     conversationSnapshotCacheKey('local', '/work', '/sessions/one.jsonl'),
     'local|/work|/sessions/one.jsonl',
   );
+  assert.deepEqual(
+    conversationStateCacheKeys(
+      'local',
+      '/work',
+      '/sessions/session-a.jsonl',
+      '/sessions/session-b.jsonl',
+    ),
+    ['local|/work|/sessions/session-b.jsonl'],
+  );
+  assert.deepEqual(
+    conversationStateCacheKeys(
+      'local',
+      '/work',
+      '/sessions/session-a.jsonl',
+      undefined,
+    ),
+    [],
+  );
+
+  const cache = new Map([['a', 1], ['b', 2]]);
+  setLruMapEntry(cache, 'a', 3, 2);
+  setLruMapEntry(cache, 'c', 4, 2);
+  assert.deepEqual([...cache.entries()], [['a', 3], ['c', 4]]);
+});
+
+test('queue updates keep cached rows and mutation revision synchronized', () => {
+  const updated = synchronizeSnapshotQueue(
+    snapshot([], {
+      queue: { steering: ['old'], followUp: [] },
+      queueCapabilities: { revision: 1, reorder: true, remove: true },
+    }),
+    { steering: [], followUp: ['new'] },
+    { revision: 2, reorder: false, remove: false, reason: 'updating' },
+  );
+  assert.deepEqual(updated.queue, { steering: [], followUp: ['new'] });
+  assert.deepEqual(updated.queueCapabilities, {
+    revision: 2,
+    reorder: false,
+    remove: false,
+    reason: 'updating',
+  });
 });
 
 test('session rename trims valid names and rejects running or blank sessions', () => {
@@ -143,6 +231,41 @@ test('extension widgets keep one latest value per key', () => {
   );
 });
 
+test('poll results preserve identity and catalog refresh skips first hydration', () => {
+  assert.equal(sameOrderedStrings(['local', 'remote'], ['local', 'remote']), true);
+  assert.equal(sameOrderedStrings(['local', 'remote'], ['remote', 'local']), false);
+  assert.equal(sameOrderedStrings(['local'], ['local', 'remote']), false);
+
+  const idle = {
+    messageCount: 8,
+    isStreaming: false,
+    sessionFile: '/sessions/existing.jsonl',
+  };
+  assert.equal(shouldRefreshSessionCatalog(undefined, idle), false);
+  assert.equal(shouldRefreshSessionCatalog(idle, { ...idle }), false);
+  assert.equal(
+    shouldRefreshSessionCatalog(
+      { messageCount: 0, isStreaming: false },
+      { messageCount: 1, isStreaming: false },
+    ),
+    true,
+  );
+  assert.equal(
+    shouldRefreshSessionCatalog(
+      { ...idle, isStreaming: true },
+      { ...idle, isStreaming: false },
+    ),
+    true,
+  );
+  assert.equal(
+    shouldRefreshSessionCatalog(idle, {
+      ...idle,
+      sessionFile: '/sessions/new.jsonl',
+    }),
+    true,
+  );
+});
+
 test('consecutive Pi info output replaces one transcript row', () => {
   let state = { notices: [], replaceableInfoId: undefined };
   state = applyTranscriptNotice(state.notices, state.replaceableInfoId, {
@@ -177,11 +300,68 @@ test('consecutive Pi info output replaces one transcript row', () => {
   assert.equal(state.replaceableInfoId, undefined);
 });
 
-test('transcript output anchors to stable message identity', () => {
+test('transcript output anchors migrate only to proven finalized identities', () => {
   assert.equal(messageTimelineKey(message('answer-1'), 8), 'entry:answer-1');
+  const transient = { role: 'assistant', timestamp: 42 };
+  const finalized = { ...transient, _entryId: 'answer-2' };
+  assert.equal(messageTimelineKey(transient, 8), 'time:assistant:42');
+  const replacements = timestampAnchorReplacements([transient], [finalized]);
+  assert.deepEqual(replacements, [{
+    from: 'time:assistant:42',
+    to: 'entry:answer-2',
+  }]);
+  assert.deepEqual(
+    reanchorTranscriptNotices([{
+      id: 1,
+      message: 'status',
+      level: 'info',
+      afterMessageKey: 'time:assistant:42',
+    }], replacements),
+    [{
+      id: 1,
+      message: 'status',
+      level: 'info',
+      afterMessageKey: 'entry:answer-2',
+    }],
+  );
+});
+
+test('message identities prefer unique IDs and disambiguate same-millisecond rows', () => {
+  const firstTool = {
+    role: 'toolResult',
+    toolCallId: 'tool-a',
+    timestamp: 42,
+    content: 'a',
+  };
+  const secondTool = {
+    role: 'toolResult',
+    toolCallId: 'tool-b',
+    timestamp: 42,
+    content: 'b',
+  };
+  assert.equal(messageTimelineKey(firstTool, 0), 'id:toolResult:tool-a');
+  assert.equal(sameMessageTimelineIdentity(firstTool, secondTool), false);
+  assert.equal(sameMessageTimelineIdentity(firstTool, { ...firstTool }), true);
   assert.equal(
-    messageTimelineKey({ role: 'assistant', timestamp: 42 }, 8),
-    'time:assistant:42',
+    sameMessageTimelineIdentity(
+      { role: 'assistant', timestamp: 7, _entryId: 'persisted' },
+      { role: 'assistant', timestamp: 7 },
+    ),
+    true,
+  );
+  assert.equal(
+    sameMessageTimelineIdentity(
+      { role: 'assistant', timestamp: 7, _entryId: 'one' },
+      { role: 'assistant', timestamp: 7, _entryId: 'two' },
+    ),
+    false,
+  );
+  assert.deepEqual(
+    uniqueMessageTimelineKeys([
+      { role: 'assistant', timestamp: 9 },
+      { role: 'assistant', timestamp: 9 },
+    ]),
+    ['time:assistant:9', 'time:assistant:9:occurrence:1'],
   );
 });
 
@@ -257,13 +437,35 @@ test('session revisit keeps local messages until the server snapshot catches up'
     ], 2),
     pending,
   );
+  const finalized = [
+    { role: 'user', content: 'repeat' },
+    { role: 'assistant', content: 'old answer' },
+    { role: 'user', content: 'repeat', _entryId: 'new-user' },
+  ];
   assert.deepEqual(
-    reconcileOptimisticMessages(pending, [
-      { role: 'user', content: 'repeat' },
-      { role: 'assistant', content: 'old answer' },
-      { role: 'user', content: 'repeat' },
-    ], 3),
+    reconcileOptimisticMessages(pending, finalized, 3),
     [],
+  );
+  assert.deepEqual(
+    reconcileOptimisticMessageState(pending, finalized, 3),
+    {
+      remaining: [],
+      matches: [{ pendingIndex: 0, finalizedIndex: 2 }],
+    },
+  );
+  assert.deepEqual(
+    reanchorTranscriptNotices([{
+      id: 2,
+      message: 'accepted',
+      level: 'info',
+      afterMessageKey: 'time:user:7',
+    }], [{ from: 'time:user:7', to: 'entry:new-user' }]),
+    [{
+      id: 2,
+      message: 'accepted',
+      level: 'info',
+      afterMessageKey: 'entry:new-user',
+    }],
   );
 });
 

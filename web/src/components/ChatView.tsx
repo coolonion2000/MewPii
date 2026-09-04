@@ -1,4 +1,16 @@
-import { Fragment, useEffect, useReducer, useRef, useState, useSyncExternalStore } from 'react';
+import {
+  Fragment,
+  lazy,
+  memo,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from 'react';
 import type { Conversation } from '../api';
 import MessageItem from './MessageItem';
 import Composer from './Composer';
@@ -6,19 +18,23 @@ import StatsBar from './StatsBar';
 import RunsChip, { type RunInfo } from './RunsChip';
 import SubagentPanel from './SubagentPanel';
 import { IconFolder, IconChevronDown } from '../icons';
-import Trajectory from './Trajectory';
 import ExtensionUI, { EditorWidgets, InlineQuestions, TranscriptNoticeView } from './ExtensionUI';
-import FilePreview from './FilePreview';
 import { IconTrash, IconPencil, IconX } from '../icons';
-import { exportHtml } from '../export';
 import type { PiiMessage, ProjectGroup, SessionSnapshot } from '../types';
-import { calculateLiveOutputMetrics, messageTimelineKey, shouldShowDisconnected } from '../state-utils';
+import {
+  calculateLiveOutputMetrics,
+  messageTimelineKey,
+  shouldShowDisconnected,
+} from '../state-utils';
 import {
   armCompletionSound,
   playCompletionSound,
   shouldPlayCompletionSound,
 } from '../completion-sound';
-import { t } from '../i18n';
+import { getLang, t } from '../i18n';
+
+const Trajectory = lazy(() => import('./Trajectory'));
+const FilePreview = lazy(() => import('./FilePreview'));
 
 interface Props {
   conv: Conversation;
@@ -26,9 +42,10 @@ interface Props {
   onForked?: (cwd: string, sessionFile: string, sessionId?: string) => void;
   projects?: ProjectGroup[];
   onSelectProject?: (cwd: string) => void;
+  dark: boolean;
 }
 
-export default function ChatView({ conv, onRefresh, onForked, projects, onSelectProject }: Props) {
+function ChatView({ conv, onRefresh, onForked, projects, onSelectProject, dark }: Props) {
   const [, force] = useReducer((x: number) => x + 1, 0);
   // React rechecks the revision after subscribing, so even a snapshot arriving
   // between render and commit cannot leave this view on stale empty state.
@@ -68,8 +85,22 @@ export default function ChatView({ conv, onRefresh, onForked, projects, onSelect
   // 1s ticker while streaming so the live t/s decays smoothly between deltas
   useEffect(() => {
     if (!conv.snapshot?.isStreaming) return;
-    const timer = setInterval(force, 1000);
-    return () => clearInterval(timer);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const schedule = () => {
+      clearTimeout(timer);
+      if (document.hidden) return;
+      timer = setTimeout(() => {
+        force();
+        schedule();
+      }, 1000);
+    };
+    const onVisibility = () => schedule();
+    schedule();
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      clearTimeout(timer);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
   }, [conv.snapshot?.isStreaming]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const atBottomRef = useRef(true);
@@ -112,41 +143,112 @@ export default function ChatView({ conv, onRefresh, onForked, projects, onSelect
     window.addEventListener('mouseup', onUp);
   };
   const snap = conv.snapshot;
+  const newSessionDisabled = Boolean(snap?.isStreaming || conv.compaction);
+  const language = getLang();
 
-  const baseMessages: PiiMessage[] = [
-    ...conv.messages,
-    ...conv.optimistic.map((o) => o.message),
-  ];
-  const allMessages: PiiMessage[] = conv.streaming
-    ? [...baseMessages, conv.streaming]
-    : baseMessages;
-  const messageKeys = allMessages.map(messageTimelineKey);
-  const noticesBeforeMessages = conv.transcriptNotices.filter(
-    (notice) => notice.afterMessageKey === undefined,
+  const baseMessages = useMemo<PiiMessage[]>(
+    () => [
+      ...conv.messages,
+      ...conv.optimistic.map((item) => item.message),
+    ],
+    [conv.messages, conv.optimistic],
   );
-  const noticesByMessage = new Map<string, typeof conv.transcriptNotices>();
-  for (const notice of conv.transcriptNotices) {
-    if (!notice.afterMessageKey) continue;
-    const existing = noticesByMessage.get(notice.afterMessageKey) ?? [];
-    noticesByMessage.set(notice.afterMessageKey, [...existing, notice]);
-  }
+  const allMessages = useMemo<PiiMessage[]>(
+    () => (conv.streaming ? [...baseMessages, conv.streaming] : baseMessages),
+    [baseMessages, conv.streaming],
+  );
+  const { messageKeys, renderKeys } = useMemo(() => {
+    const anchors: string[] = [];
+    const unique: string[] = [];
+    const occurrences = new Map<string, number>();
+    for (let index = 0; index < allMessages.length; index++) {
+      const base = messageTimelineKey(allMessages[index], index);
+      const occurrence = occurrences.get(base) ?? 0;
+      occurrences.set(base, occurrence + 1);
+      anchors.push(base);
+      unique.push(
+        occurrence === 0 ? base : `${base}:occurrence:${occurrence}`,
+      );
+    }
+    return { messageKeys: anchors, renderKeys: unique };
+  }, [allMessages]);
+  const { noticesBeforeMessages, noticesByMessage } = useMemo(() => {
+    const before = conv.transcriptNotices.filter(
+      (notice) => notice.afterMessageKey === undefined,
+    );
+    const byMessage = new Map<string, typeof conv.transcriptNotices>();
+    for (const notice of conv.transcriptNotices) {
+      if (!notice.afterMessageKey) continue;
+      const existing = byMessage.get(notice.afterMessageKey) ?? [];
+      byMessage.set(notice.afterMessageKey, [...existing, notice]);
+    }
+    return { noticesBeforeMessages: before, noticesByMessage: byMessage };
+  }, [conv.transcriptNotices]);
 
   // toolCallId → toolResult message
-  const toolResults = new Map<string, PiiMessage>();
-  for (const m of conv.messages) {
-    if (m.role === 'toolResult') toolResults.set(String(m.toolCallId), m);
-  }
+  const toolResults = useMemo(() => {
+    const results = new Map<string, PiiMessage>();
+    for (const message of conv.messages) {
+      if (message.role === 'toolResult')
+        results.set(String(message.toolCallId), message);
+    }
+    return results;
+  }, [conv.messages]);
 
   // auto-scroll while streaming — ONLY when the user is already at the bottom;
   // scrolling up to read history must never yank them back down
   const lastMsg = allMessages[allMessages.length - 1];
   useEffect(() => {
-    const el = scrollRef.current;
-    if (el && atBottomRef.current) el.scrollTop = el.scrollHeight;
-    setShowJump(!atBottomRef.current);
+    const frame = requestAnimationFrame(() => {
+      const el = scrollRef.current;
+      if (el && atBottomRef.current) el.scrollTop = el.scrollHeight;
+      setShowJump(!atBottomRef.current);
+    });
+    return () => cancelAnimationFrame(frame);
   }, [lastMsg, conv.streaming, conv.tools, conv.snapshot?.isStreaming, conv.transcriptNoticeRevision]);
 
   const title = snap?.name || firstUserText(allMessages) || '新会话';
+  const handleFork = useCallback((entryId: string) => {
+    void conv
+      .send({ type: 'fork', entryId })
+      .then((data) => {
+        onRefresh();
+        const file = data?.sessionFile as string | undefined;
+        if (file && onForked)
+          onForked(conv.snapshot?.cwd ?? conv.cwd, file);
+        else conv.toast(t('forkFailed'), 'error');
+      })
+      .catch((cause) =>
+        conv.reportError(cause instanceof Error ? cause.message : String(cause)),
+      );
+  }, [conv, onForked, onRefresh]);
+  const handleBranch = useCallback((entryId: string) => {
+    void conv
+      .send({ type: 'branch', entryId })
+      .then((data) => {
+        const text = data?.editorText as string | undefined;
+        if (text) setDraft(text);
+        else conv.toast(t('branchedHere'));
+        atBottomRef.current = true;
+        requestAnimationFrame(() => {
+          const el = scrollRef.current;
+          if (el) el.scrollTop = el.scrollHeight;
+        });
+      })
+      .catch((cause) =>
+        conv.reportError(cause instanceof Error ? cause.message : String(cause)),
+      );
+  }, [conv]);
+  const handleOpenFile = useCallback((path: string) => setPreviewPath(path), []);
+  const handleExport = useCallback(() => {
+    void import('../export')
+      .then(({ exportHtml }) =>
+        exportHtml(title, conv.snapshot?.cwd ?? conv.cwd, conv.messages),
+      )
+      .catch((cause) =>
+        conv.reportError(cause instanceof Error ? cause.message : String(cause)),
+      );
+  }, [conv, title]);
 
   useEffect(() => {
     document.title = `MewPii - ${title}`;
@@ -159,9 +261,13 @@ export default function ChatView({ conv, onRefresh, onForked, projects, onSelect
   // rendering the new-session hero here makes a successful refresh look empty.
   if (!snap && conv.sessionPath) {
     return (
-      <div className="session-loading" role="status">
-        <span className="working-dot" aria-hidden="true" />
-        <span>{t('loadingSession')}</span>
+      <div className="session-loading" role={conv.error ? 'alert' : 'status'}>
+        {!conv.error && <span className="working-dot" aria-hidden="true" />}
+        <span>
+          {conv.error
+            ? `${conv.reconnecting ? t('reconnecting') : t('disconnected')} ${conv.error}`
+            : t('loadingSession')}
+        </span>
       </div>
     );
   }
@@ -171,9 +277,13 @@ export default function ChatView({ conv, onRefresh, onForked, projects, onSelect
   if (!hasUserMessage && !conv.snapshot?.isStreaming) {
     return (
       <>
+        <StatsBar conv={conv} />
         <div className="hero">
-          <img className="hero-logo-wide logo-on-dark" src="/logo-wide-dark.png" alt="MewPii" />
-          <img className="hero-logo-wide logo-on-light" src="/logo-wide-light.png" alt="MewPii" />
+          <img
+            className="hero-logo-wide"
+            src={dark ? '/logo-wide-dark.png' : '/logo-wide-light.png'}
+            alt="MewPii"
+          />
           <div className="hero-sub">{t('heroTagline')}</div>
           <div className="hero-chips">
             <div className="menu-anchor">
@@ -206,6 +316,11 @@ export default function ChatView({ conv, onRefresh, onForked, projects, onSelect
               )}
             </div>
           </div>
+          {conv.error && !conv.connected && (
+            <div className="hero-connection-error" role="alert">
+              {conv.reconnecting ? t('reconnecting') : t('disconnected')} {conv.error}
+            </div>
+          )}
           {conv.transcriptNotices.length > 0 && (
             <div className="hero-transcript-notices">
               {conv.transcriptNotices.map((notice) => (
@@ -213,9 +328,11 @@ export default function ChatView({ conv, onRefresh, onForked, projects, onSelect
               ))}
             </div>
           )}
+          <EditorWidgets conv={conv} placement="aboveEditor" />
           <div className="hero-composer">
             <Composer conv={conv} draft={draft} onDraft={setDraft} />
           </div>
+          <EditorWidgets conv={conv} placement="belowEditor" />
         </div>
         <ExtensionUI conv={conv} />
       </>
@@ -257,10 +374,24 @@ export default function ChatView({ conv, onRefresh, onForked, projects, onSelect
         <button className="btn btn-sm" title={t('compact')} onClick={() => void conv.send({ type: 'compact' }).catch(() => undefined)}>
           {t('compact')}
         </button>
-        <button className="btn btn-sm" title={t('export')} onClick={() => exportHtml(title, snap?.cwd ?? conv.cwd, conv.messages)}>
+        <button className="btn btn-sm" title={t('export')} onClick={handleExport}>
           {t('export')}
         </button>
-        <button className="btn btn-sm" onClick={() => conv.send({ type: 'newSession' }).then(onRefresh).catch(() => undefined)}>
+        <button
+          className="btn btn-sm"
+          disabled={newSessionDisabled}
+          aria-disabled={newSessionDisabled}
+          onClick={() => {
+            void conv
+              .send({ type: 'newSession' })
+              .then(onRefresh)
+              .catch((cause) =>
+                conv.reportError(
+                  cause instanceof Error ? cause.message : String(cause),
+                ),
+              );
+          }}
+        >
           {t('newSession')}
         </button>
         <RunsChip onOpenRun={(run: RunInfo) => {
@@ -274,7 +405,9 @@ export default function ChatView({ conv, onRefresh, onForked, projects, onSelect
       <div className="chat-main">
       {showTraj ? (
         <div className="chat-scroll">
-          <Trajectory conv={conv} />
+          <Suspense fallback={<div className="session-loading" role="status">…</div>}>
+            <Trajectory conv={conv} />
+          </Suspense>
         </div>
       ) : (
       <div
@@ -282,7 +415,7 @@ export default function ChatView({ conv, onRefresh, onForked, projects, onSelect
         ref={scrollRef}
         onScroll={() => {
           atBottomRef.current = isNearBottom();
-          if (atBottomRef.current) setShowJump(false);
+          setShowJump(!atBottomRef.current);
         }}
       >
         <div className="chat-column">
@@ -303,7 +436,7 @@ export default function ChatView({ conv, onRefresh, onForked, projects, onSelect
             <TranscriptNoticeView key={notice.id} notice={notice} />
           ))}
           {allMessages.map((m, i) => (
-            <Fragment key={`${messageKeys[i]}-${i}`}>
+            <Fragment key={renderKeys[i]}>
             <MessageItem
               message={m}
               streaming={conv.streaming === m}
@@ -331,35 +464,10 @@ export default function ChatView({ conv, onRefresh, onForked, projects, onSelect
               }
               toolResults={toolResults}
               tools={conv.tools}
-              onFork={(entryId) =>
-                void conv
-                  .send({ type: 'fork', entryId })
-                  .then((data) => {
-                    onRefresh();
-                    const file = data?.sessionFile as string | undefined;
-                    if (file && onForked) onForked(conv.snapshot?.cwd ?? conv.cwd, file);
-                    else conv.toast(t('forkFailed'), 'error');
-                  })
-                  .catch((err) => conv.reportError(err instanceof Error ? err.message : String(err)))
-              }
-              onOpenFile={(p) => setPreviewPath(p)}
-              onBranch={(entryId) =>
-                void conv
-                  .send({ type: 'branch', entryId })
-                  .then((data) => {
-                    const text = data?.editorText as string | undefined;
-                    if (text) setDraft(text);
-                    else conv.toast(t('branchedHere'));
-                    // branch truncates the conversation; the browser would clamp
-                    // the scroll to the top — bring the composer back into view
-                    atBottomRef.current = true;
-                    requestAnimationFrame(() => {
-                      const el = scrollRef.current;
-                      if (el) el.scrollTop = el.scrollHeight;
-                    });
-                  })
-                  .catch((err) => conv.reportError(err instanceof Error ? err.message : String(err)))
-              }
+              language={language}
+              onFork={handleFork}
+              onOpenFile={handleOpenFile}
+              onBranch={handleBranch}
             />
             {(noticesByMessage.get(messageKeys[i]) ?? []).map((notice) => (
               <TranscriptNoticeView key={notice.id} notice={notice} />
@@ -496,14 +604,16 @@ export default function ChatView({ conv, onRefresh, onForked, projects, onSelect
       {previewPath && (
         <>
           <div className="preview-resize" onMouseDown={startPreviewDrag} />
-          <FilePreview
-            cwd={snap?.cwd ?? conv.cwd}
-            path={previewPath}
-            width={previewWidth}
-            agent={conv.agent}
-            sessionId={snap?.sessionId}
-            onClose={() => setPreviewPath(undefined)}
-          />
+          <Suspense fallback={null}>
+            <FilePreview
+              cwd={snap?.cwd ?? conv.cwd}
+              path={previewPath}
+              width={previewWidth}
+              agent={conv.agent}
+              sessionId={snap?.sessionId}
+              onClose={() => setPreviewPath(undefined)}
+            />
+          </Suspense>
         </>
       )}
       </div>
@@ -512,6 +622,8 @@ export default function ChatView({ conv, onRefresh, onForked, projects, onSelect
     </>
   );
 }
+
+export default memo(ChatView);
 
 function firstUserText(messages: PiiMessage[]): string {
   for (const m of messages) {

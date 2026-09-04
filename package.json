@@ -10,7 +10,7 @@
   ],
   "scripts": {
     "dev": "concurrently -n server,web -c blue,magenta \"npm run dev -w server\" \"npm run dev -w web\"",
-    "build": "npm run build -w web && npm run build -w server",
+    "build": "npm run build -w web && node scripts/compress-web-assets.mjs && npm run build -w server",
     "start": "node server/dist/index.js",
     "test": "npm run test -w server && npm run test -w web",
     "sync-protocol": "node scripts/sync-protocol.mjs",

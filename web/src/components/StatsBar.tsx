@@ -1,4 +1,3 @@
-import { useEffect, useReducer } from 'react';
 import type { Conversation } from '../api';
 import { stripAnsi } from '../api';
 import { t } from '../i18n';
@@ -19,20 +18,12 @@ function fmtDur(ms: number): string {
 
 /** dsh-style trajectory stats bar: rounds · steps | LLM · tool time | TTFT · tok/s | cache hit | tokens | cost | context */
 export default function StatsBar({ conv }: { conv: Conversation }) {
-  const [, force] = useReducer((x: number) => x + 1, 0);
   const streaming = Boolean(conv.snapshot?.isStreaming);
-
-  // 1s ticker while streaming so elapsed/tok-s update live
-  useEffect(() => {
-    if (!streaming) return;
-    const timer = setInterval(force, 1000);
-    return () => clearInterval(timer);
-  }, [streaming]);
 
   const stats = conv.snapshot?.stats;
   const run = conv.runStats;
   const hasRun = run.agentStartedAt !== undefined;
-  if (!stats && !hasRun) return null;
+  if (!stats && !hasRun && Object.keys(conv.statuses).length === 0) return null;
 
   const now = Date.now();
   const parts: string[] = [];

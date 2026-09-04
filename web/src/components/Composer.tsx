@@ -83,7 +83,8 @@ export default function Composer({ conv, draft, onDraft }: Props) {
   const snap = conv.snapshot;
   const streaming = Boolean(snap?.isStreaming);
   const hasPayload = text.trim().length > 0 || images.length > 0;
-  const canSend = hasPayload && !submitPending;
+  const connectionKnownFailed = !conv.connected && Boolean(conv.error);
+  const canSend = hasPayload && !submitPending && !connectionKnownFailed;
 
   const autoResize = () => {
     const ta = taRef.current;
@@ -100,33 +101,46 @@ export default function Composer({ conv, draft, onDraft }: Props) {
     setSubmitPending(true);
     let cleared = false;
     let optimisticKey = -1;
+    let dispatched = false;
+    const slashMatch = value.match(/^\s*\/([^\s/]+)(\s+.*)?$/);
     try {
-      // A new host may need several seconds to load extensions and emit its
-      // first snapshot. Accept the click now and deliver once it is ready.
-      await conv.waitUntilReady();
       clearComposerDraft(draftKey);
       setText('');
       setImages([]);
       cleared = true;
       requestAnimationFrame(autoResize);
 
+      // Show a cold-session prompt immediately while the server finishes
+      // extension/resource initialization. Commands and queued steering stay
+      // non-optimistic because they are not durable chat bubbles.
+      if (!slashMatch && !conv.snapshot?.isStreaming) {
+        optimisticKey = conv.addOptimistic(
+          value,
+          imgs.map(({ data, mimeType }) => ({ data, mimeType })),
+        );
+      }
+      // A new host may need several seconds to load extensions and emit its
+      // first snapshot. Accept the click now and deliver once it is ready.
+      await conv.waitUntilReady();
+
       const activeStreaming = Boolean(conv.snapshot?.isStreaming);
       // optimistic render: show the message now, not after the server round-trip.
       // while streaming the message only enters the queue (steer/followUp) — the
       // queue strip shows it; a premature bubble would double-display it.
-      // a leading "/cmd" is a pi slash command (compact, model, session, extension
-      // commands) — route it to the command executor, not the LLM
-      const slashMatch = value.match(/^\s*\/([^\s/]+)(\s+.*)?$/);
       // Pi executes slash commands outside persisted chat messages. Their
       // non-persisted output is inserted separately into the transcript.
-      optimisticKey = activeStreaming || slashMatch
-        ? -1
-        : conv.addOptimistic(
+      if (activeStreaming && optimisticKey >= 0) {
+        conv.removeOptimistic(optimisticKey);
+        optimisticKey = -1;
+      } else if (!activeStreaming && !slashMatch && optimisticKey < 0) {
+        optimisticKey = conv.addOptimistic(
             value,
             imgs.map(({ data, mimeType }) => ({ data, mimeType })),
           );
+      }
       if (slashMatch) {
         const noticeRevision = conv.transcriptNoticeRevision;
+        dispatched = true;
         const res = await conv.send({ type: 'slash', raw: value });
         const output = (res as { output?: string } | undefined)?.output;
         const notice = commandNoticeFallback(
@@ -139,6 +153,7 @@ export default function Composer({ conv, draft, onDraft }: Props) {
         if (optimisticKey >= 0) conv.removeOptimistic(optimisticKey);
         return;
       }
+      dispatched = true;
       await conv.send({
         type: 'prompt',
         message: value,
@@ -148,10 +163,14 @@ export default function Composer({ conv, draft, onDraft }: Props) {
         streamingBehavior: activeStreaming ? queueMode : undefined,
       });
     } catch (err) {
-      // Session navigation disposes only this browser connection; the host may
-      // already have accepted the prompt. Keep its cached optimistic message
-      // until the fresh session snapshot acknowledges it.
-      if (err instanceof Error && err.message === 'conversation disposed') return;
+      // After dispatch, session navigation may only have disposed this browser
+      // connection; keep the pending bubble until the server echo reconciles it.
+      if (
+        dispatched &&
+        err instanceof Error &&
+        err.message === 'conversation disposed'
+      )
+        return;
       if (optimisticKey >= 0) conv.removeOptimistic(optimisticKey);
       if (cleared) {
         setText((current) => restoreFailedText(current, value));
@@ -247,11 +266,13 @@ export default function Composer({ conv, draft, onDraft }: Props) {
         value={text}
         readOnly={submitPending}
         placeholder={
-          submitPending
-            ? t('connectingSession')
-            : streaming
-              ? t('steerPlaceholder')
-              : t('sendPlaceholder')
+          connectionKnownFailed
+            ? t('disconnected')
+            : submitPending
+              ? t('connectingSession')
+              : streaming
+                ? t('steerPlaceholder')
+                : t('sendPlaceholder')
         }
         onChange={(e) => {
           setText(e.target.value);

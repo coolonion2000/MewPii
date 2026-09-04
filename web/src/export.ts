@@ -1,4 +1,3 @@
-import { zipSync, strToU8 } from 'fflate';
 import type { PiiMessage } from './types';
 
 interface Block {
@@ -115,9 +114,10 @@ function safeName(title: string): string {
 }
 
 /** Export the visible conversation as a self-contained HTML, or a ZIP when images are present. */
-export function exportHtml(title: string, cwd: string, messages: PiiMessage[]): void {
+export async function exportHtml(title: string, cwd: string, messages: PiiMessage[]): Promise<void> {
   const images = collectImages(messages);
   if (images.length > 0) {
+    const { zipSync, strToU8 } = await import('fflate');
     const used = { count: 0 };
     const rows = messages
       .filter((m) => m.role !== 'toolResult')

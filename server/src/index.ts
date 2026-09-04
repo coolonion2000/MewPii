@@ -33,7 +33,6 @@ import {
   DefaultPackageManager,
   ModelRegistry,
   ModelRuntime,
-  SessionManager,
   SettingsManager,
   createAgentSessionServices,
   getAgentDir,
@@ -41,6 +40,11 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { ClientCommand, ProjectGroup, ServerMessage } from "./protocol.js";
 import { SessionHost } from "./session-host.js";
+import { SessionCatalog } from "./session-catalog.js";
+import {
+  isPathInside,
+  selectStaticRepresentation,
+} from "./static-assets.js";
 import { hasRunningSubagentRuns } from "./subagent-activity.js";
 import { resolveToolAuthorizedPreviewPath } from "./file-preview-access.js";
 import {
@@ -218,6 +222,15 @@ function requireAuth(req: IncomingMessage, res: ServerResponse): boolean {
 // ---------------------------------------------------------------------------
 const hosts = new Map<string, SessionHost>();
 const hostCreations = new Map<string, Promise<SessionHost>>();
+type HostPreviewListener = (
+  snapshot: import("./protocol").SessionSnapshot,
+) => void | Promise<void>;
+interface HostCreationPreviewState {
+  latest?: import("./protocol").SessionSnapshot;
+  listeners: Set<HostPreviewListener>;
+}
+const hostCreationPreviews = new Map<string, HostCreationPreviewState>();
+const sessionCatalog = new SessionCatalog();
 
 function removeHost(host: SessionHost): void {
   for (const [key, current] of hosts) {
@@ -301,6 +314,7 @@ async function reindexHost(
 async function acquireHost(
   cwd: string,
   sessionPath?: string,
+  onPreview?: HostPreviewListener,
 ): Promise<SessionHost> {
   if (options.uiOnly)
     throw new Error("ui-only mode: connect an agent to use conversations");
@@ -321,13 +335,35 @@ async function acquireHost(
         return host;
     }
     const pending = hostCreations.get(fileKey);
-    if (pending) return pending;
+    if (pending) {
+      const previewState = hostCreationPreviews.get(fileKey);
+      if (onPreview && previewState) {
+        previewState.listeners.add(onPreview);
+        if (previewState.latest) await onPreview(previewState.latest);
+      }
+      return pending;
+    }
   }
 
   const key = fileKey ?? `new:${normalizedCwd}:${crypto.randomUUID()}`;
+  const previewState: HostCreationPreviewState | undefined = fileKey
+    ? {
+        listeners: new Set(onPreview ? [onPreview] : []),
+      }
+    : undefined;
+  if (fileKey && previewState) hostCreationPreviews.set(fileKey, previewState);
+  const publishPreview: HostPreviewListener | undefined = previewState
+    ? async (snapshot) => {
+        previewState.latest = snapshot;
+        await Promise.allSettled(
+          [...previewState.listeners].map((listener) => listener(snapshot)),
+        );
+      }
+    : onPreview;
   const creation = SessionHost.create(key, {
     cwd: normalizedCwd,
     sessionPath: normalizedSession,
+    onPreview: publishPreview,
     onEmpty: removeHost,
     onSessionChanged: reindexHost,
     hasBackgroundWork: (activeHost) =>
@@ -346,6 +382,8 @@ async function acquireHost(
   } finally {
     if (fileKey && hostCreations.get(fileKey) === creation)
       hostCreations.delete(fileKey);
+    if (fileKey && hostCreationPreviews.get(fileKey) === previewState)
+      hostCreationPreviews.delete(fileKey);
   }
 }
 
@@ -914,10 +952,15 @@ function exec(cmd: string, args: string[], cwd: string): Promise<string> {
 }
 
 async function knownWorkspaceRoots(): Promise<string[]> {
-  const listed = await SessionManager.listAll();
+  const { sessions: listed } = await sessionCatalog.snapshot(sessionsVersion);
   return [
     ...new Set([
-      ...listed.map((session) => session.cwd).filter(Boolean),
+      // A cached, deleted session must not keep an external workspace trusted
+      // until the watcher or TTL refreshes the catalog.
+      ...listed
+        .filter((session) => existsSync(session.path))
+        .map((session) => session.cwd)
+        .filter(Boolean),
       ...[...hosts.values()].map((host) => host.cwd),
     ]),
   ];
@@ -933,17 +976,16 @@ async function trustedSessionPath(input: string): Promise<string> {
     .find((path) => resolve(path) === absolute);
   if (!requested && liveOwnedPath) return absolute;
   if (!requested) throw new Error("session not found");
-  const listed = await SessionManager.listAll();
-  const known = new Set([
-    ...listed.map((session) => session.path),
-    ...[...hosts.values()]
-      .map((host) => host.session.sessionFile)
-      .filter((path): path is string => Boolean(path)),
-  ]);
-  for (const path of known) {
-    const canonical = await realpath(path).catch(() => undefined);
-    if (canonical === requested) return requested;
-  }
+  const livePaths = [...hosts.values()]
+    .map((host) => host.session.sessionFile)
+    .filter((path): path is string => Boolean(path));
+  const liveCanonical = await Promise.all(
+    livePaths.map((path) => realpath(path).catch(() => undefined)),
+  );
+  if (liveCanonical.includes(requested)) return requested;
+
+  const catalog = await sessionCatalog.snapshot(sessionsVersion);
+  if (catalog.canonicalPaths.has(requested)) return requested;
   throw new Error("session path is not managed by pi");
 }
 
@@ -1046,36 +1088,60 @@ async function serveStatic(
   req: IncomingMessage,
   res: ServerResponse,
 ): Promise<void> {
+  const sendFile = (file: string, cache: string): void => {
+    const representation = selectStaticRepresentation(
+      file,
+      req.headers["accept-encoding"],
+    );
+    const headers: Record<string, string> = {
+      "Content-Type": MIME[extname(file)] ?? "application/octet-stream",
+      "Cache-Control": cache,
+    };
+    if (representation.varyAcceptEncoding)
+      headers.Vary = "Accept-Encoding";
+    if (representation.notAcceptable) {
+      res.writeHead(406, { Vary: "Accept-Encoding" });
+      res.end();
+      return;
+    }
+    if (representation.encoding)
+      headers["Content-Encoding"] = representation.encoding;
+    res.writeHead(200, headers);
+    if (req.method === "HEAD") {
+      res.end();
+      return;
+    }
+    createReadStream(representation.path).pipe(res);
+  };
   const url = new URL(req.url ?? "/", "http://localhost");
   let pathname = decodeURIComponent(url.pathname);
   if (pathname === "/") pathname = "/index.html";
   const file = normalize(join(WEB_DIST, pathname));
   if (
-    !file.startsWith(WEB_DIST) ||
+    !isPathInside(WEB_DIST, file) ||
     !existsSync(file) ||
     !(await stat(file)).isFile()
   ) {
+    // Missing fingerprinted/static resources must be a real 404, not a 200
+    // HTML shell that browsers then reject under the requested MIME type.
+    const requestedExtension = extname(pathname).toLowerCase();
+    if (pathname.startsWith("/assets/") || MIME[requestedExtension]) {
+      sendJson(res, 404, { error: "not found" });
+      return;
+    }
     // SPA fallback
     const index = join(WEB_DIST, "index.html");
     if (existsSync(index)) {
-      res.writeHead(200, {
-        "Content-Type": "text/html; charset=utf-8",
-        "Cache-Control": "no-cache",
-      });
-      res.end(await readFile(index));
+      sendFile(index, "no-cache");
       return;
     }
     sendJson(res, 404, { error: "not found" });
     return;
   }
-  const cache = /index-[A-Za-z0-9_-]+\.(js|css)$/.test(file)
+  const cache = /-[A-Za-z0-9_-]{8,}\.(js|css)$/.test(file)
     ? "public, max-age=31536000, immutable"
     : "no-cache";
-  res.writeHead(200, {
-    "Content-Type": MIME[extname(file)] ?? "application/octet-stream",
-    "Cache-Control": cache,
-  });
-  createReadStream(file).pipe(res);
+  sendFile(file, cache);
 }
 
 // ---------------------------------------------------------------------------
@@ -1099,7 +1165,7 @@ async function handleApi(
       sendJson(res, 400, { error: "missing id" });
       return true;
     }
-    const all = await SessionManager.listAll();
+    const { sessions: all } = await sessionCatalog.snapshot(sessionsVersion);
     const match = all.find(
       (s) => s.id === id || s.id.startsWith(id) || id.startsWith(s.id),
     );
@@ -1113,33 +1179,7 @@ async function handleApi(
 
   if (path === "/api/runs" && req.method === "GET") {
     const runs = [...hosts.values()]
-      .map((h) => {
-        const s = h.session;
-        const snap = h.snapshot();
-        const firstUser = snap.messages.find((m) => m.role === "user");
-        const firstText = firstUser
-          ? typeof firstUser.content === "string"
-            ? firstUser.content
-            : Array.isArray(firstUser.content)
-              ? ((firstUser.content as { type?: string; text?: string }[]).find(
-                  (b) => b.type === "text",
-                )?.text ?? "")
-              : ""
-          : "";
-        return {
-          sessionFile: s.sessionFile,
-          cwd: h.cwd,
-          title: s.sessionName || firstText.slice(0, 60) || "(新会话)",
-          model: s.model ? `${s.model.provider}/${s.model.id}` : undefined,
-          modelName: s.model?.name,
-          startedAt: h.runStartedAt ?? null,
-          isStreaming: s.isStreaming,
-          queued:
-            h.snapshot().queue.steering.length +
-            h.snapshot().queue.followUp.length,
-          active: h.activeExecutions,
-        };
-      })
+      .map((host) => host.runView())
       .sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0));
     sendJson(res, 200, { runs });
     return true;
@@ -1387,7 +1427,9 @@ async function handleApi(
     );
     const state = await readState();
     const archivedSet = new Set(state.archived);
-    const all = await SessionManager.listAll();
+    // Clone because live, not-yet-flushed hosts are appended below; the shared
+    // catalog itself stays immutable for concurrent consumers.
+    const all = [...(await sessionCatalog.snapshot(sessionsVersion)).sessions];
     // pi defers writing a new session file until the first assistant reply —
     // merge live hosts so not-yet-flushed sessions appear in the sidebar now.
     const known = new Set(all.map((s) => s.path));
@@ -2642,7 +2684,16 @@ const server = createServer((req, res) => {
 server.once("close", disposeOAuthFlows);
 process.once("exit", disposeOAuthFlows);
 
-const wss = new WebSocketServer({ noServer: true });
+const wss = new WebSocketServer({
+  noServer: true,
+  perMessageDeflate: {
+    threshold: 1024,
+    concurrencyLimit: 4,
+    clientNoContextTakeover: true,
+    serverNoContextTakeover: true,
+    zlibDeflateOptions: { level: 4 },
+  },
+});
 
 /** Browsers must not open cross-site WebSockets to us (CSWSH). */
 server.on("upgrade", (req, socket, head) => {
@@ -2698,14 +2749,17 @@ wss.on("connection", (ws: WebSocket, _req: IncomingMessage, url: URL) => {
   attachWebSocketHeartbeat(ws);
   const cwd = url.searchParams.get("cwd");
   const sessionPath = url.searchParams.get("session") ?? undefined;
+  const supportsReadyDelta = url.searchParams.get("snapshotDelta") === "1";
   if (!cwd) {
     ws.close(4000, "missing cwd");
     return;
   }
 
   let host: SessionHost | undefined;
+  let preview: import("./protocol").SessionSnapshot | undefined;
   const waitingCommands: (ClientCommand & { id?: string })[] = [];
   let drainingInitialization = true;
+  let readinessDrain: Promise<void> | undefined;
 
   const sendCommandResult = (
     id: string | undefined,
@@ -2743,12 +2797,65 @@ wss.on("connection", (ws: WebSocket, _req: IncomingMessage, url: URL) => {
     }
     drainingInitialization = false;
   };
+  const failWaitingCommands = (cause: unknown): void => {
+    const error = `session initialization failed: ${cause instanceof Error ? cause.message : String(cause)}`;
+    for (const command of waitingCommands.splice(0))
+      sendCommandResult(command.id, { ok: false, error });
+    drainingInitialization = false;
+  };
+  const scheduleReadinessDrain = (): void => {
+    if (!host || readinessDrain) return;
+    drainingInitialization = true;
+    const run = (async () => {
+      // newSession can enter a second binding cycle after the connection's
+      // initial drain. Always follow the host's current readiness promise so
+      // commands queued during any rebind cannot be stranded indefinitely.
+      while (host && !host.isReady) await host.whenReady();
+      await drainInitialization();
+    })();
+    const tracked = run
+      .catch(failWaitingCommands)
+      .finally(() => {
+        if (readinessDrain === tracked) readinessDrain = undefined;
+        if (waitingCommands.length > 0) scheduleReadinessDrain();
+      });
+    readinessDrain = tracked;
+  };
 
-  acquireHost(cwd, sessionPath)
+  acquireHost(cwd, sessionPath, (snapshot) => {
+    preview = snapshot;
+    if (ws.readyState !== ws.OPEN) return;
+    const wire = JSON.stringify({
+      type: "snapshot",
+      snapshot,
+    } satisfies ServerMessage);
+    return new Promise<void>((resolvePromise) => {
+      let settled = false;
+      const finish = (delivery: "sent" | "closed" | "timeout") => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        ws.off("close", onClose);
+        process.stdout.write(
+          `[session] preview_delivery session_id=${JSON.stringify(snapshot.sessionId)} snapshot_bytes=${Buffer.byteLength(wire)} status=${delivery}\n`,
+        );
+        resolvePromise();
+      };
+      const onClose = () => finish("closed");
+      const timeout = setTimeout(() => finish("timeout"), 100);
+      timeout.unref();
+      ws.once("close", onClose);
+      try {
+        ws.send(wire, () => finish("sent"));
+      } catch {
+        finish("closed");
+      }
+    });
+  })
     .then((h) => {
-      h.attach(ws); // snapshot is always the first host message
       host = h;
-      void drainInitialization();
+      h.attach(ws, preview, supportsReadyDelta);
+      scheduleReadinessDrain();
       if (ws.readyState !== ws.OPEN) h.detach(ws);
     })
     .catch((err) => {
@@ -2776,9 +2883,24 @@ wss.on("connection", (ws: WebSocket, _req: IncomingMessage, url: URL) => {
       cmd.type === "steer" ||
       cmd.type === "followUp" ||
       cmd.type === "queue_clear";
-    if (host && (mayBypassInitializationDrain || !drainingInitialization)) {
+    const mayBypassReadiness =
+      cmd.type === "abort" ||
+      cmd.type === "history" ||
+      cmd.type === "ui_response" ||
+      cmd.type === "custom_ui_input" ||
+      cmd.type === "custom_ui_resize" ||
+      cmd.type === "custom_ui_cancel";
+    if (
+      host &&
+      (mayBypassReadiness ||
+        (host.isReady &&
+          (mayBypassInitializationDrain || !drainingInitialization)))
+    ) {
       void processCommand(cmd);
-    } else if (waitingCommands.length < 100) waitingCommands.push(cmd);
+    } else if (waitingCommands.length < 100) {
+      waitingCommands.push(cmd);
+      if (host && !host.isReady) scheduleReadinessDrain();
+    }
     else sendCommandResult(cmd.id, { ok: false, error: "session initialization queue is full" });
   });
 
@@ -2828,6 +2950,7 @@ function gracefulShutdown(exitCode: number, reason: string): Promise<void> {
     }
     hosts.clear();
     hostCreations.clear();
+    hostCreationPreviews.clear();
     disposeOAuthFlows();
     await Promise.allSettled([...allHosts].map((host) => host.dispose()));
     await Promise.race([

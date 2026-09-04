@@ -43,34 +43,73 @@ export default function SubagentRunDialog({ runId, onClose, onOpenParent }: {
 }) {
   const [detail, setDetail] = useState<RunDetail>();
   const [now, setNow] = useState(Date.now());
+  const running = Boolean(detail && !isTerminalRun(detail.state, detail.alive));
   useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(t);
-  }, []);
+    if (!running) return;
+    let tick: ReturnType<typeof setTimeout> | undefined;
+    const schedule = () => {
+      clearTimeout(tick);
+      if (document.hidden) return;
+      tick = setTimeout(() => {
+        setNow(Date.now());
+        schedule();
+      }, 1000);
+    };
+    const onVisibility = () => {
+      if (!document.hidden) setNow(Date.now());
+      schedule();
+    };
+    schedule();
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      clearTimeout(tick);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [running]);
 
   useEffect(() => {
     let mounted = true;
+    let terminal = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let controller: AbortController | undefined;
+    let generation = 0;
     const load = async (): Promise<void> => {
-      controller = new AbortController();
+      if (!mounted || document.hidden || terminal) return;
+      const request = new AbortController();
+      const currentGeneration = ++generation;
+      controller = request;
       try {
-        const response = await fetch(`/api/subagent-run?runId=${encodeURIComponent(runId)}`, { signal: controller.signal });
+        const response = await fetch(`/api/subagent-run?runId=${encodeURIComponent(runId)}`, { signal: request.signal });
         if (!response.ok) throw new Error(String(response.status));
         const next = (await response.json()) as RunDetail;
-        if (!mounted) return;
+        if (!mounted || currentGeneration !== generation) return;
         setDetail(next);
-        if (isTerminalRun(next.state, next.alive)) return;
+        terminal = isTerminalRun(next.state, next.alive);
+        if (terminal) return;
       } catch {
-        if (!mounted || controller.signal.aborted) return;
+        if (!mounted || request.signal.aborted) return;
       }
-      if (mounted) timer = setTimeout(() => void load(), 3000);
+      if (mounted && currentGeneration === generation && !document.hidden)
+        timer = setTimeout(() => void load(), 3000);
+    };
+    const onVisibility = () => {
+      clearTimeout(timer);
+      if (document.hidden) {
+        generation++;
+        controller?.abort();
+      } else {
+        setNow(Date.now());
+        void load();
+      }
     };
     void load();
+    document.addEventListener('visibilitychange', onVisibility);
     return () => {
       mounted = false;
+      generation++;
       clearTimeout(timer);
       controller?.abort();
+      document.removeEventListener('visibilitychange', onVisibility);
     };
   }, [runId]);
 

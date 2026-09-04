@@ -30,6 +30,20 @@ const VIEWS = new Set<AppView>([
   "settings",
 ]);
 
+export function reconcileReadyPaging(
+  current: Pick<SessionSnapshot, "pagingProvisional">,
+  historyFrom: number,
+  totalMessages: number,
+  ready: Pick<SessionSnapshot, "historyFrom" | "totalMessages">,
+): { historyFrom: number; totalMessages: number } {
+  return current.pagingProvisional === true
+    ? {
+        historyFrom: ready.historyFrom,
+        totalMessages: ready.totalMessages,
+      }
+    : { historyFrom, totalMessages };
+}
+
 export function parseAppRoute(path: string, hash = ""): AppRoute {
   const legacy = hash.match(/^#\/([a-z]+)(?:\?(.+))?$/);
   if (legacy) {
@@ -90,6 +104,13 @@ export function acceptsGeneration(
   aborted: boolean,
 ): boolean {
   return !aborted && current === candidate;
+}
+
+/** Old servers omit initializing; only an explicit true means not ready yet. */
+export function isSessionSnapshotReady(
+  snapshot: Pick<SessionSnapshot, "initializing"> | undefined,
+): boolean {
+  return Boolean(snapshot) && snapshot?.initializing !== true;
 }
 
 export function parseStoredStringArray(value: string | null): string[] {
@@ -184,6 +205,39 @@ export function dedupeLatestByKey<T extends { key: string }>(
   return [...byKey.values()];
 }
 
+/** Preserve React state identity when a polled ordered string list is unchanged. */
+export function sameOrderedStrings(
+  previous: readonly string[],
+  next: readonly string[],
+): boolean {
+  return (
+    previous.length === next.length &&
+    previous.every((value, index) => value === next[index])
+  );
+}
+
+export interface SessionCatalogRefreshState {
+  messageCount: number;
+  isStreaming?: boolean;
+  sessionFile?: string;
+}
+
+/**
+ * The first snapshot hydrates an already-listed session and must not immediately
+ * refetch the catalog. Later lifecycle changes can make its sidebar row stale.
+ */
+export function shouldRefreshSessionCatalog(
+  previous: SessionCatalogRefreshState | undefined,
+  next: SessionCatalogRefreshState | undefined,
+): boolean {
+  if (!previous || !next) return false;
+  return (
+    (previous.isStreaming === true && next.isStreaming === false) ||
+    (previous.messageCount === 0 && next.messageCount > 0) ||
+    (Boolean(next.sessionFile) && next.sessionFile !== previous.sessionFile)
+  );
+}
+
 export interface TranscriptNotice {
   id: number;
   message: string;
@@ -194,16 +248,58 @@ export interface TranscriptNotice {
 /** Stable-enough anchor for inserting non-persisted Pi status text into the transcript. */
 export function messageTimelineKey(message: PiiMessage, index: number): string {
   if (message._entryId) return `entry:${message._entryId}`;
-  const timestamp = (message as { timestamp?: unknown }).timestamp;
-  if (typeof timestamp === "number" || typeof timestamp === "string") {
-    return `time:${message.role}:${String(timestamp)}`;
-  }
   const id = (message as { id?: unknown; toolCallId?: unknown }).id ??
     (message as { toolCallId?: unknown }).toolCallId;
   if (typeof id === "string" || typeof id === "number") {
     return `id:${message.role}:${String(id)}`;
   }
+  const timestamp = (message as { timestamp?: unknown }).timestamp;
+  if (typeof timestamp === "number" || typeof timestamp === "string") {
+    return `time:${message.role}:${String(timestamp)}`;
+  }
   return `index:${index}:${message.role}`;
+}
+
+/** React keys stay stable for persisted messages and disambiguate rare transient collisions. */
+export function uniqueMessageTimelineKeys(
+  messages: readonly PiiMessage[],
+): string[] {
+  const occurrences = new Map<string, number>();
+  return messages.map((message, index) => {
+    const base = messageTimelineKey(message, index);
+    const occurrence = occurrences.get(base) ?? 0;
+    occurrences.set(base, occurrence + 1);
+    return occurrence === 0 ? base : `${base}:occurrence:${occurrence}`;
+  });
+}
+
+/**
+ * Decide whether an incoming finalized message upgrades the same last row.
+ * Prefer durable/direct IDs; timestamps are only a fallback when neither side
+ * exposes a direct message/tool identity.
+ */
+export function sameMessageTimelineIdentity(
+  previous: PiiMessage,
+  next: PiiMessage,
+): boolean {
+  if (previous.role !== next.role) return false;
+  if (previous._entryId && next._entryId)
+    return previous._entryId === next._entryId;
+  const previousId =
+    (previous as { id?: unknown }).id ??
+    (previous as { toolCallId?: unknown }).toolCallId;
+  const nextId =
+    (next as { id?: unknown }).id ??
+    (next as { toolCallId?: unknown }).toolCallId;
+  if (previousId !== undefined || nextId !== undefined)
+    return (
+      previousId !== undefined &&
+      nextId !== undefined &&
+      String(previousId) === String(nextId)
+    );
+  const previousTimestamp = (previous as { timestamp?: unknown }).timestamp;
+  const nextTimestamp = (next as { timestamp?: unknown }).timestamp;
+  return nextTimestamp !== undefined && previousTimestamp === nextTimestamp;
 }
 
 /**
@@ -255,6 +351,49 @@ export function conversationSnapshotCacheKey(
   return sessionPath ? `${agent ?? "local"}|${cwd}|${sessionPath}` : undefined;
 }
 
+/** Cache only under the session path reported by the current host snapshot. */
+export function conversationStateCacheKeys(
+  agent: string | undefined,
+  cwd: string,
+  _requestedSessionPath: string | undefined,
+  snapshotSessionPath: string | undefined,
+): string[] {
+  const key = conversationSnapshotCacheKey(agent, cwd, snapshotSessionPath);
+  return key ? [key] : [];
+}
+
+/** Keep the cached snapshot queue and its mutation token in one atomic state. */
+export function synchronizeSnapshotQueue(
+  snapshot: SessionSnapshot,
+  queue: { steering: string[]; followUp: string[] },
+  queueCapabilities?: SessionSnapshot["queueCapabilities"],
+): SessionSnapshot {
+  return {
+    ...snapshot,
+    queue: {
+      steering: [...queue.steering],
+      followUp: [...queue.followUp],
+    },
+    queueCapabilities: queueCapabilities ?? snapshot.queueCapabilities,
+  };
+}
+
+/** Refresh one entry and evict the least-recently-used entries above capacity. */
+export function setLruMapEntry<K, V>(
+  cache: Map<K, V>,
+  key: K,
+  value: V,
+  capacity: number,
+): void {
+  cache.delete(key);
+  cache.set(key, value);
+  while (cache.size > Math.max(0, capacity)) {
+    const oldest = cache.keys().next().value as K | undefined;
+    if (oldest === undefined) break;
+    cache.delete(oldest);
+  }
+}
+
 /** Normalize an allowed rename and fail closed while the session is running. */
 export function normalizeSessionRename(
   draft: string,
@@ -293,13 +432,28 @@ function messageText(message: PiiMessage): string {
  * Keep locally submitted messages while a returned snapshot is still stale.
  * Once totalMessages advances, only the newly-added tail may acknowledge them.
  */
-export function reconcileOptimisticMessages<
+export interface OptimisticReconciliation<T> {
+  remaining: T[];
+  matches: { pendingIndex: number; finalizedIndex: number }[];
+}
+
+/** Reconcile pending rows and expose exact matches so transient anchors can migrate. */
+export function reconcileOptimisticMessageState<
   T extends { text: string; baseTotalMessages: number },
->(optimistic: readonly T[], finalized: PiiMessage[], totalMessages: number): T[] {
+>(
+  optimistic: readonly T[],
+  finalized: PiiMessage[],
+  totalMessages: number,
+): OptimisticReconciliation<T> {
   const consumed = new Set<number>();
-  return optimistic.filter((pending) => {
+  const remaining: T[] = [];
+  const matches: { pendingIndex: number; finalizedIndex: number }[] = [];
+  optimistic.forEach((pending, pendingIndex) => {
     const added = Math.max(0, totalMessages - pending.baseTotalMessages);
-    if (added === 0) return true;
+    if (added === 0) {
+      remaining.push(pending);
+      return;
+    }
     const start = Math.max(0, finalized.length - added);
     const match = finalized.findIndex((message, index) =>
       index >= start &&
@@ -307,10 +461,65 @@ export function reconcileOptimisticMessages<
       message.role === "user" &&
       messageText(message) === pending.text,
     );
-    if (match === -1) return true;
+    if (match === -1) {
+      remaining.push(pending);
+      return;
+    }
     consumed.add(match);
-    return false;
+    matches.push({ pendingIndex, finalizedIndex: match });
   });
+  return { remaining, matches };
+}
+
+export function reconcileOptimisticMessages<
+  T extends { text: string; baseTotalMessages: number },
+>(optimistic: readonly T[], finalized: PiiMessage[], totalMessages: number): T[] {
+  return reconcileOptimisticMessageState(
+    optimistic,
+    finalized,
+    totalMessages,
+  ).remaining;
+}
+
+/** Move notices only between identities proven to represent the same message. */
+export function reanchorTranscriptNotices(
+  notices: readonly TranscriptNotice[],
+  replacements: readonly { from: string; to: string }[],
+): TranscriptNotice[] {
+  if (replacements.length === 0) return [...notices];
+  const byOldKey = new Map(replacements.map(({ from, to }) => [from, to]));
+  return notices.map((notice) => {
+    const replacement = notice.afterMessageKey
+      ? byOldKey.get(notice.afterMessageKey)
+      : undefined;
+    return replacement
+      ? { ...notice, afterMessageKey: replacement }
+      : notice;
+  });
+}
+
+/** Detect timestamp-backed messages upgraded to persisted entry identities. */
+export function timestampAnchorReplacements(
+  previous: readonly PiiMessage[],
+  finalized: readonly PiiMessage[],
+): { from: string; to: string }[] {
+  const consumed = new Set<number>();
+  const replacements: { from: string; to: string }[] = [];
+  previous.forEach((message, previousIndex) => {
+    const timestamp = (message as { timestamp?: unknown }).timestamp;
+    if (timestamp === undefined) return;
+    const match = finalized.findIndex((candidate, finalizedIndex) =>
+      !consumed.has(finalizedIndex) &&
+      candidate.role === message.role &&
+      (candidate as { timestamp?: unknown }).timestamp === timestamp,
+    );
+    if (match === -1) return;
+    consumed.add(match);
+    const from = messageTimelineKey(message, previousIndex);
+    const to = messageTimelineKey(finalized[match], match);
+    if (from !== to) replacements.push({ from, to });
+  });
+  return replacements;
 }
 
 function entryId(message: PiiMessage): string | undefined {

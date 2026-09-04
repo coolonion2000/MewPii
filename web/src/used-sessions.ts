@@ -19,7 +19,20 @@ function emit(): void {
 
 export function addUsedSession(s: Omit<UsedSession, 'at'>): void {
   const key = (s.sessionPath ?? '') + '|' + s.cwd;
-  used = [{ ...s, at: Date.now() }, ...used.filter((u) => (u.sessionPath ?? '') + '|' + u.cwd !== key)].slice(0, 20);
+  const existingIndex = used.findIndex(
+    (item) => (item.sessionPath ?? '') + '|' + item.cwd === key,
+  );
+  const existing = existingIndex >= 0 ? used[existingIndex] : undefined;
+  if (
+    existingIndex === 0 &&
+    existing?.sessionId === s.sessionId &&
+    existing?.title === s.title
+  )
+    return;
+  used = [
+    { ...s, at: Date.now() },
+    ...used.filter((item) => (item.sessionPath ?? '') + '|' + item.cwd !== key),
+  ].slice(0, 20);
   emit();
 }
 

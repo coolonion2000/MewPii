@@ -17,8 +17,8 @@ export default function ModelsPanel() {
   const [newProvider, setNewProvider] = useState({ id: '', name: '', baseUrl: '', api: 'openai-completions', apiKey: '', models: '' });
   const [addError, setAddError] = useState<string>();
 
-  const refresh = () => {
-    fetchModels()
+  const refresh = (force = false) => {
+    fetchModels(force)
       .then((d) => {
         setData(d);
         setError(undefined);
@@ -45,7 +45,7 @@ export default function ModelsPanel() {
       setNotice(body.runtimeOnly ? `${provider}: ${t('keySaved')} (runtime only)` : `${provider}: ${t('keySaved')}`);
       setEditingKey(false);
       setKeyDraft('');
-      refresh();
+      refresh(true);
     } else {
       setNotice(body.error ?? 'failed');
     }
@@ -68,7 +68,7 @@ export default function ModelsPanel() {
       );
       setNotice(outcome.notice);
       if (!outcome.ok) return;
-      refresh();
+      refresh(true);
     } catch (cause) {
       setNotice(cause instanceof Error ? cause.message : String(cause));
     }
@@ -108,7 +108,7 @@ export default function ModelsPanel() {
       setAddingProvider(false);
       setAddError(undefined);
       setNewProvider({ id: '', name: '', baseUrl: '', api: 'openai-completions', apiKey: '', models: '' });
-      refresh();
+      refresh(true);
     } else {
       setAddError(d.error ?? 'failed');
     }
@@ -259,7 +259,7 @@ export default function ModelsPanel() {
           providerName={data?.providers.find((p) => p.id === oauthProvider)?.name ?? oauthProvider}
           onClose={(success) => {
             setOauthProvider(undefined);
-            if (success) refresh();
+            if (success) refresh(true);
           }}
         />
       )}

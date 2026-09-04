@@ -171,6 +171,34 @@ test("detached sessions stay alive until parent and background work finish", asy
   await verifyRetention({ parentRunning: false, backgroundRunning: true });
 });
 
+test("detached host is removed and its rejection is contained when dispose fails", async () => {
+  let emptyCalls = 0;
+  const host = new SessionHost(
+    "rejecting-dispose",
+    {
+      session: { isStreaming: false },
+      dispose: async () => {
+        throw new Error("dispose failed");
+      },
+    },
+    {},
+    () => {
+      emptyCalls += 1;
+    },
+    undefined,
+    undefined,
+    5,
+    5,
+  );
+
+  host.detach({});
+  await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
+  assert.equal(emptyCalls, 1, "failed dispose left the host indexed");
+  const result = await host.handleOrdered({ type: "queue_clear" });
+  assert.equal(result.ok, false);
+  assert.match(result.error, /disposed/);
+});
+
 test("SessionHost orders newSession, setModel and prompt across socket callers", async () => {
   const host = new SessionHost(
     "ordered",
@@ -316,6 +344,31 @@ test("prompt admission releases the mutation lane for live queue operations", as
 
   releasePrompt();
   await promptFinished;
+  await host.dispose();
+});
+
+test("streaming slash enqueue publishes a settled queue snapshot", async () => {
+  const events = [];
+  const session = {
+    isStreaming: true,
+    prompt: async (_text, options) => {
+      assert.equal(options.streamingBehavior, "steer");
+      events.push("queue-stable");
+    },
+  };
+  const host = new SessionHost(
+    "streaming-slash",
+    { session, dispose: async () => undefined },
+    {},
+  );
+  host.slashCommands = () => [
+    { name: "template", source: "prompt", description: "test" },
+  ];
+  host.broadcastSnapshot = () => events.push("snapshot");
+
+  const result = await host.runSlash("/template argument");
+  assert.equal(result.ok, true);
+  assert.deepEqual(events, ["queue-stable", "snapshot"]);
   await host.dispose();
 });
 
@@ -842,9 +895,28 @@ test("session single-flight, init buffering, rebind index and watcher", {
       );
     });
 
-    const [snap1, snap2] = await Promise.all([
+    const [firstSnapshot1, firstSnapshot2] = await Promise.all([
       inbox1.waitFor((message) => message.type === "snapshot"),
       inbox2.waitFor((message) => message.type === "snapshot"),
+    ]);
+    assert.equal(
+      [firstSnapshot1, firstSnapshot2].some(
+        (message) => message.snapshot.initializing === true,
+      ),
+      true,
+      "single-flight creation did not publish an initializing preview",
+    );
+    const [snap1, snap2] = await Promise.all([
+      inbox1.waitFor(
+        (message) =>
+          (message.type === "snapshot" || message.type === "session_ready") &&
+          message.snapshot.initializing !== true,
+      ),
+      inbox2.waitFor(
+        (message) =>
+          (message.type === "snapshot" || message.type === "session_ready") &&
+          message.snapshot.initializing !== true,
+      ),
     ]);
     assert.equal(
       snap1.snapshot.sessionId,
@@ -978,7 +1050,7 @@ test("session single-flight, init buffering, rebind index and watcher", {
     assert.equal(queueRemove.ok, true, queueRemove.error);
     assert.equal(queueRemove.data.removed, "queue integration item");
 
-    const entryId = snap1.snapshot.messages[0]?._entryId;
+    const entryId = firstSnapshot1.snapshot.messages[0]?._entryId;
     assert.ok(entryId, "seed entry missing");
     ws1.send(JSON.stringify({ id: "fork-1", type: "fork", entryId }));
     const forkResult = await inbox1.waitFor(

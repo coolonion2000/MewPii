@@ -1,4 +1,10 @@
 import { statSync, watch, type FSWatcher } from "node:fs";
+import {
+  open as openFile,
+  stat as statFile,
+  type FileHandle,
+} from "node:fs/promises";
+import { createHash } from "node:crypto";
 import type { WebSocket } from "ws";
 import {
   createAgentSessionFromServices,
@@ -11,6 +17,7 @@ import {
   type AgentSessionEvent,
   type AgentSessionRuntime,
   type CreateAgentSessionRuntimeFactory,
+  type Extension,
   type ExtensionUIContext,
 } from "@earendil-works/pi-coding-agent";
 import {
@@ -32,6 +39,201 @@ import type {
   WidgetState,
 } from "./protocol.js";
 import { SessionQueueAdapter } from "./queue-adapter.js";
+
+export const SESSION_HISTORY_MAX_MESSAGES = 50;
+export const SESSION_HISTORY_MAX_BYTES = 256 * 1024;
+
+const SESSION_PREVIEW_READ_CHUNK_BYTES = 128 * 1024;
+const SESSION_PREVIEW_MAX_SCAN_BYTES = 4 * 1024 * 1024;
+const SESSION_PREVIEW_MAX_HEADER_BYTES = 1024 * 1024;
+
+const SLOW_EXTENSION_HANDLER_MS = 500;
+const SLOW_BIND_MS = 1_000;
+const SLOW_SNAPSHOT_MS = 25;
+
+type SessionLogValue = string | number | boolean | null | undefined;
+
+interface WatchedFileStamp {
+  size: number;
+  mtimeMs: number;
+  ctimeMs: number;
+  ino: number;
+}
+
+function watchedFileStamp(file: string): WatchedFileStamp {
+  const value = statSync(file);
+  return {
+    size: value.size,
+    mtimeMs: value.mtimeMs,
+    ctimeMs: value.ctimeMs,
+    ino: value.ino,
+  };
+}
+
+function sameWatchedFileStamp(
+  left: WatchedFileStamp,
+  right: WatchedFileStamp,
+): boolean {
+  return (
+    left.size === right.size &&
+    left.mtimeMs === right.mtimeMs &&
+    left.ctimeMs === right.ctimeMs &&
+    left.ino === right.ino
+  );
+}
+
+function elapsedMs(startedAt: number): number {
+  return Math.max(0, Math.round((performance.now() - startedAt) * 10) / 10);
+}
+
+function logStage(
+  key: string,
+  stage: string,
+  startedAt: number,
+  fields: Record<string, SessionLogValue> = {},
+): void {
+  const suffix = Object.entries(fields)
+    .filter(([, value]) => value !== undefined)
+    .map(([name, value]) =>
+      `${name}=${typeof value === "string" ? JSON.stringify(value) : String(value)}`,
+    )
+    .join(" ");
+  process.stdout.write(
+    `[session] stage_complete key=${JSON.stringify(key)} stage=${stage} duration_ms=${elapsedMs(startedAt)}${suffix ? ` ${suffix}` : ""}\n`,
+  );
+}
+
+function messageBytes(message: Record<string, unknown>): number {
+  try {
+    return Buffer.byteLength(JSON.stringify(message));
+  } catch {
+    return SESSION_HISTORY_MAX_BYTES;
+  }
+}
+
+function normalizedMessage(
+  message: Record<string, unknown>,
+  entryId?: string,
+): Record<string, unknown> {
+  // Never mutate SDK-owned branch objects while normalizing legacy bare
+  // string blocks for the wire protocol.
+  const content = Array.isArray(message.content)
+    ? message.content.map((block) => {
+        if (typeof block === "string") return { type: "text", text: block };
+        if (block && typeof block === "object") return block;
+        return { type: "text", text: String(block ?? "") };
+      })
+    : message.content;
+  return { ...message, content, _entryId: entryId };
+}
+
+interface MessagePage {
+  from: number;
+  messages: Record<string, unknown>[];
+  bytes: number;
+  oversize: boolean;
+}
+
+/** Select a backwards page without splitting a message or stalling pagination. */
+function messagePage(
+  messages: readonly Record<string, unknown>[],
+  sizes: number[],
+  beforeValue: number,
+): MessagePage {
+  const before = Math.max(0, Math.min(beforeValue, messages.length));
+  let from = before;
+  let bytes = 2; // JSON array brackets
+  let count = 0;
+  while (from > 0 && count < SESSION_HISTORY_MAX_MESSAGES) {
+    let candidateBytes = sizes[from - 1];
+    if (candidateBytes === undefined) {
+      candidateBytes = messageBytes(messages[from - 1]);
+      sizes[from - 1] = candidateBytes;
+    }
+    const separatorBytes = count === 0 ? 0 : 1;
+    if (
+      count > 0 &&
+      bytes + separatorBytes + candidateBytes > SESSION_HISTORY_MAX_BYTES
+    )
+      break;
+    from--;
+    bytes += separatorBytes + candidateBytes;
+    count++;
+  }
+  // One over-budget message must still advance the cursor. Truncating it here
+  // would make the durable history impossible to recover through pagination.
+  const oversize = count === 1 && bytes > SESSION_HISTORY_MAX_BYTES;
+  return {
+    from,
+    messages: messages.slice(from, before),
+    bytes,
+    oversize,
+  };
+}
+
+function firstUserText(messages: readonly Record<string, unknown>[]): string {
+  const first = messages.find((message) => message.role === "user");
+  if (!first) return "";
+  if (typeof first.content === "string") return first.content;
+  if (!Array.isArray(first.content)) return "";
+  return (
+    first.content.find(
+      (block) =>
+        block &&
+        typeof block === "object" &&
+        (block as { type?: unknown }).type === "text" &&
+        typeof (block as { text?: unknown }).text === "string",
+    ) as { text?: string } | undefined
+  )?.text ?? "";
+}
+
+/** Temporarily wrap startup handlers so a single slow extension is identifiable. */
+function instrumentExtensionHandlers(
+  key: string,
+  extensions: readonly Extension[],
+): () => void {
+  const restores: Array<() => void> = [];
+  for (const extension of extensions) {
+    for (const event of ["session_start", "resources_discover"] as const) {
+      const handlers = extension.handlers.get(event);
+      if (!handlers) continue;
+      handlers.forEach((handler, index) => {
+        const wrapped = async (...args: unknown[]): Promise<unknown> => {
+          const startedAt = performance.now();
+          let failed = false;
+          const slowTimer = setTimeout(() => {
+            process.stdout.write(
+              `[session] extension_handler_slow key=${JSON.stringify(key)} extension=${JSON.stringify(extension.path)} event=${event} handler=${index} duration_ms=${SLOW_EXTENSION_HANDLER_MS} status=running\n`,
+            );
+          }, SLOW_EXTENSION_HANDLER_MS);
+          slowTimer.unref();
+          try {
+            return await handler(...args);
+          } catch (cause) {
+            failed = true;
+            throw cause;
+          } finally {
+            clearTimeout(slowTimer);
+            const duration = elapsedMs(startedAt);
+            if (duration >= SLOW_EXTENSION_HANDLER_MS) {
+              process.stdout.write(
+                `[session] extension_handler_complete key=${JSON.stringify(key)} extension=${JSON.stringify(extension.path)} event=${event} handler=${index} duration_ms=${duration} status=${failed ? "error" : "ok"}\n`,
+              );
+            }
+          }
+        };
+        handlers[index] = wrapped;
+        restores.push(() => {
+          // Reload may have replaced the array while binding was in flight.
+          if (handlers[index] === wrapped) handlers[index] = handler;
+        });
+      });
+    }
+  }
+  return () => {
+    for (const restore of restores) restore();
+  };
+}
 
 /** Short human-readable summary of a tool call's main argument. */
 function toolSummary(toolName: string, args: Record<string, unknown>): string {
@@ -141,6 +343,8 @@ export interface SessionHostOptions {
   cwd: string;
   /** Existing session file to open; omit to create a fresh session. */
   sessionPath?: string;
+  /** Publish a read-only transcript before the full runtime is restored. */
+  onPreview?: (snapshot: SessionSnapshot) => void | Promise<void>;
   onEmpty?: (host: SessionHost) => void;
   onSessionChanged?: (
     host: SessionHost,
@@ -152,6 +356,23 @@ export interface SessionHostOptions {
   /** Override lifecycle delays in deterministic tests. */
   idleGraceMs?: number;
   activeRecheckMs?: number;
+}
+
+/** Lightweight projection for /api/runs; it never walks or normalizes a branch. */
+export interface SessionRunView {
+  sessionFile?: string;
+  cwd: string;
+  title: string;
+  model?: string;
+  modelName?: string;
+  startedAt: number | null;
+  isStreaming: boolean;
+  queued: number;
+  active: {
+    toolName: string;
+    summary: string;
+    startedAt: number;
+  }[];
 }
 
 interface LoginChoice {
@@ -180,6 +401,369 @@ const WEB_BUILTIN_SLASH_COMMANDS = [
   { name: "session", description: "查看当前会话信息", source: "builtin" },
   { name: "new", description: "新建会话", source: "builtin" },
 ] satisfies SessionSnapshot["slashCommands"];
+
+function normalizedBranch(
+  entries: readonly unknown[],
+  initialHead?: string,
+): { messages: Record<string, unknown>[]; branchHeadId?: string } {
+  const messages: Record<string, unknown>[] = [];
+  let branchHeadId = initialHead;
+  for (const entry of entries) {
+    const e = entry as { type?: string; id?: string; message?: unknown };
+    if (e.id) branchHeadId = e.id;
+    if (e.type !== "message" || !e.message || typeof e.message !== "object")
+      continue;
+    messages.push(
+      normalizedMessage(e.message as Record<string, unknown>, e.id),
+    );
+  }
+  return { messages, branchHeadId };
+}
+
+interface SessionPreviewData {
+  snapshot: SessionSnapshot;
+  messages: Record<string, unknown>[];
+  messageSizes: number[];
+  pageBytes: number;
+}
+
+interface RawSessionPreviewData extends SessionPreviewData {
+  scannedBytes: number;
+  branchComplete: boolean;
+}
+
+const transcriptPageKeyCache = new WeakMap<SessionSnapshot, string>();
+
+function transcriptPageKey(snapshot: SessionSnapshot): string {
+  const cached = transcriptPageKeyCache.get(snapshot);
+  if (cached) return cached;
+  const hash = createHash("sha256");
+  hash.update(snapshot.sessionId);
+  for (const message of snapshot.messages) {
+    hash.update("\u0000");
+    try {
+      hash.update(JSON.stringify(message));
+    } catch {
+      hash.update(`unserializable:${messageBytes(message)}`);
+    }
+  }
+  const key = `${snapshot.sessionId}\u0000${snapshot.messages.length}\u0000${hash.digest("hex")}`;
+  transcriptPageKeyCache.set(snapshot, key);
+  return key;
+}
+
+interface RawSessionHeader {
+  type: "session";
+  version?: number;
+  id: string;
+  cwd?: string;
+}
+
+function parsedRecord(raw: Buffer | string): Record<string, unknown> | undefined {
+  const text = typeof raw === "string" ? raw : raw.toString("utf8");
+  if (!text.trim()) return undefined;
+  try {
+    const value = JSON.parse(text) as unknown;
+    return value && typeof value === "object" && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function readRawSessionHeader(
+  handle: FileHandle,
+  fileSize: number,
+): Promise<RawSessionHeader | undefined> {
+  const length = Math.min(fileSize, SESSION_PREVIEW_MAX_HEADER_BYTES);
+  if (length === 0) return undefined;
+  const buffer = Buffer.allocUnsafe(length);
+  const { bytesRead } = await handle.read(buffer, 0, length, 0);
+  const complete = buffer.subarray(0, bytesRead);
+  let start = 0;
+  for (let index = 0; index <= complete.length; index++) {
+    const atBoundary = index === complete.length || complete[index] === 0x0a;
+    if (!atBoundary) continue;
+    // If the bounded read ended in the middle of a physical line, it cannot be
+    // the header candidate yet. SessionManager has the same 1 MiB discovery
+    // ceiling and will remain the authoritative fallback.
+    if (
+      index === complete.length &&
+      bytesRead < fileSize &&
+      complete.at(-1) !== 0x0a
+    )
+      break;
+    const value = parsedRecord(complete.subarray(start, index));
+    start = index + 1;
+    if (!value) continue;
+    if (value.type !== "session" || typeof value.id !== "string")
+      return undefined;
+    return value as unknown as RawSessionHeader;
+  }
+  return undefined;
+}
+
+/**
+ * Read an accurate suffix of the durable leaf branch before SessionManager's
+ * synchronous full-file restore. The preview deliberately reports only the
+ * suffix as its temporary total; the authoritative snapshot patches paging
+ * metadata once the runtime is available.
+ */
+export async function readRawSessionPreview(
+  sessionPath: string,
+  fallbackCwd: string,
+): Promise<RawSessionPreviewData | undefined> {
+  const handle = await openFile(sessionPath, "r");
+  try {
+    const info = await handle.stat();
+    if (!info.isFile()) return undefined;
+    const header = await readRawSessionHeader(handle, info.size);
+    // v1 entries receive generated IDs during SessionManager migration, so a
+    // pre-open tree projection cannot safely identify their durable branch.
+    if (!header || (header.version ?? 1) < 2) return undefined;
+
+    const reversedMessages: Record<string, unknown>[] = [];
+    const reversedSizes: number[] = [];
+    let pageBytes = 2;
+    let branchHeadId: string | undefined;
+    let wantedParentId: string | null | undefined;
+    let leafSelected = false;
+    let branchComplete = false;
+    let pageComplete = false;
+    let thinkingLevel: string | undefined;
+    let model: SessionSnapshot["model"];
+    let name: string | undefined;
+    let nameSeen = false;
+
+    const inspectLine = (line: Buffer): void => {
+      const entry = parsedRecord(line);
+      if (!entry || entry.type === "session") return;
+
+      // SessionManager resolves the title from physical order rather than the
+      // active branch. Reverse scanning therefore finds the same latest entry.
+      if (!nameSeen && entry.type === "session_info") {
+        nameSeen = true;
+        name = typeof entry.name === "string" && entry.name.trim()
+          ? entry.name.trim()
+          : undefined;
+      }
+
+      const id = typeof entry.id === "string" ? entry.id : undefined;
+      if (!id) return;
+      if (!leafSelected) {
+        leafSelected = true;
+        branchHeadId = id;
+      } else if (wantedParentId !== id) {
+        return;
+      }
+
+      const parentId = entry.parentId;
+      wantedParentId = typeof parentId === "string" ? parentId : null;
+      if (wantedParentId === null) branchComplete = true;
+
+      if (
+        thinkingLevel === undefined &&
+        entry.type === "thinking_level_change" &&
+        typeof entry.thinkingLevel === "string"
+      )
+        thinkingLevel = entry.thinkingLevel;
+      if (
+        !model &&
+        entry.type === "model_change" &&
+        typeof entry.provider === "string" &&
+        typeof entry.modelId === "string"
+      )
+        model = {
+          provider: entry.provider,
+          id: entry.modelId,
+          name: entry.modelId,
+        };
+
+      if (
+        entry.type !== "message" ||
+        !entry.message ||
+        typeof entry.message !== "object" ||
+        Array.isArray(entry.message)
+      )
+        return;
+      const message = normalizedMessage(
+        entry.message as Record<string, unknown>,
+        id,
+      );
+      const size = messageBytes(message);
+      const separatorBytes = reversedMessages.length === 0 ? 0 : 1;
+      if (
+        reversedMessages.length > 0 &&
+        pageBytes + separatorBytes + size > SESSION_HISTORY_MAX_BYTES
+      ) {
+        pageComplete = true;
+        return;
+      }
+      reversedMessages.push(message);
+      reversedSizes.push(size);
+      pageBytes += separatorBytes + size;
+      if (reversedMessages.length >= SESSION_HISTORY_MAX_MESSAGES)
+        pageComplete = true;
+    };
+
+    let position = info.size;
+    let scannedBytes = 0;
+    let carry = Buffer.alloc(0);
+    while (
+      position > 0 &&
+      scannedBytes < SESSION_PREVIEW_MAX_SCAN_BYTES &&
+      !pageComplete &&
+      !branchComplete
+    ) {
+      const readLength = Math.min(
+        SESSION_PREVIEW_READ_CHUNK_BYTES,
+        position,
+        SESSION_PREVIEW_MAX_SCAN_BYTES - scannedBytes,
+      );
+      const readPosition = position - readLength;
+      const chunk = Buffer.allocUnsafe(readLength);
+      const { bytesRead } = await handle.read(
+        chunk,
+        0,
+        readLength,
+        readPosition,
+      );
+      if (bytesRead === 0) break;
+      scannedBytes += bytesRead;
+      position = readPosition;
+      const data = Buffer.concat([chunk.subarray(0, bytesRead), carry]);
+      let lineEnd = data.length;
+      for (let index = data.length - 1; index >= 0; index--) {
+        if (data[index] !== 0x0a) continue;
+        inspectLine(data.subarray(index + 1, lineEnd));
+        lineEnd = index;
+        if (pageComplete || branchComplete) break;
+      }
+      carry = Buffer.from(data.subarray(0, lineEnd));
+    }
+    if (
+      position === 0 &&
+      carry.length > 0 &&
+      !pageComplete &&
+      !branchComplete
+    )
+      inspectLine(carry);
+
+    // A bounded window that cannot even reach one durable message is less
+    // useful than the authoritative post-open fallback. Header-only files are
+    // still safe to preview as an empty conversation.
+    if (reversedMessages.length === 0 && position > 0) return undefined;
+
+    const messages = reversedMessages.reverse();
+    const messageSizes = reversedSizes.reverse();
+    return {
+      messages,
+      messageSizes,
+      pageBytes,
+      scannedBytes,
+      branchComplete,
+      snapshot: {
+        sessionId: header.id,
+        sessionFile: sessionPath,
+        branchHeadId,
+        name,
+        cwd: typeof header.cwd === "string" ? header.cwd : fallbackCwd,
+        initializing: true,
+        pagingProvisional: true,
+        isStreaming: false,
+        thinkingLevel: thinkingLevel ?? "off",
+        model,
+        messages: messages as SessionSnapshot["messages"],
+        totalMessages: messages.length,
+        historyFrom: 0,
+        queue: { steering: [], followUp: [] },
+        queueCapabilities: {
+          revision: 0,
+          reorder: false,
+          remove: false,
+          reason: "session is initializing",
+        },
+        tools: [],
+        slashCommands: [...WEB_BUILTIN_SLASH_COMMANDS],
+      },
+    };
+  } finally {
+    await handle.close();
+  }
+}
+
+/** Build the first visible frame without loading extensions, skills, or tools. */
+function sessionPreview(sessionManager: SessionManager): SessionPreviewData {
+  const branch = sessionManager.getBranch();
+  const normalized = normalizedBranch(
+    branch,
+    sessionManager.getLeafId() ?? undefined,
+  );
+  // Size only the page we are about to send. Older entries are measured on
+  // demand when the browser requests them instead of serializing an entire
+  // multi-thousand-message branch during startup.
+  const sizes = new Array<number>(normalized.messages.length);
+  const page = messagePage(
+    normalized.messages,
+    sizes,
+    normalized.messages.length,
+  );
+  let thinkingLevel = "off";
+  let model: SessionSnapshot["model"];
+  for (const value of branch) {
+    const entry = value as {
+      type?: string;
+      thinkingLevel?: unknown;
+      provider?: unknown;
+      modelId?: unknown;
+    };
+    if (
+      entry.type === "thinking_level_change" &&
+      typeof entry.thinkingLevel === "string"
+    )
+      thinkingLevel = entry.thinkingLevel;
+    if (
+      entry.type === "model_change" &&
+      typeof entry.provider === "string" &&
+      typeof entry.modelId === "string"
+    )
+      model = {
+        provider: entry.provider,
+        id: entry.modelId,
+        name: entry.modelId,
+      };
+  }
+  return {
+    messages: normalized.messages,
+    messageSizes: sizes,
+    pageBytes: page.bytes,
+    snapshot: {
+      sessionId: sessionManager.getSessionId(),
+      sessionFile: sessionManager.getSessionFile(),
+      branchHeadId: normalized.branchHeadId,
+      name: sessionManager.getSessionName(),
+      cwd: sessionManager.getCwd(),
+      initializing: true,
+      pagingProvisional: false,
+      isStreaming: false,
+      thinkingLevel,
+      model,
+      messages: page.messages as SessionSnapshot["messages"],
+      totalMessages: normalized.messages.length,
+      historyFrom: page.from,
+      queue: { steering: [], followUp: [] },
+      queueCapabilities: {
+        revision: 0,
+        reorder: false,
+        remove: false,
+        reason: "session is initializing",
+      },
+      tools: [],
+      slashCommands: [...WEB_BUILTIN_SLASH_COMMANDS],
+    },
+  };
+}
 
 export function activeToolsForMode(
   allNames: readonly string[],
@@ -211,6 +795,8 @@ export class SessionHost {
   ) {}
 
   private sockets = new Set<WebSocket>();
+  /** New clients opt into metadata-only startup completion frames. */
+  private readyDeltaSockets = new WeakSet<WebSocket>();
   private unsubscribe?: () => void;
   private idleTimer?: NodeJS.Timeout;
   private retainedForBackgroundWork = false;
@@ -236,7 +822,21 @@ export class SessionHost {
   onToolExecution?: (toolName: string, phase: "start" | "end") => void;
   /** Full branch message list and leaf identity from the latest snapshot (for history paging). */
   private lastBranch: Record<string, unknown>[] = [];
+  private lastBranchBytes: number[] = [];
   private lastBranchHeadId?: string;
+  private branchCacheKey?: string;
+  private statsCacheKey?: string;
+  private statsCache?: SessionSnapshot["stats"];
+  private slashCommandCache?: SessionSnapshot["slashCommands"];
+  private runTitleCacheKey?: string;
+  private runTitleText = "";
+  private snapshotLogPending = true;
+  /** Identity of the transcript page most recently delivered to attached viewers. */
+  private deliveredTranscriptKey?: string;
+  /** Direct constructor use in unit tests is ready; create() explicitly enters binding. */
+  private readinessState: "binding" | "ready" = "ready";
+  private readinessPromise: Promise<void> = Promise.resolve();
+  private readinessGeneration = 0;
   private fileWatcher?: FSWatcher;
   private watchedFile?: string;
   private watchDebounceTimer?: NodeJS.Timeout;
@@ -245,6 +845,8 @@ export class SessionHost {
   /** Current agent run start time (undefined when fully settled). */
   runStartedAt?: number;
   private settledMtime = 0;
+  /** File state observed immediately after the initial synchronous restore. */
+  private pendingWatchBaseline?: WatchedFileStamp;
   private reloading = false;
   private cooldownUntil = 0;
   private indexedSessionFile?: string;
@@ -257,31 +859,222 @@ export class SessionHost {
     key: string,
     opts: SessionHostOptions,
   ): Promise<SessionHost> {
+    let initialSessionManager: SessionManager | undefined;
+    let openedFileStamp: WatchedFileStamp | undefined;
     const createRuntime: CreateAgentSessionRuntimeFactory = async ({
       cwd,
       sessionManager,
       sessionStartEvent,
     }) => {
-      const services = await createAgentSessionServices({ cwd });
-      return {
-        ...(await createAgentSessionFromServices({
+      const servicesStartedAt = performance.now();
+      let extensionsFinishedAt: number | undefined;
+      let extensionCount = 0;
+      let extensionErrors = 0;
+      try {
+        const services = await createAgentSessionServices({
+          cwd,
+          resourceLoaderOptions: {
+            extensionsOverride(base) {
+              extensionsFinishedAt = performance.now();
+              extensionCount = base.extensions.length;
+              extensionErrors = base.errors.length;
+              logStage(key, "extensions", servicesStartedAt, {
+                cwd,
+                extensions: extensionCount,
+                errors: extensionErrors,
+                status: "ok",
+              });
+              return base;
+            },
+          },
+        });
+        logStage(key, "resources", extensionsFinishedAt ?? servicesStartedAt, {
+          cwd,
+          skills: services.resourceLoader.getSkills().skills.length,
+          prompts: services.resourceLoader.getPrompts().prompts.length,
+          status: "ok",
+        });
+        logStage(key, "services", servicesStartedAt, {
+          cwd,
+          extensions: extensionCount,
+          extension_errors: extensionErrors,
+          status: "ok",
+        });
+        let effectiveSessionManager = sessionManager;
+        if (
+          opts.sessionPath &&
+          initialSessionManager === sessionManager &&
+          openedFileStamp
+        ) {
+          try {
+            const currentStamp = watchedFileStamp(opts.sessionPath);
+            if (!sameWatchedFileStamp(openedFileStamp, currentStamp)) {
+              const refreshStartedAt = performance.now();
+              effectiveSessionManager = SessionManager.open(opts.sessionPath);
+              openedFileStamp = watchedFileStamp(opts.sessionPath);
+              logStage(key, "restore_refresh", refreshStartedAt, {
+                reason: "file_changed_during_services",
+                status: "ok",
+              });
+            }
+          } finally {
+            // The factory is retained for future /new and /resume operations;
+            // only the original restore needs this race-window verification.
+            initialSessionManager = undefined;
+          }
+        }
+        return {
+          ...(await createAgentSessionFromServices({
+            services,
+            sessionManager: effectiveSessionManager,
+            sessionStartEvent,
+          })),
           services,
-          sessionManager,
-          sessionStartEvent,
-        })),
-        services,
-        diagnostics: services.diagnostics,
-      };
+          diagnostics: services.diagnostics,
+        };
+      } catch (cause) {
+        logStage(key, "services", servicesStartedAt, {
+          cwd,
+          status: "error",
+          error: cause instanceof Error ? cause.message : String(cause),
+        });
+        throw cause;
+      }
     };
 
-    const sessionManager = opts.sessionPath
-      ? SessionManager.open(opts.sessionPath)
-      : SessionManager.create(opts.cwd);
-    const runtime = await createAgentSessionRuntime(createRuntime, {
+    let sessionManager: SessionManager;
+    let previewData: SessionPreviewData | undefined;
+    let deliveredPreview: SessionSnapshot | undefined;
+    if (opts.onPreview && opts.sessionPath) {
+      const rawPreviewStartedAt = performance.now();
+      try {
+        const rawPreview = await readRawSessionPreview(
+          opts.sessionPath,
+          opts.cwd,
+        );
+        if (rawPreview) {
+          await opts.onPreview(rawPreview.snapshot);
+          deliveredPreview = rawPreview.snapshot;
+          logStage(key, "preview_raw", rawPreviewStartedAt, {
+            messages: rawPreview.snapshot.messages.length,
+            page_bytes: rawPreview.pageBytes,
+            scanned_bytes: rawPreview.scannedBytes,
+            branch_complete: rawPreview.branchComplete,
+            status: "ok",
+          });
+          // A synchronous SessionManager.open() follows. Give the websocket a
+          // turn to flush and the browser a chance to paint the preview first.
+          await new Promise<void>((resolvePromise) =>
+            setImmediate(resolvePromise),
+          );
+        }
+      } catch (cause) {
+        logStage(key, "preview_raw", rawPreviewStartedAt, {
+          status: "error",
+          error: cause instanceof Error ? cause.message : String(cause),
+        });
+      }
+    }
+
+    const openStartedAt = performance.now();
+    try {
+      sessionManager = opts.sessionPath
+        ? SessionManager.open(opts.sessionPath)
+        : SessionManager.create(opts.cwd);
+      initialSessionManager = sessionManager;
+      const openedFile = sessionManager.getSessionFile();
+      if (opts.sessionPath && openedFile) {
+        try {
+          openedFileStamp = watchedFileStamp(openedFile);
+        } catch {
+          // The runtime restore remains authoritative; watcher setup retries.
+        }
+      }
+      logStage(key, "open", openStartedAt, {
+        mode: opts.sessionPath ? "existing" : "new",
+        status: "ok",
+      });
+    } catch (cause) {
+      logStage(key, "open", openStartedAt, {
+        mode: opts.sessionPath ? "existing" : "new",
+        status: "error",
+        error: cause instanceof Error ? cause.message : String(cause),
+      });
+      throw cause;
+    }
+    // Service discovery does not depend on authoritative transcript
+    // normalization. Start both after the durable restore so warm extension
+    // loads can overlap the full branch/page pass instead of waiting behind it.
+    const runtimePromise = createAgentSessionRuntime(createRuntime, {
       cwd: sessionManager.getCwd(),
       agentDir: getAgentDir(),
       sessionManager,
     });
+    // The preview callback may briefly wait for websocket backpressure. Attach
+    // a rejection handler now so an early runtime failure is never reported as
+    // unhandled before the authoritative preview has finished.
+    void runtimePromise.catch(() => undefined);
+
+    if (opts.onPreview) {
+      const previewStartedAt = performance.now();
+      try {
+        previewData = sessionPreview(sessionManager);
+        const changed =
+          !deliveredPreview ||
+          transcriptPageKey(deliveredPreview) !==
+            transcriptPageKey(previewData.snapshot);
+        if (changed) {
+          await opts.onPreview(previewData.snapshot);
+          deliveredPreview = previewData.snapshot;
+        }
+        logStage(key, "preview", previewStartedAt, {
+          messages: previewData.snapshot.messages.length,
+          total_messages: previewData.snapshot.totalMessages,
+          page_bytes: previewData.pageBytes,
+          delivery: changed ? "full" : "reused_raw",
+          status: "ok",
+        });
+      } catch (cause) {
+        logStage(key, "preview", previewStartedAt, {
+          status: "error",
+          error: cause instanceof Error ? cause.message : String(cause),
+        });
+        console.error(
+          `[session] preview_failed key=${JSON.stringify(key)}`,
+          cause,
+        );
+      }
+    }
+    const runtime = await runtimePromise;
+    if (
+      previewData &&
+      runtime.session.sessionManager !== sessionManager
+    ) {
+      const reconcileStartedAt = performance.now();
+      previewData = sessionPreview(runtime.session.sessionManager);
+      if (
+        opts.onPreview &&
+        (!deliveredPreview ||
+          transcriptPageKey(deliveredPreview) !==
+            transcriptPageKey(previewData.snapshot))
+      ) {
+        await opts.onPreview(previewData.snapshot);
+        deliveredPreview = previewData.snapshot;
+      }
+      logStage(key, "preview_reconcile", reconcileStartedAt, {
+        messages: previewData.snapshot.messages.length,
+        total_messages: previewData.snapshot.totalMessages,
+        status: "ok",
+      });
+    }
+    const runtimeFile = runtime.session.sessionFile;
+    if (runtimeFile) {
+      try {
+        openedFileStamp = watchedFileStamp(runtimeFile);
+      } catch {
+        openedFileStamp = undefined;
+      }
+    }
 
     const modelRegistry = new ModelRegistry(runtime.services.modelRuntime);
     const host = new SessionHost(
@@ -294,11 +1087,29 @@ export class SessionHost {
       opts.idleGraceMs,
       opts.activeRecheckMs,
     );
+    host.pendingWatchBaseline = openedFileStamp;
+    if (previewData) {
+      let liveMessageCount = -1;
+      try {
+        liveMessageCount = runtime.session.messages.length;
+      } catch {
+        // Keep the same conservative fallback used by refreshBranchCache().
+      }
+      const leafId =
+        runtime.session.sessionManager.getLeafId() ?? undefined;
+      host.lastBranch = previewData.messages;
+      host.lastBranchBytes = previewData.messageSizes;
+      host.lastBranchHeadId = leafId;
+      host.branchCacheKey = `${runtime.session.sessionId}\u0000${runtime.session.sessionFile ?? ""}\u0000${leafId ?? ""}\u0000${liveMessageCount}`;
+      host.runTitleCacheKey = host.branchCacheKey;
+      host.runTitleText = firstUserText(previewData.messages);
+    }
     host.indexedSessionFile = runtime.session.sessionFile;
 
     runtime.setBeforeSessionInvalidate(() => host.teardownSessionUi("rebind"));
     runtime.setRebindSession(async (session) => {
       const previousFile = host.indexedSessionFile;
+      host.invalidateSnapshotCaches(true);
       host.modelRegistry = new ModelRegistry(
         host.runtime.services.modelRuntime,
       );
@@ -306,13 +1117,103 @@ export class SessionHost {
       host.restartFileWatch();
       host.indexedSessionFile = session.sessionFile;
       await host.onSessionChanged?.(host, previousFile, session.sessionFile);
-      await host.bindExtensionUi(session);
+      const binding = host.startExtensionBinding(session);
       host.broadcastSnapshot();
+      await binding;
     });
     host.bindSession();
-    await host.bindExtensionUi(runtime.session);
     host.restartFileWatch();
+    // Do not await: session_start may open an interactive UI request. Returning
+    // the host first lets index.ts attach a socket and answer it immediately.
+    void host.startExtensionBinding(runtime.session);
     return host;
+  }
+
+  /** True after extension session_start/resource discovery has settled. */
+  get isReady(): boolean {
+    return this.readinessState === "ready";
+  }
+
+  /**
+   * Wait for the current extension bind. Binding errors are reported in logs
+   * but resolve this promise, matching the existing optional-extension policy.
+   */
+  whenReady(): Promise<void> {
+    return this.readinessPromise;
+  }
+
+  private invalidateSnapshotCaches(includeCommands = false): void {
+    this.branchCacheKey = undefined;
+    this.statsCacheKey = undefined;
+    this.statsCache = undefined;
+    this.runTitleCacheKey = undefined;
+    this.runTitleText = "";
+    this.snapshotLogPending = true;
+    if (includeCommands) this.slashCommandCache = undefined;
+  }
+
+  /** Start a bind without making host creation wait on extension-owned UI. */
+  private startExtensionBinding(session: AgentSession): Promise<void> {
+    const generation = ++this.readinessGeneration;
+    this.readinessState = "binding";
+    this.slashCommandCache = undefined;
+    this.snapshotLogPending = true;
+    const startedAt = performance.now();
+    let restoreHandlers: () => void = () => undefined;
+    try {
+      restoreHandlers = instrumentExtensionHandlers(
+        this.key,
+        session.resourceLoader.getExtensions().extensions,
+      );
+    } catch (cause) {
+      console.error(
+        `[session] extension_instrument_failed key=${JSON.stringify(this.key)}`,
+        cause,
+      );
+    }
+    const slowTimer = setTimeout(() => {
+      process.stdout.write(
+        `[session] bind_slow key=${JSON.stringify(this.key)} duration_ms=${SLOW_BIND_MS} status=running\n`,
+      );
+    }, SLOW_BIND_MS);
+    slowTimer.unref();
+
+    const binding = (async () => {
+      let status = "ok";
+      let error: string | undefined;
+      try {
+        await this.bindExtensionUi(session);
+      } catch (cause) {
+        status = "error";
+        error = cause instanceof Error ? cause.message : String(cause);
+        console.error(
+          `[session] bind_failed key=${JSON.stringify(this.key)} error=${JSON.stringify(error)}`,
+          cause,
+        );
+      } finally {
+        clearTimeout(slowTimer);
+        restoreHandlers();
+        logStage(this.key, "bind", startedAt, {
+          status,
+          error,
+          extensions: (() => {
+            try {
+              return session.resourceLoader.getExtensions().extensions.length;
+            } catch {
+              return undefined;
+            }
+          })(),
+        });
+        if (generation === this.readinessGeneration) {
+          this.readinessState = "ready";
+          this.slashCommandCache = undefined;
+          this.snapshotLogPending = true;
+          this.broadcastReadyState();
+        }
+      }
+    })();
+    this.readinessPromise = binding;
+    return binding;
   }
 
   /** Bind the watcher to the runtime's current file, replacing any stale binding. */
@@ -325,12 +1226,58 @@ export class SessionHost {
     const file = this.runtime.session.sessionFile;
     if (!file) return;
     try {
-      const { mtimeMs } = statSync(file);
-      this.settledMtime = mtimeMs;
+      const installedStamp = watchedFileStamp(file);
+      const restoreStamp = this.pendingWatchBaseline;
+      this.pendingWatchBaseline = undefined;
+      this.settledMtime = installedStamp.mtimeMs;
       this.watchedFile = file;
       this.fileWatcher = watch(file, () => this.scheduleExternalReload(1500));
+      const knownLeaf = this.runtime.session.sessionManager.getLeafId();
+      if (
+        restoreStamp &&
+        !sameWatchedFileStamp(restoreStamp, installedStamp)
+      ) {
+        process.stdout.write(
+          `[watch] restore_window_change file=${JSON.stringify(file)} action=reload\n`,
+        );
+        this.scheduleExternalReload(0);
+      } else {
+        void this.verifyWatchBaseline(file, installedStamp, knownLeaf);
+      }
     } catch {
       // Brand-new sessions are watched lazily after their first persisted entry.
+    }
+  }
+
+  /** Close the stat→watch race and detect appends during runtime creation. */
+  private async verifyWatchBaseline(
+    file: string,
+    installedStamp: WatchedFileStamp,
+    knownLeaf: string | null,
+  ): Promise<void> {
+    try {
+      const [value, tailId] = await Promise.all([
+        statFile(file),
+        lastEntryId(file),
+      ]);
+      if (this.disposed || this.watchedFile !== file) return;
+      const after: WatchedFileStamp = {
+        size: value.size,
+        mtimeMs: value.mtimeMs,
+        ctimeMs: value.ctimeMs,
+        ino: value.ino,
+      };
+      if (
+        !sameWatchedFileStamp(installedStamp, after) ||
+        (tailId !== undefined && tailId !== knownLeaf)
+      ) {
+        process.stdout.write(
+          `[watch] install_window_change file=${JSON.stringify(file)} action=reload\n`,
+        );
+        this.scheduleExternalReload(0);
+      }
+    } catch {
+      // The normal watch retry path handles replacement/disappearance.
     }
   }
 
@@ -609,14 +1556,14 @@ export class SessionHost {
           },
         } as unknown as ExtensionUIContext,
       });
-    } catch (err) {
-      // Extensions are optional; a failing binding must not break the session.
-      // Log it though — silent swallow makes "why doesn't my extension load"
-      // impossible to debug (e.g. pi-codex-multi throwing at module load).
-      console.log(
-        "[ext] bindExtensionUi error:",
-        err instanceof Error ? err.message : String(err),
+    } catch (cause) {
+      // The readiness owner records the failure and deliberately settles. Keep
+      // this contextual log, but rethrow so bind status cannot be reported ok.
+      console.error(
+        `[session] extension_bind_failed key=${JSON.stringify(this.key)}`,
+        cause,
       );
+      throw cause;
     }
   }
 
@@ -701,6 +1648,17 @@ export class SessionHost {
     this.unsubscribe?.();
     const session = this.runtime.session;
     this.unsubscribe = session.subscribe((event) => {
+      if (
+        event.type === "entry_appended" ||
+        event.type === "agent_settled" ||
+        event.type === "compaction_end"
+      ) {
+        this.invalidateSnapshotCaches();
+      } else if (event.type === "session_info_changed") {
+        this.statsCacheKey = undefined;
+        this.statsCache = undefined;
+        this.snapshotLogPending = true;
+      }
       const serializedEvent = serializeEvent(event);
       if (event.type === "queue_update") {
         const queue = this.queueAdapter.view();
@@ -815,12 +1773,42 @@ export class SessionHost {
     this.broadcastSnapshot();
   }
 
-  attach(ws: WebSocket): void {
+  attach(
+    ws: WebSocket,
+    preview?: SessionSnapshot,
+    supportsReadyDelta = true,
+  ): void {
     clearTimeout(this.idleTimer);
     this.idleTimer = undefined;
     this.retainedForBackgroundWork = false;
     this.sockets.add(ws);
-    this.send(ws, { type: "snapshot", snapshot: this.snapshot() });
+    if (supportsReadyDelta) this.readyDeltaSockets.add(ws);
+    const snapshot = this.snapshot();
+    const transcriptKey = this.transcriptKey(snapshot);
+    if (
+      preview &&
+      transcriptPageKey(preview) === transcriptPageKey(snapshot)
+    ) {
+      this.deliveredTranscriptKey = transcriptKey;
+      if (this.isReady) {
+        if (supportsReadyDelta) {
+          const { messages: _messages, ...readySnapshot } = snapshot;
+          this.send(ws, { type: "session_ready", snapshot: readySnapshot });
+        } else {
+          this.send(ws, { type: "snapshot", snapshot });
+        }
+      }
+      process.stdout.write(
+        `[session] snapshot_delivery key=${JSON.stringify(this.key)} delivery=attach_reuse snapshot_bytes=0 viewers=${this.sockets.size}\n`,
+      );
+    } else {
+      const snapshotWire = JSON.stringify({ type: "snapshot", snapshot });
+      this.sendSerialized(ws, snapshotWire);
+      this.deliveredTranscriptKey = transcriptKey;
+      process.stdout.write(
+        `[session] snapshot_delivery key=${JSON.stringify(this.key)} delivery=attach snapshot_bytes=${Buffer.byteLength(snapshotWire)} viewers=${this.sockets.size}\n`,
+      );
+    }
     this.send(ws, { type: "widgets", widgets: [...this.widgets.values()] });
     this.send(ws, {
       type: "statuses",
@@ -837,6 +1825,7 @@ export class SessionHost {
 
   detach(ws: WebSocket): void {
     this.sockets.delete(ws);
+    this.readyDeltaSockets.delete(ws);
     if (this.sockets.size === 0) this.scheduleIdleCheck(this.idleGraceMs);
   }
 
@@ -883,8 +1872,22 @@ export class SessionHost {
       this.scheduleIdleCheck(this.idleGraceMs);
       return;
     }
-    await this.dispose();
-    this.onEmpty?.(this);
+    try {
+      await this.dispose();
+    } catch (cause) {
+      console.error(
+        `[session] detached_dispose_failed key=${JSON.stringify(this.key)}`,
+        cause,
+      );
+    }
+    try {
+      this.onEmpty?.(this);
+    } catch (cause) {
+      console.error(
+        `[session] detached_remove_failed key=${JSON.stringify(this.key)}`,
+        cause,
+      );
+    }
   }
 
   /** Active tool executions in this session (what is literally running right now). */
@@ -905,6 +1908,7 @@ export class SessionHost {
   }
 
   private slashCommands(): SessionSnapshot["slashCommands"] {
+    if (this.slashCommandCache) return this.slashCommandCache;
     const commands: SessionSnapshot["slashCommands"] = [
       ...WEB_BUILTIN_SLASH_COMMANDS,
     ];
@@ -929,56 +1933,46 @@ export class SessionHost {
     } catch (cause) {
       console.error(`[session] slash_commands_failed key=${this.key}`, cause);
     }
-    return commands;
+    this.slashCommandCache = commands;
+    return this.slashCommandCache;
   }
 
-  snapshot(): SessionSnapshot {
-    const s = this.session;
-    const model = s.model;
-    if (s.sessionFile !== this.indexedSessionFile) {
-      const previousFile = this.indexedSessionFile;
-      this.indexedSessionFile = s.sessionFile;
-      void Promise.resolve(
-        this.onSessionChanged?.(this, previousFile, s.sessionFile),
-      ).catch((cause) =>
-        console.error(`[session] index_update_failed key=${this.key}`, cause),
-      );
-    }
-
-    // Build the visible message list from session-file entries so each
-    // message carries its entry id (needed for fork / branch actions).
-    let messages: Record<string, unknown>[] = [];
-    let branchHeadId: string | undefined;
+  private refreshBranchCache(session: AgentSession): boolean {
+    let leafId: string | undefined;
     try {
-      const branch = s.sessionManager.getBranch();
-      for (const entry of branch) {
-        const e = entry as { type?: string; id?: string; message?: unknown };
-        if (e.id) branchHeadId = e.id;
-        if (
-          e.type === "message" &&
-          e.message &&
-          typeof e.message === "object"
-        ) {
-          const msg = e.message as Record<string, unknown>;
-          // some sessions carry bare-string content blocks ({ "A" } instead of
-          // {type:'text'}); normalize so rendering & tool cards don't choke
-          if (Array.isArray(msg.content)) {
-            msg.content = msg.content.map((b) => {
-              if (typeof b === "string") return { type: "text", text: b };
-              if (b && typeof b === "object") return b;
-              return { type: "text", text: String(b ?? "") };
-            });
-          }
-          messages.push({ ...msg, _entryId: e.id });
-        }
-      }
+      leafId = session.sessionManager.getLeafId() ?? undefined;
     } catch {
-      // fall through to agent state
+      leafId = undefined;
+    }
+    let liveMessageCount = -1;
+    try {
+      liveMessageCount = session.messages.length;
+    } catch {
+      // A session manager leaf is normally sufficient; this only weakens the
+      // fallback cache key for test doubles and partially initialized sessions.
+    }
+    const cacheKey = `${session.sessionId}\u0000${session.sessionFile ?? ""}\u0000${leafId ?? ""}\u0000${liveMessageCount}`;
+    if (this.branchCacheKey === cacheKey) return true;
+
+    let messages: Record<string, unknown>[] = [];
+    let branchHeadId = leafId;
+    try {
+      const normalized = normalizedBranch(
+        session.sessionManager.getBranch(),
+        branchHeadId,
+      );
+      messages = normalized.messages;
+      branchHeadId = normalized.branchHeadId;
+    } catch (cause) {
+      console.error(
+        `[session] branch_read_failed key=${JSON.stringify(this.key)}`,
+        cause,
+      );
     }
     if (messages.length === 0) {
       try {
-        // SAFETY: structuredClone preserves the JSON-safe AgentMessage field layout used by the wire protocol.
-        messages = structuredClone(s.messages) as unknown as Record<
+        // SAFETY: structuredClone preserves the JSON-safe AgentMessage layout.
+        messages = structuredClone(session.messages) as unknown as Record<
           string,
           unknown
         >[];
@@ -987,32 +1981,70 @@ export class SessionHost {
       }
     }
 
-    // Keep the full branch around for history paging.
     this.lastBranch = messages;
+    // Keep a sparse per-entry size cache. messagePage() fills it one requested
+    // page at a time, which keeps ordinary snapshots proportional to the
+    // visible tail rather than the full durable history.
+    this.lastBranchBytes = new Array<number>(messages.length);
     this.lastBranchHeadId = branchHeadId;
-    const total = messages.length;
-    const from = Math.max(0, total - 150);
-    const page = messages.slice(from);
+    this.branchCacheKey = cacheKey;
+    this.statsCacheKey = undefined;
+    this.statsCache = undefined;
+    this.runTitleCacheKey = cacheKey;
+    this.runTitleText = firstUserText(messages);
+    return false;
+  }
+
+  private syncIndexedSessionFile(session: AgentSession): void {
+    if (session.sessionFile === this.indexedSessionFile) return;
+    const previousFile = this.indexedSessionFile;
+    this.indexedSessionFile = session.sessionFile;
+    void Promise.resolve(
+      this.onSessionChanged?.(this, previousFile, session.sessionFile),
+    ).catch((cause) =>
+      console.error(`[session] index_update_failed key=${this.key}`, cause),
+    );
+  }
+
+  snapshot(): SessionSnapshot {
+    const startedAt = performance.now();
+    const s = this.session;
+    const model = s.model;
+    this.syncIndexedSessionFile(s);
+
+    const branchCacheHit = this.refreshBranchCache(s);
+    const total = this.lastBranch.length;
+    const page = messagePage(
+      this.lastBranch,
+      this.lastBranchBytes,
+      total,
+    );
 
     let stats: SessionSnapshot["stats"];
-    try {
-      const st = s.getSessionStats();
-      stats = {
-        userMessages: st.userMessages,
-        assistantMessages: st.assistantMessages,
-        toolCalls: st.toolCalls,
-        tokens: { ...st.tokens },
-        cost: st.cost,
-        contextTokens: st.contextUsage?.tokens ?? null,
-        contextWindow: st.contextUsage?.contextWindow ?? null,
-        contextPercent: st.contextUsage?.percent ?? null,
-      };
-    } catch {
-      stats = undefined;
+    if (this.isReady) {
+      if (this.statsCacheKey !== this.branchCacheKey) {
+        try {
+          const st = s.getSessionStats();
+          this.statsCache = {
+            userMessages: st.userMessages,
+            assistantMessages: st.assistantMessages,
+            toolCalls: st.toolCalls,
+            tokens: { ...st.tokens },
+            cost: st.cost,
+            contextTokens: st.contextUsage?.tokens ?? null,
+            contextWindow: st.contextUsage?.contextWindow ?? null,
+            contextPercent: st.contextUsage?.percent ?? null,
+          };
+        } catch {
+          this.statsCache = undefined;
+        }
+        this.statsCacheKey = this.branchCacheKey;
+      }
+      stats = this.statsCache;
     }
 
-    // brand-new sessions have no file at host creation; attach the watcher
-    // lazily once the file exists
+    // Brand-new sessions have no file at host creation; attach the watcher
+    // lazily once the file exists.
     if (
       (!this.fileWatcher || this.watchedFile !== s.sessionFile) &&
       s.sessionFile
@@ -1020,12 +2052,14 @@ export class SessionHost {
       this.restartFileWatch();
 
     const queue = this.queueAdapter.view();
-    return {
+    const snapshot: SessionSnapshot = {
       sessionId: s.sessionId,
       sessionFile: s.sessionFile,
-      branchHeadId,
+      branchHeadId: this.lastBranchHeadId,
       name: s.sessionName,
       cwd: this.runtime.cwd,
+      initializing: !this.isReady,
+      pagingProvisional: false,
       isStreaming: s.isStreaming,
       thinkingLevel: s.thinkingLevel,
       availableThinkingLevels: (() => {
@@ -1042,17 +2076,70 @@ export class SessionHost {
             name: model.name ?? model.id,
           }
         : undefined,
-      messages: page as SessionSnapshot["messages"],
+      messages: page.messages as SessionSnapshot["messages"],
       totalMessages: total,
-      historyFrom: from,
+      historyFrom: page.from,
       queue: {
         steering: queue.steering,
         followUp: queue.followUp,
       },
       queueCapabilities: queue.capabilities,
       stats,
+      // Discovery is complete before bindExtensions emits session_start. These
+      // may be displayed while initializing, but handleCommand still prevents
+      // execution until readiness settles.
       tools: s.getActiveToolNames(),
       slashCommands: this.slashCommands(),
+    };
+    const duration = elapsedMs(startedAt);
+    if (
+      this.snapshotLogPending ||
+      duration >= SLOW_SNAPSHOT_MS ||
+      page.oversize
+    ) {
+      logStage(this.key, "snapshot", startedAt, {
+        cache: branchCacheHit ? "hit" : "miss",
+        messages: page.messages.length,
+        total_messages: total,
+        page_bytes: page.bytes,
+        oversize: page.oversize,
+        initializing: !this.isReady,
+      });
+      this.snapshotLogPending = false;
+    }
+    return snapshot;
+  }
+
+  runView(): SessionRunView {
+    const s = this.session;
+    let messageCount = -1;
+    try {
+      messageCount = s.messages.length;
+    } catch {
+      // Partial test doubles may not expose messages.
+    }
+    const titleKey = `${s.sessionId}\u0000${messageCount}`;
+    if (this.runTitleCacheKey !== titleKey) {
+      this.runTitleCacheKey = titleKey;
+      try {
+        this.runTitleText = firstUserText(
+          s.messages as unknown as Record<string, unknown>[],
+        );
+      } catch {
+        this.runTitleText = "";
+      }
+    }
+    const queue = this.queueAdapter.view();
+    return {
+      sessionFile: s.sessionFile,
+      cwd: this.cwd,
+      title: s.sessionName || this.runTitleText.slice(0, 60) || "(新会话)",
+      model: s.model ? `${s.model.provider}/${s.model.id}` : undefined,
+      modelName: s.model?.name,
+      startedAt: this.runStartedAt ?? null,
+      isStreaming: s.isStreaming,
+      queued: queue.steering.length + queue.followUp.length,
+      active: this.activeExecutions,
     };
   }
 
@@ -1270,14 +2357,19 @@ export class SessionHost {
         if (this.pendingUiRequest || this.customUi.isActive)
           return { ok: false, error: "请先关闭当前弹窗，再执行 /reload。" };
         console.log(`[session] reload_started key=${this.key}`);
-        await s.reload({
-          beforeSessionStart: () => {
-            this.widgets.clear();
-            this.statuses.clear();
-            this.broadcastWidgets();
-            this.broadcastStatuses();
-          },
-        });
+        this.slashCommandCache = undefined;
+        try {
+          await s.reload({
+            beforeSessionStart: () => {
+              this.widgets.clear();
+              this.statuses.clear();
+              this.broadcastWidgets();
+              this.broadcastStatuses();
+            },
+          });
+        } finally {
+          this.slashCommandCache = undefined;
+        }
         this.broadcastSnapshot();
         console.log(`[session] reload_completed key=${this.key}`);
         return out("已重新加载扩展、技能、提示词、设置和上下文文件。");
@@ -1289,6 +2381,8 @@ export class SessionHost {
         const model = this.modelRegistry.find(prov, mid.join("/"));
         if (!model) return { ok: false, error: `模型未找到: ${arg}` };
         await s.setModel(model);
+        this.statsCacheKey = undefined;
+        this.statsCache = undefined;
         this.broadcastSnapshot();
         return out(`已切换模型：${model.name ?? model.id}`);
       }
@@ -1309,9 +2403,13 @@ export class SessionHost {
             error: `未知命令 /${name}。输入 / 可查看当前会话支持的命令。`,
           };
         try {
+          const wasStreaming = s.isStreaming;
           await s.prompt(`/${text}`, {
-            streamingBehavior: s.isStreaming ? "steer" : undefined,
+            streamingBehavior: wasStreaming ? "steer" : undefined,
           });
+          // AgentSession emits queue_update before both of its queue mirrors are
+          // stable. Publish one settled snapshot so mutation controls recover.
+          if (wasStreaming) this.broadcastSnapshot();
           return out(`已执行 /${name}。`);
         } catch (err) {
           return {
@@ -1419,6 +2517,18 @@ export class SessionHost {
     cmd: ClientCommand & { id?: string },
   ): Promise<{ ok: boolean; error?: string; data?: Record<string, unknown> }> {
     if (this.disposed) return { ok: false, error: "session host is disposed" };
+    const initializationResponse =
+      cmd.type === "abort" ||
+      cmd.type === "ui_response" ||
+      cmd.type === "custom_ui_input" ||
+      cmd.type === "custom_ui_resize" ||
+      cmd.type === "custom_ui_cancel";
+    if (!this.isReady && !initializationResponse) {
+      return {
+        ok: false,
+        error: "session is initializing; wait for extensions to become ready",
+      };
+    }
     if (
       cmd.type === "prompt" ||
       cmd.type === "steer" ||
@@ -1515,6 +2625,8 @@ export class SessionHost {
               error: `model not found: ${cmd.provider}/${cmd.modelId}`,
             };
           await s.setModel(model);
+          this.statsCacheKey = undefined;
+          this.statsCache = undefined;
           this.broadcastSnapshot();
           return { ok: true };
         }
@@ -1607,28 +2719,97 @@ export class SessionHost {
 
   sendHistory(ws: WebSocket, beforeValue: number, requestId: string): void {
     const before = Math.max(0, Math.min(beforeValue, this.lastBranch.length));
-    const from = Math.max(0, before - 150);
-    const page = this.lastBranch.slice(from, before) as SessionSnapshot["messages"];
+    const page = messagePage(
+      this.lastBranch,
+      this.lastBranchBytes,
+      before,
+    );
     this.send(ws, {
       type: "history",
       requestId,
       sessionId: this.session.sessionId,
       branchHeadId: this.lastBranchHeadId,
-      messages: page,
-      before: from,
+      messages: page.messages as SessionSnapshot["messages"],
+      before: page.from,
     });
   }
 
   broadcast(msg: ServerMessage): void {
-    for (const ws of this.sockets) this.send(ws, msg);
+    if (this.sockets.size === 0) return;
+    const wire = JSON.stringify(msg);
+    for (const ws of this.sockets) this.sendSerialized(ws, wire);
+  }
+
+  /**
+   * Metadata may change while extensions bind, but the transcript usually does
+   * not. Avoid sending and parsing the same history page twice at startup. If
+   * an extension did append a durable entry, fall back to the full snapshot.
+   */
+  private broadcastReadyState(): void {
+    if (this.sockets.size === 0) {
+      this.syncIndexedSessionFile(this.session);
+      return;
+    }
+    const snapshot = this.snapshot();
+    const transcriptKey = this.transcriptKey(snapshot);
+    if (transcriptKey !== this.deliveredTranscriptKey) {
+      this.broadcastSnapshotValue(snapshot, "ready_changed");
+      return;
+    }
+    const { messages: _messages, ...readySnapshot } = snapshot;
+    const readyWire = JSON.stringify({
+      type: "session_ready",
+      snapshot: readySnapshot,
+    } satisfies ServerMessage);
+    let fullWire: string | undefined;
+    let deltaViewers = 0;
+    for (const ws of this.sockets) {
+      if (this.readyDeltaSockets.has(ws)) {
+        deltaViewers += 1;
+        this.sendSerialized(ws, readyWire);
+      } else {
+        fullWire ??= JSON.stringify({ type: "snapshot", snapshot });
+        this.sendSerialized(ws, fullWire);
+      }
+    }
+    process.stdout.write(
+      `[session] snapshot_delivery key=${JSON.stringify(this.key)} delivery=ready_delta snapshot_bytes=${Buffer.byteLength(readyWire)} delta_viewers=${deltaViewers} legacy_viewers=${this.sockets.size - deltaViewers}\n`,
+    );
+  }
+
+  private transcriptKey(snapshot: SessionSnapshot): string {
+    return `${snapshot.totalMessages}\u0000${snapshot.historyFrom}\u0000${transcriptPageKey(snapshot)}`;
+  }
+
+  private broadcastSnapshotValue(
+    snapshot: SessionSnapshot,
+    delivery: string,
+  ): void {
+    const wire = JSON.stringify({ type: "snapshot", snapshot });
+    this.deliveredTranscriptKey = this.transcriptKey(snapshot);
+    for (const ws of this.sockets) this.sendSerialized(ws, wire);
+    process.stdout.write(
+      `[session] snapshot_delivery key=${JSON.stringify(this.key)} delivery=${delivery} snapshot_bytes=${Buffer.byteLength(wire)} viewers=${this.sockets.size}\n`,
+    );
   }
 
   broadcastSnapshot(): void {
-    this.broadcast({ type: "snapshot", snapshot: this.snapshot() });
+    if (this.sockets.size === 0) {
+      // Preserve session-index updates without paying for a full detached
+      // snapshot that has no recipient.
+      this.syncIndexedSessionFile(this.session);
+      return;
+    }
+    const snapshot = this.snapshot();
+    this.broadcastSnapshotValue(snapshot, "broadcast");
   }
 
   private send(ws: WebSocket, msg: ServerMessage): void {
-    if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(msg));
+    this.sendSerialized(ws, JSON.stringify(msg));
+  }
+
+  private sendSerialized(ws: WebSocket, wire: string): void {
+    if (ws.readyState === ws.OPEN) ws.send(wire);
   }
 
   dispose(): Promise<void> {
@@ -1646,9 +2827,18 @@ export class SessionHost {
       this.watchedFile = undefined;
       this.unsubscribe?.();
       this.unsubscribe = undefined;
-      await this.runtime.dispose();
-      for (const ws of this.sockets) ws.close(1000, "session disposed");
-      this.sockets.clear();
+      let disposeFailed = false;
+      let disposeError: unknown;
+      try {
+        await this.runtime.dispose();
+      } catch (cause) {
+        disposeFailed = true;
+        disposeError = cause;
+      } finally {
+        for (const ws of this.sockets) ws.close(1000, "session disposed");
+        this.sockets.clear();
+      }
+      if (disposeFailed) throw disposeError;
     })();
     return this.disposePromise;
   }

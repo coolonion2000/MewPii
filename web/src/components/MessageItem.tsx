@@ -1,4 +1,5 @@
-import { memo, useState } from 'react';
+import { memo, useDeferredValue, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { IconX } from '../icons';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -23,12 +24,36 @@ interface Props {
   streaming: boolean;
   toolResults: Map<string, PiiMessage>;
   tools: Map<string, ToolActivity>;
+  language: string;
   onFork: (entryId: string) => void;
   onBranch: (entryId: string) => void;
   onOpenFile?: (path: string) => void;
   /** live counter data for the streaming message header (pi-web style) */
   live?: { model?: string; tokens?: number; tps?: number } | undefined;
 }
+
+const MARKDOWN_PLUGINS = [remarkGfm];
+
+/** Keep expensive Markdown parsing behind a primitive-prop memo boundary. */
+const MarkdownBody = memo(function MarkdownBody({ text }: { text: string }) {
+  return <Markdown remarkPlugins={MARKDOWN_PLUGINS}>{text}</Markdown>;
+});
+
+/**
+ * Streaming deltas may arrive faster than Markdown can parse a growing block.
+ * React may coalesce the deferred work while urgent controls remain responsive;
+ * the finalized row bypasses the deferred value so message_end is exact now.
+ */
+const MessageMarkdown = memo(function MessageMarkdown({
+  text,
+  streaming,
+}: {
+  text: string;
+  streaming: boolean;
+}) {
+  const deferredText = useDeferredValue(text);
+  return <MarkdownBody text={streaming ? deferredText : text} />;
+});
 
 function MessageActions({ entryId, text, onFork, onBranch }: { entryId?: string; text: string; onFork: (id: string) => void; onBranch: (id: string) => void }) {
   const [copied, setCopied] = useState(false);
@@ -81,11 +106,18 @@ function MessageItem({ message, streaming, toolResults, tools, onFork, onBranch,
       <div className="msg-row user">
         {bubble}
         {!streaming && <MessageActions entryId={entryId} text={typeof content === 'string' ? content : ''} onFork={onFork} onBranch={onBranch} />}
-        {preview && (
+        {preview && createPortal(
           <div className="lightbox" onClick={() => setPreview(undefined)}>
-            <button className="lightbox-close"><IconX size={18} /></button>
+            <button
+              type="button"
+              className="lightbox-close"
+              aria-label={t('close')}
+            >
+              <IconX size={18} />
+            </button>
             <img src={preview} alt="preview" onClick={(e) => e.stopPropagation()} />
-          </div>
+          </div>,
+          document.body,
         )}
       </div>
     );
@@ -145,7 +177,7 @@ function MessageItem({ message, streaming, toolResults, tools, onFork, onBranch,
           if (!b.text?.trim()) return null;
           return (
             <div key={i} className="md">
-              <Markdown remarkPlugins={[remarkGfm]}>{b.text}</Markdown>
+              <MessageMarkdown text={b.text} streaming={streaming} />
             </div>
           );
         }
@@ -170,4 +202,42 @@ function MessageItem({ message, streaming, toolResults, tools, onFork, onBranch,
   );
 }
 
-export default memo(MessageItem);
+function toolCallIds(message: PiiMessage): string[] {
+  if (!Array.isArray(message.content)) return [];
+  return (message.content as Block[])
+    .filter((block) => block.type === 'toolCall' && Boolean(block.id))
+    .map((block) => block.id as string);
+}
+
+function sameLiveMetrics(previous: Props['live'], next: Props['live']): boolean {
+  return previous === next || (
+    previous?.model === next?.model &&
+    previous?.tokens === next?.tokens &&
+    previous?.tps === next?.tps
+  );
+}
+
+function sameMessageItem(previous: Props, next: Props): boolean {
+  if (
+    previous.message !== next.message ||
+    previous.streaming !== next.streaming ||
+    previous.language !== next.language ||
+    previous.onFork !== next.onFork ||
+    previous.onBranch !== next.onBranch ||
+    previous.onOpenFile !== next.onOpenFile ||
+    !sameLiveMetrics(previous.live, next.live)
+  )
+    return false;
+  if (
+    previous.toolResults === next.toolResults &&
+    previous.tools === next.tools
+  )
+    return true;
+  for (const id of toolCallIds(next.message)) {
+    if (previous.toolResults.get(id) !== next.toolResults.get(id)) return false;
+    if (previous.tools.get(id) !== next.tools.get(id)) return false;
+  }
+  return true;
+}
+
+export default memo(MessageItem, sameMessageItem);

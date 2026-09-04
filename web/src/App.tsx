@@ -1,4 +1,6 @@
 import {
+  lazy,
+  Suspense,
   useCallback,
   useEffect,
   useMemo,
@@ -22,19 +24,23 @@ import {
   initialCwd,
   parseAppRoute,
   parseStoredSelection,
+  sameOrderedStrings,
   sessionIdFromPath,
+  shouldRefreshSessionCatalog,
   type AppRoute,
   type AppView,
+  type SessionCatalogRefreshState,
   type SelectionState,
 } from "./state-utils";
 import Sidebar from "./components/Sidebar";
 import ChatView from "./components/ChatView";
-import ModelsPanel from "./components/ModelsPanel";
-import FilesPanel from "./components/FilesPanel";
-import SkillsPanel from "./components/SkillsPanel";
-import ExtensionsPanel from "./components/ExtensionsPanel";
-import SettingsPanel from "./components/SettingsPanel";
 import { getLang, onLangChange, t } from "./i18n";
+
+const ModelsPanel = lazy(() => import("./components/ModelsPanel"));
+const FilesPanel = lazy(() => import("./components/FilesPanel"));
+const SkillsPanel = lazy(() => import("./components/SkillsPanel"));
+const ExtensionsPanel = lazy(() => import("./components/ExtensionsPanel"));
+const SettingsPanel = lazy(() => import("./components/SettingsPanel"));
 
 export type Selection = SelectionState;
 export type View = AppView;
@@ -54,6 +60,15 @@ function rememberSession(selection: Selection | undefined): void {
     return;
   }
   localStorage.setItem(LAST_SESSION_KEY, JSON.stringify(normalizeSelection(selection)));
+}
+
+function PanelLoading() {
+  return (
+    <div className="session-loading" role="status">
+      <span className="working-dot" aria-hidden="true" />
+      <span>{t("loadingSession")}</span>
+    </div>
+  );
 }
 
 /** Clean path routes: /chat/<sessionId>, /chat, /files, /settings|models|skills|extensions. */
@@ -138,19 +153,21 @@ export default function App() {
     const controller = new AbortController();
     const generation = projectsGeneration.next();
     projectsController.current = controller;
-    void Promise.all([
-      fetchProjects(controller.signal),
-      fetch("/api/sessions?includeArchived=1", { signal: controller.signal })
-        .then((response) => {
-          if (!response.ok) throw new Error(`archived sessions: ${response.status}`);
-          return response.json() as Promise<{ projects: ProjectGroup[] }>;
-        }),
-    ])
-      .then(([nextProjects, archived]) => {
+    void fetchProjects(controller.signal, true)
+      .then((allProjects) => {
         if (!projectsGeneration.accepts(generation, controller.signal.aborted)) return;
-        setProjects(nextProjects);
+        setProjects(
+          allProjects
+            .map((project) => ({
+              ...project,
+              sessions: project.sessions.filter((session) => !session.archived),
+            }))
+            .filter((project) => project.sessions.length > 0),
+        );
         setArchivedSessions(
-          archived.projects.flatMap((project) => project.sessions).filter((session) => session.archived),
+          allProjects
+            .flatMap((project) => project.sessions)
+            .filter((session) => session.archived),
         );
       })
       .catch((cause) => {
@@ -165,23 +182,46 @@ export default function App() {
         setAuthRequired(Boolean(d.authRequired)),
       )
       .catch(() => undefined);
-    const loadAgents = () =>
-      fetch("/api/agents")
-        .then((r) => r.json())
-        .then((d: { agents?: string[] }) => {
-          const list = d.agents ?? [];
-          setAgents(list);
-          // Keep a selected-but-offline agent explicit. Silently switching to
-          // local or another remote would open the wrong workspace/session.
-        })
-        .catch(() => undefined);
-    loadAgents();
-    const agentTimer = setInterval(loadAgents, 15_000);
+    let agentTimer: ReturnType<typeof setTimeout> | undefined;
+    let agentController: AbortController | undefined;
+    let agentGeneration = 0;
+    const scheduleAgents = () => {
+      clearTimeout(agentTimer);
+      if (!document.hidden)
+        agentTimer = setTimeout(() => void loadAgents(), 15_000);
+    };
+    const loadAgents = async () => {
+      if (document.hidden) return;
+      agentController?.abort();
+      const controller = new AbortController();
+      const generation = ++agentGeneration;
+      agentController = controller;
+      try {
+        const response = await fetch("/api/agents", {
+          signal: controller.signal,
+        });
+        const data = (await response.json()) as { agents?: string[] };
+        if (controller.signal.aborted || generation !== agentGeneration) return;
+        const nextAgents = data.agents ?? [];
+        setAgents((current) =>
+          sameOrderedStrings(current, nextAgents) ? current : nextAgents,
+        );
+        // Keep a selected-but-offline agent explicit. Silently switching to
+        // local or another remote would open the wrong workspace/session.
+      } catch {
+        // Hidden tabs abort their request; visibility restoration reloads it.
+      } finally {
+        if (generation === agentGeneration) scheduleAgents();
+      }
+    };
+    void loadAgents();
     refreshProjects();
     // poll a cheap version counter; refetch only when the sessions dir changed
     let lastVersion = -1;
+    let pollInFlight = false;
     const poll = async () => {
-      if (document.hidden) return;
+      if (document.hidden || pollInFlight) return;
+      pollInFlight = true;
       try {
         const r = await fetch("/api/sessions/version");
         const d = (await r.json()) as { version: number };
@@ -189,22 +229,30 @@ export default function App() {
         lastVersion = d.version;
       } catch {
         // ignore
+      } finally {
+        pollInFlight = false;
       }
     };
     void poll();
     const timer = setInterval(poll, 8_000);
     // also refresh immediately when the tab regains focus (you may have used pi CLI)
     const onVisible = () => {
-      if (!document.hidden) {
-        void poll();
-        refreshProjects();
+      if (document.hidden) {
+        clearTimeout(agentTimer);
+        agentGeneration += 1;
+        agentController?.abort();
+        return;
       }
+      void poll();
+      void loadAgents();
     };
     document.addEventListener("visibilitychange", onVisible);
     window.addEventListener("focus", onVisible);
     return () => {
       projectsController.current?.abort();
-      clearInterval(agentTimer);
+      clearTimeout(agentTimer);
+      agentGeneration += 1;
+      agentController?.abort();
       clearInterval(timer);
       document.removeEventListener("visibilitychange", onVisible);
       window.removeEventListener("focus", onVisible);
@@ -316,31 +364,46 @@ export default function App() {
     let prevStreaming = conv.snapshot?.isStreaming;
     let prevCount = conv.snapshot?.messages.length ?? conv.messages.length;
     let prevFile = conv.snapshot?.sessionFile;
+    let prevName = conv.snapshot?.name;
+    let recordedSignature: string | undefined;
+    const recordUsedSession = () => {
+      const firstUser = conv.messages.find((message) => message.role === "user");
+      if (!firstUser) return;
+      const firstText =
+        typeof firstUser.content === "string"
+          ? firstUser.content
+          : Array.isArray(firstUser.content)
+            ? ((firstUser.content as { type?: string; text?: string }[]).find(
+                (block) => block.type === "text",
+              )?.text ?? "")
+            : "";
+      const file = conv.snapshot?.sessionFile ?? conv.sessionPath;
+      const title = conv.snapshot?.name || firstText.slice(0, 40) || "(新会话)";
+      const signature = [
+        conv.snapshot?.cwd ?? conv.cwd,
+        file ?? "",
+        conv.snapshot?.sessionId ?? "",
+        title,
+      ].join("|");
+      if (signature === recordedSignature) return;
+      recordedSignature = signature;
+      addUsedSession({
+        cwd: conv.snapshot?.cwd ?? conv.cwd,
+        sessionPath: file,
+        sessionId: conv.snapshot?.sessionId,
+        title,
+      });
+    };
+    recordUsedSession();
     return conv.subscribe(() => {
       const streaming = conv.snapshot?.isStreaming;
       const count = conv.snapshot?.messages.length ?? conv.messages.length;
       const file = conv.snapshot?.sessionFile;
+      const name = conv.snapshot?.name;
       // record "used in this tab" when a user message lands (title from the
       // session itself: name or first user text, never the latest message)
-      const msgs = conv.messages;
-      if (count > 0 && msgs.some((m) => m.role === "user")) {
-        const firstUser = msgs.find((m) => m.role === "user");
-        const firstText = firstUser
-          ? typeof firstUser.content === "string"
-            ? firstUser.content
-            : Array.isArray(firstUser.content)
-              ? ((firstUser.content as { type?: string; text?: string }[]).find(
-                  (b) => b.type === "text",
-                )?.text ?? "")
-              : ""
-          : "";
-        addUsedSession({
-          cwd: conv.snapshot?.cwd ?? conv.cwd,
-          sessionPath: file ?? conv.sessionPath,
-          sessionId: conv.snapshot?.sessionId,
-          title: conv.snapshot?.name || firstText.slice(0, 40) || "(新会话)",
-        });
-      }
+      if ((prevCount === 0 && count > 0) || file !== prevFile || name !== prevName)
+        recordUsedSession();
       if (
         streaming !== prevStreaming ||
         (prevCount === 0 && count > 0) ||
@@ -353,6 +416,7 @@ export default function App() {
       } else {
         prevCount = count;
       }
+      prevName = name;
     });
   }, [conv]);
 
@@ -360,16 +424,32 @@ export default function App() {
   // assigned, and when the first message lands (new session appears).
   const msgCount =
     conv?.snapshot?.messages.length ?? conv?.messages.length ?? 0;
-  const prevCount = useRef(0);
+  const catalogRefreshState = useRef<{
+    conversation?: Conversation;
+    snapshot?: SessionCatalogRefreshState;
+  }>({});
   useEffect(() => {
-    const count = msgCount;
-    const wasEmpty = prevCount.current === 0;
-    prevCount.current = count;
-    if ((wasEmpty && count > 0) || (conv && !conv.snapshot?.isStreaming)) {
+    const next = conv?.snapshot
+      ? {
+          messageCount: msgCount,
+          isStreaming: conv.snapshot.isStreaming,
+          sessionFile: conv.snapshot.sessionFile,
+        }
+      : undefined;
+    const previous = catalogRefreshState.current;
+    catalogRefreshState.current = { conversation: conv, snapshot: next };
+    if (
+      previous.conversation === conv &&
+      shouldRefreshSessionCatalog(previous.snapshot, next)
+    )
       refreshProjects();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [msgCount, conv?.snapshot?.isStreaming, conv?.snapshot?.sessionFile]);
+  }, [
+    conv,
+    msgCount,
+    conv?.snapshot?.isStreaming,
+    conv?.snapshot?.sessionFile,
+    refreshProjects,
+  ]);
 
   const handleDelete = useCallback(
     (path: string) => {
@@ -516,6 +596,28 @@ export default function App() {
     [sidebarCollapsed, sidebarWidth, toggleCollapse],
   );
 
+  const handleNavigate = useCallback(
+    (view: View) => setRoute({ view, selection }),
+    [selection, setRoute],
+  );
+  const handleToggleTheme = useCallback(() => setDark((value) => !value), []);
+  const handleSelectAgent = useCallback(
+    (name: string) => setAgent(name || undefined),
+    [],
+  );
+  const handleForked = useCallback(
+    (cwd: string, sessionFile: string, sessionId?: string) =>
+      setRoute({
+        view: "chat",
+        selection: { cwd, sessionPath: sessionFile, sessionId },
+      }),
+    [setRoute],
+  );
+  const handleSelectProject = useCallback(
+    (cwd: string) => setSelection({ cwd }),
+    [setSelection],
+  );
+
   const defaultCwd = effectiveSelection?.cwd ?? projects[0]?.cwd ?? "/";
   const isSettingsish =
     route.view === "settings" ||
@@ -534,22 +636,20 @@ export default function App() {
         width={sidebarWidth}
         onStartDrag={startSidebarDrag}
         onToggleCollapse={toggleCollapse}
-        onNavigate={(view) =>
-          // keep the chat selection intact when visiting settings/files so
-          // coming back to chat restores the same conversation
-          setRoute({ view, selection })
-        }
+        // Keep the chat selection intact when visiting settings/files so
+        // coming back to chat restores the same conversation.
+        onNavigate={handleNavigate}
         onSelect={setSelection}
         onDelete={handleDelete}
         onRename={handleRename}
         onArchive={handleArchive}
         onRefresh={refreshProjects}
         dark={dark}
-        onToggleTheme={() => setDark((d) => !d)}
+        onToggleTheme={handleToggleTheme}
         authRequired={authRequired}
         agents={agents}
         currentAgent={appAgent}
-        onSelectAgent={(name) => setAgent(name || undefined)}
+        onSelectAgent={handleSelectAgent}
       />
       <div className="main">
         {isSettingsish && (
@@ -586,24 +686,28 @@ export default function App() {
               ))}
             </div>
             <div className="us-panel">
-              {route.view === "settings" && (
-                <SettingsPanel
-                  dark={dark}
-                  onToggleTheme={() => setDark((d) => !d)}
-                />
-              )}
-              {route.view === "models" && <ModelsPanel />}
-              {route.view === "skills" && (
-                <SkillsPanel key={defaultCwd} cwd={defaultCwd} />
-              )}
-              {route.view === "extensions" && (
-                <ExtensionsPanel key={defaultCwd} cwd={defaultCwd} />
-              )}
+              <Suspense fallback={<PanelLoading />}>
+                {route.view === "settings" && (
+                  <SettingsPanel
+                    dark={dark}
+                    onToggleTheme={handleToggleTheme}
+                  />
+                )}
+                {route.view === "models" && <ModelsPanel />}
+                {route.view === "skills" && (
+                  <SkillsPanel key={defaultCwd} cwd={defaultCwd} />
+                )}
+                {route.view === "extensions" && (
+                  <ExtensionsPanel key={defaultCwd} cwd={defaultCwd} />
+                )}
+              </Suspense>
             </div>
           </div>
         )}
         {route.view === "files" && (
-          <FilesPanel key={defaultCwd} cwd={defaultCwd} />
+          <Suspense fallback={<PanelLoading />}>
+            <FilesPanel key={defaultCwd} cwd={defaultCwd} />
+          </Suspense>
         )}
         {route.view === "chat" &&
           (route.pendingSessionId ? (
@@ -616,14 +720,10 @@ export default function App() {
               key={`${effectiveSelection?.cwd}|${effectiveSelection?.sessionPath ?? "new"}`}
               conv={conv}
               onRefresh={refreshProjects}
-              onForked={(cwd, sessionFile, sessionId) =>
-                setRoute({
-                  view: "chat",
-                  selection: { cwd, sessionPath: sessionFile, sessionId },
-                })
-              }
+              onForked={handleForked}
               projects={projects}
-              onSelectProject={(cwd) => setSelection({ cwd })}
+              onSelectProject={handleSelectProject}
+              dark={dark}
             />
           ) : (
             <HeroLanding projects={projects} onSelect={setSelection} />

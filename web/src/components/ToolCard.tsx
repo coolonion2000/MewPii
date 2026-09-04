@@ -115,12 +115,18 @@ function ToolCard({ call, result, activity, onOpenFile }: Props) {
   const args = call.arguments ?? activity?.args;
   const running = activity?.running ?? (!result && Boolean(call.id));
   const open = userToggled ?? running;
-  const { text: output, isError, diff } = resultText(result);
-  const error = isError || activity?.isError;
-  const showOutput = diff ?? output ?? activity?.liveOutput ?? '';
+  const error = Boolean(result?.isError) || activity?.isError;
+  const headline = headlineArg(name, args);
 
   let inputNode: React.ReactNode = null;
-  if (args) {
+  let showOutput = '';
+  if (open) {
+    const { text: output, diff } = resultText(result);
+    showOutput = diff ?? output ?? activity?.liveOutput ?? '';
+  }
+  // Finalized cards are collapsed by default. Avoid stripping potentially
+  // large outputs and formatting tool arguments until the body is visible.
+  if (open && args) {
     if (name === 'bash') inputNode = <DiffPre text={String(args.command ?? '')} />;
     else if (name === 'write') inputNode = <DiffPre text={String(args.content ?? '')} />;
     else if (name === 'edit') inputNode = <EditInput args={args} />;
@@ -132,19 +138,19 @@ function ToolCard({ call, result, activity, onOpenFile }: Props) {
       <div className="tool-card-header" onClick={() => setUserToggled(!open)}>
         <span className="tool-icon"><ToolIcon name={(name as ToolIconName) ?? 'tool'} /></span>
         <span className="tool-name">{name}</span>
-        {onOpenFile && ['read', 'write', 'edit'].includes(name) && headlineArg(name, args) ? (
+        {onOpenFile && ['read', 'write', 'edit'].includes(name) && headline ? (
           <button
             className="tool-arg tool-arg-link"
             title={t('openFile')}
             onClick={(e) => {
               e.stopPropagation();
-              onOpenFile(headlineArg(name, args));
+              onOpenFile(headline);
             }}
           >
-            {headlineArg(name, args)}
+            {headline}
           </button>
         ) : (
-          <span className="tool-arg">{headlineArg(name, args)}</span>
+          <span className="tool-arg">{headline}</span>
         )}
         <span className={`tool-status ${running ? 'running' : error ? 'error' : 'ok'}`} />
         <span className={`tool-chevron ${open ? 'open' : ''}`}><IconChevronRight size={11} /></span>

@@ -84,6 +84,12 @@
 }
 .session-item:hover { background: var(--dsw-specific-sidebar-nav-item-hover); }
 .session-item.active { background: var(--dsw-specific-sidebar-nav-item-active); }
+.session-select {
+  display: flex; align-items: center; gap: 4px;
+  flex: 1; min-width: 0; padding: 0; border: 0;
+  background: transparent; color: inherit; font: inherit;
+  text-align: left; cursor: pointer;
+}
 .session-item .status-dot {
   width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
   background: transparent;
@@ -223,6 +229,7 @@
 }
 .btn:hover { background: var(--dsw-alias-interactive-bg-hover); }
 .btn:active { background: var(--dsw-alias-interactive-bg-active); }
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
 .btn-primary {
   background: var(--dsw-alias-button-primary-fill);
   color: var(--dsw-alias-brand-primary-invert);
@@ -269,7 +276,12 @@
 }
 .msg-user img, .msg-assistant img { max-width: 320px; border-radius: 8px; display: block; margin-top: 6px; }
 
-.msg-row { display: flex; flex-direction: column; }
+.msg-row {
+  display: flex;
+  flex-direction: column;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 120px;
+}
 .msg-row.user { align-items: flex-end; }
 .msg-actions {
   display: flex; gap: 2px;
@@ -337,6 +349,11 @@ body[data-ds-dark-theme] .tag-assistant { background: var(--dsw-static-deepseek-
 .hero-transcript-notices {
   width: 720px; max-width: 92vw; margin: 0 0 12px;
   display: flex; flex-direction: column; gap: 18px;
+}
+.hero-connection-error {
+  width: 720px; max-width: 92vw; margin: 0 0 12px;
+  color: var(--dsw-alias-state-error-primary); font-size: 13px;
+  overflow-wrap: anywhere;
 }
 
 /* Pi setWidget() arrays are unframed text in the editor dock. */
@@ -767,8 +784,15 @@ body[data-ds-dark-theme] .composer:focus-within { box-shadow: 0 2px 14px rgba(0,
 .project-header:hover .project-actions { display: flex; }
 .project-header .path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
 .session-actions { display: none; align-items: center; flex-shrink: 0; }
-.session-item:hover .session-actions { display: flex; }
-.session-item:hover .time { visibility: hidden; }
+.session-item:hover .session-actions,
+.session-item:focus-within .session-actions { display: flex; }
+.session-item:hover .time,
+.session-item:focus-within .time { visibility: hidden; }
+.session-select:focus-visible {
+  outline: 2px solid var(--dsw-alias-state-business-primary);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
 .session-item .time { transition: visibility 0s; }
 .session-actions .btn:disabled,
 .session-rename .btn:disabled { opacity: 0.35; cursor: not-allowed; }
@@ -1096,12 +1120,6 @@ body[data-ds-dark-theme] .hero-composer .composer { box-shadow: 0 8px 32px rgba(
 /* MewPii brand image */
 .brand-logo-wide { height: 30px; width: auto; display: block; }
 .hero-logo-wide { width: 340px; max-width: 72vw; height: auto; }
-
-/* theme-adaptive logo (white on dark, black on light) */
-.logo-on-light { display: none; }
-.logo-on-dark { display: block; }
-body:not([data-ds-dark-theme]) .logo-on-dark { display: none; }
-body:not([data-ds-dark-theme]) .logo-on-light { display: block; }
 
 /* right-anchored menus: position never shifts with chip width */
 .menu.menu-right { left: auto; right: 0; }

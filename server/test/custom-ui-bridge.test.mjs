@@ -151,7 +151,11 @@ export default function (pi) {
           reject(cause);
           return;
         }
-        if (message.type === "snapshot" && phase === 0) {
+        if (
+          (message.type === "snapshot" || message.type === "session_ready") &&
+          message.snapshot.initializing !== true &&
+          phase === 0
+        ) {
           const commandNames = message.snapshot.slashCommands?.map((command) => command.name) ?? [];
           assert.ok(commandNames.includes("reload"), "missing built-in /reload suggestion");
           assert.ok(commandNames.includes("web-ui-test"), "missing extension command suggestion");

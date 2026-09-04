@@ -149,6 +149,7 @@ export interface CustomUiFrame {
 /** Server → Client WebSocket messages. */
 export type ServerMessage =
   | { type: "snapshot"; snapshot: SessionSnapshot }
+  | { type: "session_ready"; snapshot: Omit<SessionSnapshot, "messages"> }
   | { type: "event"; event: Record<string, unknown> }
   | { type: "widgets"; widgets: WidgetState[] }
   | { type: "statuses"; statuses: Record<string, string> }
@@ -182,6 +183,10 @@ export interface SlashCommandLite {
 export interface SessionSnapshot {
   sessionId: string;
   sessionFile?: string;
+  /** Extension session_start/resource discovery is still running. */
+  initializing?: boolean;
+  /** Initial tail-only preview has provisional paging metadata. */
+  pagingProvisional?: boolean;
   /** Current branch leaf at snapshot time; history replies must match it. */
   branchHeadId?: string;
   name?: string;

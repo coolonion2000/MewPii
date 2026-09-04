@@ -196,6 +196,36 @@ export default function Sidebar(props: Props) {
     );
   }, [filtered, favs, projectOrder]);
 
+  const selectedAncestorPaths = useMemo(() => {
+    if (!selection?.sessionPath) return [];
+    const sessions = projects.flatMap((project) => project.sessions);
+    const byPath = new Map(sessions.map((session) => [session.path, session]));
+    const ancestors: string[] = [];
+    const seen = new Set<string>();
+    let current = byPath.get(selection.sessionPath);
+    while (
+      current?.parentSessionPath &&
+      byPath.has(current.parentSessionPath) &&
+      !seen.has(current.parentSessionPath)
+    ) {
+      seen.add(current.parentSessionPath);
+      ancestors.push(current.parentSessionPath);
+      current = byPath.get(current.parentSessionPath);
+    }
+    return ancestors;
+  }, [projects, selection?.sessionPath]);
+
+  useEffect(() => {
+    if (selectedAncestorPaths.length === 0) return;
+    setOpenParents((previous) => {
+      if (selectedAncestorPaths.every((path) => previous.has(path)))
+        return previous;
+      const next = new Set(previous);
+      for (const path of selectedAncestorPaths) next.add(path);
+      return next;
+    });
+  }, [selectedAncestorPaths]);
+
   const newSessionCwd = selection?.cwd ?? projects[0]?.cwd ?? '/';
   const agentOffline = Boolean(currentAgent && !agents?.includes(currentAgent));
   const usedSessions = useSyncExternalStore(
@@ -293,34 +323,38 @@ export default function Sidebar(props: Props) {
         </div>
       );
     }
+    const selectSession = () => {
+      onSelect({ cwd: s.cwd || '', sessionPath: s.path, sessionId: s.id });
+      if (kids && !kids.open) kids.toggle();
+    };
     return (
       <div
         key={s.path}
         className={`session-item ${selection?.sessionPath === s.path ? 'active' : ''}`}
         style={{ marginLeft: indent }}
-        onClick={() => {
-          onSelect({ cwd: s.cwd || '', sessionPath: s.path, sessionId: s.id });
-          if (kids && !kids.open) kids.toggle();
-        }}
       >
         {kids ? (
           <button
             className={`sub-chevron ${kids.open ? 'open' : ''}`}
-            onClick={(e) => {
-              e.stopPropagation();
-              kids.toggle();
-            }}
+            onClick={kids.toggle}
           >
             <IconChevronRight size={10} />
           </button>
         ) : (
           <span className="sub-chevron-placeholder" />
         )}
-        <span className={`status-dot ${s.running ? 'on' : ''}`} />
-        <span className="title" title={s.name || s.firstMessage}>{s.name || s.firstMessage || '(空会话)'}</span>
-        {kids && <span className="sub-count">{kids.count}</span>}
-        <span className="time">{relTime(s.modified)}</span>
-        <span className="session-actions" onClick={(e) => e.stopPropagation()}>
+        <button
+          type="button"
+          className="session-select"
+          aria-current={selection?.sessionPath === s.path ? 'page' : undefined}
+          onClick={selectSession}
+        >
+          <span className={`status-dot ${s.running ? 'on' : ''}`} />
+          <span className="title" title={s.name || s.firstMessage}>{s.name || s.firstMessage || '(空会话)'}</span>
+          {kids && <span className="sub-count">{kids.count}</span>}
+          <span className="time">{relTime(s.modified)}</span>
+        </button>
+        <span className="session-actions">
           <button
             className="btn btn-icon btn-sm"
             title={s.running ? t('renameRunning') : t('rename')}
@@ -364,23 +398,6 @@ export default function Sidebar(props: Props) {
         byParent.set(s.parentSessionPath, list);
       } else {
         tops.push(s);
-      }
-    }
-    // auto-expand the ancestor chain of the selected session
-    if (selection?.sessionPath) {
-      let cur: SessionSummary | undefined = p.sessions.find((x) => x.path === selection.sessionPath);
-      const toOpen: string[] = [];
-      while (cur?.parentSessionPath && pathSet.has(cur.parentSessionPath)) {
-        toOpen.push(cur.parentSessionPath);
-        cur = p.sessions.find((x) => x.path === cur!.parentSessionPath);
-      }
-      const missing = toOpen.filter((x) => !openParents.has(x));
-      if (missing.length > 0) {
-        setOpenParents((prev) => {
-          const next = new Set(prev);
-          for (const x of missing) next.add(x);
-          return next;
-        });
       }
     }
     const renderNode = (s: SessionSummary, depth: number): React.ReactNode => {
@@ -436,8 +453,11 @@ export default function Sidebar(props: Props) {
     <div className="sidebar" style={{ width }}>
       <div className="sidebar-resize" onMouseDown={onStartDrag} />
       <div className="brand-row">
-        <img className="brand-logo-wide logo-on-dark" src="/logo-wide-dark.png" alt="MewPii" />
-        <img className="brand-logo-wide logo-on-light" src="/logo-wide-light.png" alt="MewPii" />
+        <img
+          className="brand-logo-wide"
+          src={dark ? '/logo-wide-dark.png' : '/logo-wide-light.png'}
+          alt="MewPii"
+        />
         <span className="spacer" />
         <button className="btn btn-icon" title={t('collapseSidebar')} onClick={onToggleCollapse}>
           <IconChevronLeft />
@@ -618,7 +638,13 @@ export default function Sidebar(props: Props) {
             </div>
             {showArchived &&
               archivedSessions.map((s) => (
-                <div key={s.path} className="session-item archived">
+                <div
+                  key={s.path}
+                  className="session-item archived"
+                  role="group"
+                  aria-label={s.name || s.firstMessage || '(空会话)'}
+                  tabIndex={0}
+                >
                   <span className="status-dot" />
                   <span className="title" title={s.name || s.firstMessage}>{s.name || s.firstMessage || '(空会话)'}</span>
                   <span className="time">{relTime(s.modified)}</span>

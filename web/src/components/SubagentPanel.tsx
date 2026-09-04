@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { IconChevronDown, IconBot } from '../icons';
 import { t } from '../i18n';
-import SubagentRunDialog from './SubagentRunDialog';
+
+const SubagentRunDialog = lazy(() => import('./SubagentRunDialog'));
 
 interface RunEntry {
   path: string;
@@ -29,23 +30,56 @@ export default function SubagentPanel({ sessionFile, cwd, onOpenParent }: {
       return;
     }
     let alive = true;
-    const load = () => {
-      fetch(`/api/subagent-runs?parent=${encodeURIComponent(sessionFile)}`)
-        .then((r) => r.json())
-        .then((d: { runs?: RunEntry[] }) => {
-          if (alive) {
-            const list = d.runs ?? [];
-            list.sort((a, b) => Number(b.running ?? false) - Number(a.running ?? false));
-            setRuns(list);
-          }
-        })
-        .catch(() => undefined);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let controller: AbortController | undefined;
+    let generation = 0;
+    const schedule = (delayMs: number) => {
+      clearTimeout(timer);
+      if (alive && !document.hidden)
+        timer = setTimeout(() => void load(), delayMs);
     };
-    load();
-    const timer = setInterval(load, 4000);
+    const load = async () => {
+      if (!alive || document.hidden) return;
+      controller?.abort();
+      const request = new AbortController();
+      const currentGeneration = ++generation;
+      controller = request;
+      let nextDelay = 12_000;
+      try {
+        const response = await fetch(
+          `/api/subagent-runs?parent=${encodeURIComponent(sessionFile)}`,
+          { signal: request.signal },
+        );
+        const data = (await response.json()) as { runs?: RunEntry[] };
+        if (!alive || currentGeneration !== generation) return;
+        const list = data.runs ?? [];
+        list.sort(
+          (a, b) => Number(b.running ?? false) - Number(a.running ?? false),
+        );
+        setRuns(list);
+        if (list.some((run) => run.running)) nextDelay = 4_000;
+      } catch {
+        // A hidden tab aborts its request; visibility restoration reloads it.
+      } finally {
+        if (currentGeneration === generation) schedule(nextDelay);
+      }
+    };
+    const onVisibility = () => {
+      clearTimeout(timer);
+      if (document.hidden) {
+        generation++;
+        controller?.abort();
+      }
+      else void load();
+    };
+    void load();
+    document.addEventListener('visibilitychange', onVisibility);
     return () => {
       alive = false;
-      clearInterval(timer);
+      generation++;
+      clearTimeout(timer);
+      controller?.abort();
+      document.removeEventListener('visibilitychange', onVisibility);
     };
   }, [sessionFile]);
 
@@ -96,11 +130,13 @@ export default function SubagentPanel({ sessionFile, cwd, onOpenParent }: {
         </div>
       )}
       {dialogId && (
-        <SubagentRunDialog
-          runId={dialogId}
-          onClose={() => setDialogId(undefined)}
-          onOpenParent={onOpenParent}
-        />
+        <Suspense fallback={null}>
+          <SubagentRunDialog
+            runId={dialogId}
+            onClose={() => setDialogId(undefined)}
+            onOpenParent={onOpenParent}
+          />
+        </Suspense>
       )}
     </div>
   );
