@@ -32,6 +32,9 @@ import { ReadinessWaiters } from "./readiness-waiters";
 import {
   appendPartialEvent,
   isBatchablePartialEvent,
+  normalizeMessageContent,
+  normalizeStreamingMessage,
+  reconcileStreamingMessage,
   type PendingPartialEvent,
 } from "./partial-events";
 
@@ -174,6 +177,38 @@ export interface RunStats {
   outputChars: number;
 }
 
+function runningToolsFromSnapshot(
+  snapshot: Pick<SessionSnapshot, "activeToolCalls">,
+): Map<string, ToolActivity> {
+  return new Map(
+    (snapshot.activeToolCalls ?? [])
+      .filter(
+        (tool) =>
+          tool &&
+          typeof tool.toolCallId === "string" &&
+          typeof tool.toolName === "string",
+      )
+      .map((tool) => [
+        tool.toolCallId,
+        {
+          toolCallId: tool.toolCallId,
+          toolName: tool.toolName,
+          args:
+            tool.args && typeof tool.args === "object"
+              ? { ...tool.args }
+              : undefined,
+          running: true,
+          startedAt:
+            typeof tool.startedAt === "number" ? tool.startedAt : undefined,
+          liveOutput:
+            typeof tool.liveOutput === "string"
+              ? stripAnsi(tool.liveOutput)
+              : undefined,
+        },
+      ]),
+  );
+}
+
 function sameStringArray(
   left: readonly string[],
   right: readonly string[],
@@ -261,6 +296,8 @@ interface OptimisticMessage {
 interface CachedConversationState {
   snapshot: SessionSnapshot;
   optimistic: OptimisticMessage[];
+  streaming?: PiiMessage;
+  activeTools: ToolActivity[];
   transcriptNotices: TranscriptNotice[];
   transcriptNoticeRevision: number;
   noticeSeq: number;
@@ -353,6 +390,7 @@ export class Conversation {
     public readonly cwd: string,
     public readonly sessionPath?: string,
     public readonly agent: string | undefined = getAgent(),
+    public readonly requestedSessionId?: string,
   ) {
     // Agent identity is immutable for this Conversation; reconnects must never
     // jump to local or another remote workspace.
@@ -372,6 +410,16 @@ export class Conversation {
       this.optimisticSeq = Math.max(
         0,
         ...this.optimistic.map((item) => item.key),
+      );
+      this.streaming = normalizeStreamingMessage(cached.streaming);
+      this.tools = new Map(
+        (cached.activeTools ?? []).map((activity) => [
+          activity.toolCallId,
+          {
+            ...activity,
+            args: activity.args ? { ...activity.args } : undefined,
+          },
+        ]),
       );
       this.transcriptNotices = cached.transcriptNotices.map((notice) => ({
         ...notice,
@@ -455,6 +503,10 @@ export class Conversation {
     const proto = location.protocol === "https:" ? "wss" : "ws";
     let url = `${proto}://${location.host}/ws?snapshotDelta=1&cwd=${encodeURIComponent(this.cwd)}${
       this.sessionPath ? `&session=${encodeURIComponent(this.sessionPath)}` : ""
+    }${
+      !this.sessionPath && this.requestedSessionId
+        ? `&sessionId=${encodeURIComponent(this.requestedSessionId)}`
+        : ""
     }`;
     url = withAgent(url, this.agent);
     const ws = new WebSocket(url);
@@ -523,12 +575,24 @@ export class Conversation {
   private cacheCurrentState(): void {
     if (!this.snapshot) return;
     this.syncSnapshotMessages();
+    const activeTools = [...this.tools.values()]
+      .filter((activity) => activity.running)
+      .map((activity) => ({
+        ...activity,
+        args: activity.args ? { ...activity.args } : undefined,
+      }));
+    const snapshot =
+      (this.streaming || activeTools.length > 0) && !this.snapshot.isStreaming
+        ? { ...this.snapshot, isStreaming: true }
+        : this.snapshot;
     const state: CachedConversationState = {
-      snapshot: this.snapshot,
+      snapshot,
       optimistic: this.optimistic.map((item) => ({
         ...item,
         message: { ...item.message },
       })),
+      streaming: normalizeStreamingMessage(this.streaming),
+      activeTools,
       transcriptNotices: this.transcriptNotices.map((notice) => ({ ...notice })),
       transcriptNoticeRevision: this.transcriptNoticeRevision,
       noticeSeq: this.noticeSeq,
@@ -647,6 +711,28 @@ export class Conversation {
         steering: [...(msg.snapshot.queue?.steering ?? [])],
         followUp: [...(msg.snapshot.queue?.followUp ?? [])],
       };
+      if (!msg.snapshot.isStreaming) {
+        this.streaming = undefined;
+        this.tools = new Map(
+          [...this.tools].map(([id, activity]) => [
+            id,
+            activity.running ? { ...activity, running: false } : activity,
+          ]),
+        );
+      } else {
+        const resumed = normalizeStreamingMessage(
+          msg.snapshot.streamingMessage,
+        );
+        if (
+          Object.prototype.hasOwnProperty.call(
+            msg.snapshot,
+            "streamingMessage",
+          )
+        )
+          this.streaming = resumed;
+        if (Array.isArray(msg.snapshot.activeToolCalls))
+          this.tools = runningToolsFromSnapshot(msg.snapshot);
+      }
       this.cacheCurrentState();
       this.readyWaiters.resolveAll();
     } else if (msg.type === "event") {
@@ -681,7 +767,10 @@ export class Conversation {
         this.emit();
         return;
       }
-      this.messages = mergeHistoryMessages(this.messages, msg.messages);
+      this.messages = mergeHistoryMessages(
+        this.messages,
+        msg.messages.map(normalizeMessageContent),
+      );
       this.historyFrom = msg.before;
       this.syncSnapshotMessages();
       this.cacheCurrentState();
@@ -711,6 +800,10 @@ export class Conversation {
   }
 
   private applySnapshot(snap: SessionSnapshot): void {
+    snap = {
+      ...snap,
+      messages: snap.messages.map(normalizeMessageContent),
+    };
     const previousAnchor = this.currentTranscriptAnchor();
     const previousMessages = this.messages;
     const previousOptimistic = this.optimistic;
@@ -753,7 +846,17 @@ export class Conversation {
       steering: [...(snap.queue?.steering ?? [])],
       followUp: [...(snap.queue?.followUp ?? [])],
     };
-    if (!snap.isStreaming) {
+    const hasStreamingCheckpoint = Object.prototype.hasOwnProperty.call(
+      snap,
+      "streamingMessage",
+    );
+    const resumedStreaming = normalizeStreamingMessage(snap.streamingMessage);
+    if (previousSessionId && previousSessionId !== snap.sessionId) {
+      this.streaming = snap.isStreaming ? resumedStreaming : undefined;
+      this.runStats.agentStartedAt = undefined;
+      this.deltaSamples = [];
+      this.tools = new Map();
+    } else if (!snap.isStreaming) {
       this.streaming = undefined;
       this.runStats.agentStartedAt = undefined;
       this.deltaSamples = [];
@@ -763,7 +866,11 @@ export class Conversation {
           activity.running ? { ...activity, running: false } : activity,
         ]),
       );
+    } else if (hasStreamingCheckpoint) {
+      this.streaming = resumedStreaming;
     }
+    if (snap.isStreaming && Array.isArray(snap.activeToolCalls))
+      this.tools = runningToolsFromSnapshot(snap);
     if (previousSessionId && previousSessionId !== snap.sessionId) {
       this.optimistic = [];
       this.transcriptNotices = [];
@@ -869,46 +976,28 @@ export class Conversation {
         if (!message) break;
         this.breakTranscriptNoticeSequence();
         if (message.role === "assistant") {
-          this.streaming = { ...message, content: [] };
+          this.streaming = normalizeStreamingMessage(message);
         }
         break;
       }
       case "message_update": {
         const sub = event.assistantMessageEvent as StreamSub | undefined;
-        if (!sub || !this.streaming) break;
-        const content =
-          (this.streaming.content as Record<string, unknown>[]) ?? [];
-        const idx = sub.contentIndex ?? 0;
-        if (sub.type === "text_start" || sub.type === "thinking_start") {
-          content[idx] =
-            sub.type === "text_start"
-              ? { type: "text", text: "" }
-              : { type: "thinking", thinking: "" };
-        } else if (sub.type === "text_delta" || sub.type === "thinking_delta") {
-          const block = content[idx] as Record<string, unknown> | undefined;
-          const key = sub.type === "text_delta" ? "text" : "thinking";
-          if (block) block[key] = String(block[key] ?? "") + (sub.delta ?? "");
+        const nextStreaming = reconcileStreamingMessage(this.streaming, event);
+        if (!nextStreaming) break;
+        this.streaming = nextStreaming;
+        if (sub?.type === "text_delta" || sub?.type === "thinking_delta") {
           if (!this.runStats.firstDeltaAt) this.runStats.firstDeltaAt = now;
           this.runStats.outputChars += (sub.delta ?? "").length;
           this.deltaSamples.push({ t: now, n: (sub.delta ?? "").length });
           if (this.deltaSamples.length > 400)
             this.deltaSamples.splice(0, this.deltaSamples.length - 400);
-        } else if (sub.type === "toolcall_start") {
-          content[idx] = {
-            type: "toolCall",
-            id: `pending-${idx}`,
-            name: "",
-            arguments: {},
-          };
-        } else if (sub.type === "toolcall_end" && sub.toolCall) {
-          content[idx] = sub.toolCall;
         }
-        this.streaming = { ...this.streaming, content: [...content] };
         break;
       }
       case "message_end": {
-        const message = event.message as PiiMessage | undefined;
-        if (!message) break;
+        const rawMessage = event.message as PiiMessage | undefined;
+        if (!rawMessage) break;
+        const message = normalizeMessageContent(rawMessage);
         this.breakTranscriptNoticeSequence();
         const replacements: { from: string; to: string }[] = [];
         let optimisticAnchor: string | undefined;

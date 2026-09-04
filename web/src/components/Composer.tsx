@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Conversation } from '../api';
 import { fetchModels, type ModelsResponse } from '../api';
 import { t } from '../i18n';
@@ -8,9 +8,13 @@ import {
   clearComposerDraft,
   conversationDraftKey,
   getComposerDraft,
+  restoreFailedComposerDraft,
   setComposerDraft,
   type ComposerDraftImage,
 } from '../draft-store';
+import {
+  MODEL_CATALOG_CHANGED_EVENT,
+} from '../ui-reliability';
 
 interface Props {
   conv: Conversation;
@@ -32,10 +36,18 @@ export default function Composer({ conv, draft, onDraft }: Props) {
   const [text, setText] = useState(initialDraft?.text ?? '');
   const [images, setImages] = useState<PendingImage[]>(initialDraft?.images ?? []);
   const [models, setModels] = useState<ModelsResponse | undefined>();
+  const [modelsLoading, setModelsLoading] = useState(true);
+  const [modelsError, setModelsError] = useState<string>();
   const [menuOpen, setMenuOpen] = useState<'model' | 'thinking' | 'tools' | undefined>();
   const [queueMode, setQueueMode] = useState<'steer' | 'followUp'>('steer');
   const [submitPending, setSubmitPending] = useState(false);
+  const [stopping, setStopping] = useState(false);
+  const [stopError, setStopError] = useState<string>();
   const submitPendingRef = useRef(false);
+  const stoppingRef = useRef(false);
+  const stopGeneration = useRef(0);
+  const modelsGeneration = useRef(0);
+  const modelsFocusTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const imgInputRef = useRef<HTMLInputElement>(null);
   const draftKey = conversationDraftKey(
@@ -52,9 +64,43 @@ export default function Composer({ conv, draft, onDraft }: Props) {
     previousDraftKey.current = draftKey;
   }, [draftKey, text, images]);
 
-  useEffect(() => {
-    fetchModels().then(setModels).catch(() => undefined);
+  const loadModels = useCallback(async (force = false) => {
+    const generation = ++modelsGeneration.current;
+    setModelsLoading(true);
+    setModelsError(undefined);
+    try {
+      const next = await fetchModels(force);
+      if (generation !== modelsGeneration.current) return;
+      setModels(next);
+    } catch (cause) {
+      if (generation !== modelsGeneration.current) return;
+      setModelsError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      if (generation === modelsGeneration.current) setModelsLoading(false);
+    }
   }, []);
+
+  useEffect(() => {
+    void loadModels();
+    const refresh = () => {
+      clearTimeout(modelsFocusTimer.current);
+      modelsFocusTimer.current = setTimeout(() => void loadModels(true), 80);
+    };
+    const refreshFromCatalog = () => void loadModels();
+    const refreshWhenVisible = () => {
+      if (!document.hidden) refresh();
+    };
+    window.addEventListener(MODEL_CATALOG_CHANGED_EVENT, refreshFromCatalog);
+    window.addEventListener('focus', refresh);
+    document.addEventListener('visibilitychange', refreshWhenVisible);
+    return () => {
+      modelsGeneration.current += 1;
+      clearTimeout(modelsFocusTimer.current);
+      window.removeEventListener(MODEL_CATALOG_CHANGED_EVENT, refreshFromCatalog);
+      window.removeEventListener('focus', refresh);
+      document.removeEventListener('visibilitychange', refreshWhenVisible);
+    };
+  }, [loadModels]);
 
   // Live command discovery: built-ins, extension commands, prompts, and skills.
   const slashItems = (conv.snapshot?.slashCommands ?? []).map((command) => ({
@@ -85,6 +131,45 @@ export default function Composer({ conv, draft, onDraft }: Props) {
   const hasPayload = text.trim().length > 0 || images.length > 0;
   const connectionKnownFailed = !conv.connected && Boolean(conv.error);
   const canSend = hasPayload && !submitPending && !connectionKnownFailed;
+
+  useEffect(() => {
+    if (!streaming) {
+      stopGeneration.current += 1;
+      stoppingRef.current = false;
+      setStopping(false);
+      setStopError(undefined);
+    }
+  }, [streaming]);
+
+  const stop = useCallback(async () => {
+    if (stoppingRef.current) return;
+    const generation = ++stopGeneration.current;
+    stoppingRef.current = true;
+    setStopping(true);
+    setStopError(undefined);
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const timeout = new Promise<never>((_, reject) => {
+        timeoutId = setTimeout(
+          () => reject(new Error('timeout')),
+          15_000,
+        );
+      });
+      await Promise.race([conv.send({ type: 'abort' }), timeout]);
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      if (generation === stopGeneration.current) {
+        setStopError(message);
+        conv.reportError(`${t('stopFailed')}: ${message}`);
+      }
+    } finally {
+      clearTimeout(timeoutId);
+      if (generation === stopGeneration.current) {
+        stoppingRef.current = false;
+        setStopping(false);
+      }
+    }
+  }, [conv]);
 
   const autoResize = () => {
     const ta = taRef.current;
@@ -165,14 +250,14 @@ export default function Composer({ conv, draft, onDraft }: Props) {
     } catch (err) {
       // After dispatch, session navigation may only have disposed this browser
       // connection; keep the pending bubble until the server echo reconciles it.
-      if (
-        dispatched &&
-        err instanceof Error &&
-        err.message === 'conversation disposed'
-      )
-        return;
+      const disposed =
+        err instanceof Error && err.message === 'conversation disposed';
+      if (dispatched && disposed) return;
       if (optimisticKey >= 0) conv.removeOptimistic(optimisticKey);
       if (cleared) {
+        if (!dispatched && disposed) {
+          restoreFailedComposerDraft(draftKey, { text: value, images: imgs });
+        }
         setText((current) => restoreFailedText(current, value));
         setImages((current) => restoreFailedImages(current, imgs));
       }
@@ -368,7 +453,9 @@ export default function Composer({ conv, draft, onDraft }: Props) {
             className="model-chip"
             onClick={(e) => {
               e.stopPropagation();
-              setMenuOpen(menuOpen === 'model' ? undefined : 'model');
+              const opening = menuOpen !== 'model';
+              setMenuOpen(opening ? 'model' : undefined);
+              if (opening && (modelsError || !models)) void loadModels(true);
             }}
           >
             <span className="model-chip-name">{currentModel ? currentModel.name : t('selectModel')}</span>
@@ -381,6 +468,18 @@ export default function Composer({ conv, draft, onDraft }: Props) {
             <div className="menu combined-menu menu-right" onClick={(e) => e.stopPropagation()}>
               <div className="menu-section">
                 <div className="menu-section-label">{t('selectModel')}</div>
+                {modelsLoading && (
+                  <div className="model-load-state" role="status">
+                    <span className="working-dot" aria-hidden="true" />
+                    {t('loadingModels')}
+                  </div>
+                )}
+                {modelsError && (
+                  <div className="model-load-error" role="alert">
+                    <span>{t('modelLoadFailed')}: {modelsError}</span>
+                    <button className="btn btn-sm" onClick={() => void loadModels(true)}>{t('retry')}</button>
+                  </div>
+                )}
                 {(() => {
                   // group by provider: provider name as section label, rows without provider suffix
                   const groups: { provider: string; items: typeof configuredModels }[] = [];
@@ -409,7 +508,7 @@ export default function Composer({ conv, draft, onDraft }: Props) {
                     </div>
                   ));
                 })()}
-                {configuredModels.length === 0 && (
+                {!modelsLoading && !modelsError && configuredModels.length === 0 && (
                   <div style={{ padding: 10, fontSize: 12, color: 'var(--dsw-alias-label-tertiary)' }}>{t('noConfiguredModels')}</div>
                 )}
               </div>
@@ -483,14 +582,18 @@ export default function Composer({ conv, draft, onDraft }: Props) {
         </div>
 
         {streaming && <ContextRing conv={conv} />}
+        {stopping && <span className="stopping-label" role="status">{t('stopping')}</span>}
 
         {streaming ? (
           <button
-            className="send-circle stop send-sm"
-            title={t('abort')}
-            onClick={() => void conv.send({ type: 'abort' }).catch(() => undefined)}
+            className={`send-circle stop send-sm ${stopping ? 'waiting' : ''}`}
+            title={stopping ? t('stopping') : t('abort')}
+            aria-label={stopping ? t('stopping') : t('abort')}
+            aria-busy={stopping}
+            disabled={stopping}
+            onClick={() => void stop()}
           >
-            <IconStop size={16} />
+            {stopping ? <span className="composer-spinner" /> : <IconStop size={16} />}
           </button>
         ) : (
           <button
@@ -508,6 +611,12 @@ export default function Composer({ conv, draft, onDraft }: Props) {
           </button>
         )}
       </div>
+      {stopError && streaming && (
+        <div className="composer-action-error" role="alert">
+          <span>{t('stopFailed')}: {stopError}</span>
+          <button className="btn btn-sm" disabled={stopping} onClick={() => void stop()}>{t('retry')}</button>
+        </div>
+      )}
     </div>
   );
 }

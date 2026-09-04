@@ -1,25 +1,38 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { fetchModels, type ModelsResponse } from '../api';
 import OAuthDialog from './OAuthDialog';
 import { t } from '../i18n';
 import { evaluateProviderLogout } from '../model-utils';
+import {
+  checkedJsonResponse,
+  notifyModelCatalogChanged,
+} from '../ui-reliability';
 
 export default function ModelsPanel() {
   const [data, setData] = useState<ModelsResponse | undefined>();
   const [error, setError] = useState<string>();
+  const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<string>();
   const [filter, setFilter] = useState('');
   const [editingKey, setEditingKey] = useState(false);
   const [keyDraft, setKeyDraft] = useState('');
+  const [keyError, setKeyError] = useState<string>();
   const [notice, setNotice] = useState<string>();
   const [oauthProvider, setOauthProvider] = useState<string>();
   const [addingProvider, setAddingProvider] = useState(false);
   const [newProvider, setNewProvider] = useState({ id: '', name: '', baseUrl: '', api: 'openai-completions', apiKey: '', models: '' });
   const [addError, setAddError] = useState<string>();
+  const refreshGeneration = useRef(0);
+  const notifyAfterRefresh = useRef(false);
+  const focusRefreshTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
-  const refresh = (force = false) => {
+  const refresh = useCallback((force = false, notify = false) => {
+    const generation = ++refreshGeneration.current;
+    if (notify) notifyAfterRefresh.current = true;
+    setLoading(true);
     fetchModels(force)
       .then((d) => {
+        if (generation !== refreshGeneration.current) return;
         setData(d);
         setError(undefined);
         setSelected((prev) =>
@@ -27,27 +40,61 @@ export default function ModelsPanel() {
             ? prev
             : [...d.providers].sort((a, b) => Number(b.configured) - Number(a.configured))[0]?.id,
         );
+        if (notifyAfterRefresh.current) {
+          notifyAfterRefresh.current = false;
+          notifyModelCatalogChanged();
+        }
       })
-      .catch((e) => setError(String(e)));
-  };
-  useEffect(refresh, []); // eslint-disable-line react-hooks/exhaustive-deps
+      .catch((cause) => {
+        if (generation === refreshGeneration.current)
+          setError(cause instanceof Error ? cause.message : String(cause));
+      })
+      .finally(() => {
+        if (generation === refreshGeneration.current) setLoading(false);
+      });
+  }, []);
+  useEffect(() => {
+    refresh();
+    const onFocus = () => {
+      clearTimeout(focusRefreshTimer.current);
+      focusRefreshTimer.current = setTimeout(() => refresh(true), 80);
+    };
+    const onVisible = () => {
+      if (!document.hidden) onFocus();
+    };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      refreshGeneration.current += 1;
+      clearTimeout(focusRefreshTimer.current);
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [refresh]);
 
   const saveKey = async (provider: string) => {
     const key = keyDraft.trim();
     if (!key) return;
-    const res = await fetch('/api/auth/key', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ provider, key }),
-    });
-    const body = (await res.json()) as { ok?: boolean; runtimeOnly?: boolean; error?: string };
-    if (res.ok && body.ok) {
+    setNotice(undefined);
+    setKeyError(undefined);
+    try {
+      const body = await checkedJsonResponse<{
+        ok?: boolean;
+        runtimeOnly?: boolean;
+        error?: string;
+      }>(await fetch('/api/auth/key', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider, key }),
+      }), 'save key');
+      if (!body.ok) throw new Error(body.error ?? 'failed to save key');
       setNotice(body.runtimeOnly ? `${provider}: ${t('keySaved')} (runtime only)` : `${provider}: ${t('keySaved')}`);
+      setKeyError(undefined);
       setEditingKey(false);
       setKeyDraft('');
-      refresh(true);
-    } else {
-      setNotice(body.error ?? 'failed');
+      refresh(true, true);
+    } catch (cause) {
+      setKeyError(cause instanceof Error ? cause.message : String(cause));
     }
   };
 
@@ -68,7 +115,7 @@ export default function ModelsPanel() {
       );
       setNotice(outcome.notice);
       if (!outcome.ok) return;
-      refresh(true);
+      refresh(true, true);
     } catch (cause) {
       setNotice(cause instanceof Error ? cause.message : String(cause));
     }
@@ -91,26 +138,35 @@ export default function ModelsPanel() {
           maxTokens: 8192,
         };
       });
-    const res = await fetch('/api/providers', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        id: newProvider.id.trim(),
-        name: newProvider.name.trim() || undefined,
-        baseUrl: newProvider.baseUrl.trim(),
-        api: newProvider.api,
-        apiKey: newProvider.apiKey.trim() || undefined,
-        models,
-      }),
-    });
-    const d = (await res.json()) as { ok?: boolean; error?: string };
-    if (res.ok) {
+    setAddError(undefined);
+    const invalidModelIndex = models.findIndex((model) => !model.id);
+    if (invalidModelIndex >= 0) {
+      setAddError(`models[${invalidModelIndex}].id must not be empty`);
+      return;
+    }
+    try {
+      const body = await checkedJsonResponse<{ ok?: boolean; error?: string }>(
+        await fetch('/api/providers', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            id: newProvider.id.trim(),
+            name: newProvider.name.trim() || undefined,
+            baseUrl: newProvider.baseUrl.trim(),
+            api: newProvider.api,
+            apiKey: newProvider.apiKey.trim() || undefined,
+            models,
+          }),
+        }),
+        'add provider',
+      );
+      if (!body.ok) throw new Error(body.error ?? 'failed to add provider');
       setAddingProvider(false);
       setAddError(undefined);
       setNewProvider({ id: '', name: '', baseUrl: '', api: 'openai-completions', apiKey: '', models: '' });
-      refresh(true);
-    } else {
-      setAddError(d.error ?? 'failed');
+      refresh(true, true);
+    } catch (cause) {
+      setAddError(cause instanceof Error ? cause.message : String(cause));
     }
   };
 
@@ -137,6 +193,7 @@ export default function ModelsPanel() {
               onClick={() => {
                 setSelected(p.id);
                 setEditingKey(false);
+                setKeyError(undefined);
                 setAddingProvider(false);
               }}
             >
@@ -153,8 +210,23 @@ export default function ModelsPanel() {
 
       {/* detail */}
       <div className="mp-detail">
-        {error && <div className="msg-error">{error}</div>}
+        {loading && !data && (
+          <div className="model-load-state" role="status">
+            <span className="working-dot" aria-hidden="true" /> {t('loadingModels')}
+          </div>
+        )}
+        {error && (
+          <div className="model-load-error" role="alert">
+            <span>{t('modelLoadFailed')}: {error}</span>
+            <button className="btn btn-sm" onClick={() => refresh(true)}>{t('retry')}</button>
+          </div>
+        )}
         {notice && <div className="panel-notice">{notice}</div>}
+        {keyError && (
+          <div className="model-load-error" role="alert">
+            <span>{keyError}</span>
+          </div>
+        )}
 
         {addingProvider && (
           <div className="provider-card" style={{ padding: '12px 14px' }}>
@@ -212,7 +284,7 @@ export default function ModelsPanel() {
                 <button className="btn btn-sm" onClick={() => setOauthProvider(current.id)}>{t('loginOAuth')}</button>
               )}
               {current.configured && <button className="btn btn-sm" onClick={() => void logout(current.id)}>{t('logout')}</button>}
-              <button className="btn btn-sm" onClick={() => { setEditingKey((v) => !v); setKeyDraft(''); }}>{t('setKey')}</button>
+              <button className="btn btn-sm" onClick={() => { setEditingKey((v) => !v); setKeyDraft(''); setKeyError(undefined); }}>{t('setKey')}</button>
             </div>
 
             {editingKey && (
@@ -259,7 +331,7 @@ export default function ModelsPanel() {
           providerName={data?.providers.find((p) => p.id === oauthProvider)?.name ?? oauthProvider}
           onClose={(success) => {
             setOauthProvider(undefined);
-            if (success) refresh(true);
+            if (success) refresh(true, true);
           }}
         />
       )}

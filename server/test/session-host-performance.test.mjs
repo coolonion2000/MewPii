@@ -6,6 +6,7 @@ import {
   SESSION_HISTORY_MAX_BYTES,
   SESSION_HISTORY_MAX_MESSAGES,
   SessionHost,
+  serializeEvent,
 } from "../dist/session-host.js";
 
 function socketFrames() {
@@ -40,11 +41,73 @@ function fakeStats() {
   };
 }
 
+test("streaming event wire stays linear while checkpoints remain recoverable", () => {
+  let text = "";
+  let nextCheckpoint = 4 * 1024;
+  let wireBytes = 0;
+  let checkpoints = 0;
+  for (let index = 0; index < 2_000; index++) {
+    const delta = "x".repeat(50);
+    text += delta;
+    const checkpoint = text.length >= nextCheckpoint;
+    if (checkpoint) {
+      checkpoints += 1;
+      while (nextCheckpoint <= text.length) nextCheckpoint *= 2;
+    }
+    const event = serializeEvent(
+      {
+        type: "message_update",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text }],
+        },
+        assistantMessageEvent: {
+          type: "text_delta",
+          contentIndex: 0,
+          delta,
+          partial: { duplicated: text },
+        },
+      },
+      checkpoint,
+    );
+    wireBytes += Buffer.byteLength(JSON.stringify({ type: "event", event }));
+    if (!checkpoint) assert.equal("message" in event, false);
+    assert.equal("partial" in event.assistantMessageEvent, false);
+  }
+
+  assert.equal(checkpoints > 0, true);
+  assert.equal(
+    wireBytes < 1_000_000,
+    true,
+    `100k stream unexpectedly used ${wireBytes} bytes`,
+  );
+
+  const toolFrame = serializeEvent({
+    type: "message_update",
+    assistantMessageEvent: {
+      type: "toolcall_end",
+      partial: { sdkOnly: true },
+      toolCall: {
+        type: "toolCall",
+        id: "tool-1",
+        name: "example",
+        arguments: { partial: "user argument must survive" },
+      },
+    },
+  });
+  assert.equal("partial" in toolFrame.assistantMessageEvent, false);
+  assert.equal(
+    toolFrame.assistantMessageEvent.toolCall.arguments.partial,
+    "user argument must survive",
+  );
+});
+
 test("snapshot caches stable branch metadata and bounds both snapshot and history pages", async () => {
   let leaf = "e199";
   let branchReads = 0;
   let statsReads = 0;
   let commandReads = 0;
+  let subscriber;
   const entries = Array.from({ length: 200 }, (_, index) => ({
     type: "message",
     id: `e${index}`,
@@ -84,12 +147,30 @@ test("snapshot caches stable branch metadata and bounds both snapshot and histor
     resourceLoader: {
       getSkills: () => ({ skills: [] }),
     },
+    subscribe(callback) {
+      subscriber = callback;
+      return () => {
+        subscriber = undefined;
+      };
+    },
   };
   const host = new SessionHost(
     "bounded",
     { session, cwd: "/tmp", dispose: async () => undefined },
     {},
   );
+  host.bindSession();
+  subscriber({
+    type: "tool_execution_start",
+    toolCallId: "late-tool",
+    toolName: "bash",
+    args: { command: "npm test" },
+  });
+  subscriber({
+    type: "tool_execution_update",
+    toolCallId: "late-tool",
+    partialResult: { content: [{ type: "text", text: "passing" }] },
+  });
 
   const first = host.snapshot();
   const second = host.snapshot();
@@ -104,6 +185,46 @@ test("snapshot caches stable branch metadata and bounds both snapshot and histor
     true,
   );
   assert.deepEqual(second.messages, first.messages);
+  assert.deepEqual(first.activeToolCalls, [
+    {
+      toolCallId: "late-tool",
+      toolName: "bash",
+      args: { command: "npm test" },
+      startedAt: first.activeToolCalls[0].startedAt,
+      liveOutput: "passing",
+    },
+  ]);
+
+  session.isStreaming = true;
+  subscriber({
+    type: "message_start",
+    message: { role: "assistant", content: [] },
+  });
+  subscriber({
+    type: "message_update",
+    message: {
+      role: "assistant",
+      content: [{ type: "text", text: "recover after reconnect" }],
+    },
+    assistantMessageEvent: {
+      type: "text_delta",
+      contentIndex: 0,
+      delta: "recover after reconnect",
+    },
+  });
+  assert.equal(
+    host.snapshot().streamingMessage.content[0].text,
+    "recover after reconnect",
+  );
+  session.isStreaming = false;
+  subscriber({
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [{ type: "text", text: "recover after reconnect" }],
+    },
+  });
+  assert.equal(host.snapshot().streamingMessage, null);
 
   entries.push({
     type: "message",
@@ -165,7 +286,7 @@ test("an oversized durable message still advances the history cursor", async () 
   await host.dispose();
 });
 
-test("attach can answer startup UI while ordinary commands remain unavailable", async () => {
+test("attach exposes startup UI and stop cancels it while ordinary commands remain unavailable", async () => {
   let clearCalls = 0;
   let abortCalls = 0;
   let startupAnswer;
@@ -231,15 +352,16 @@ test("attach can answer startup UI while ordinary commands remain unavailable", 
   const aborted = await host.handleOrdered({ type: "abort" });
   assert.equal(aborted.ok, true, "abort should remain available during startup");
   assert.equal(abortCalls, 1);
+  assert.equal(aborted.data.closedUi, 1);
 
-  const answered = await host.handleOrdered({
+  const staleAnswer = await host.handleOrdered({
     type: "ui_response",
     requestId: request.request.id,
     value: "answered-before-ready",
   });
-  assert.equal(answered.ok, true);
+  assert.equal(staleAnswer.ok, false, "stop left a startup dialog answerable");
   await binding;
-  assert.equal(startupAnswer, "answered-before-ready");
+  assert.equal(startupAnswer, undefined);
   assert.equal(host.isReady, true);
   assert.equal(readySettled, true);
   assert.equal(
@@ -250,15 +372,11 @@ test("attach can answer startup UI while ordinary commands remain unavailable", 
     true,
     "ready metadata delta was not published after startup binding",
   );
-  assert.equal(
-    frames.filter((frame) => frame.type === "snapshot").length,
-    1,
-    "unchanged startup transcript was delivered twice",
-  );
+  assert.equal(frames.some((frame) => frame.type === "ui_close"), true);
 
   const readyCommand = await host.handleOrdered({ type: "queue_clear" });
   assert.equal(readyCommand.ok, true);
-  assert.equal(clearCalls, 1);
+  assert.equal(clearCalls, 3, "stop must clear queues before and after settlement");
   await host.dispose();
 });
 

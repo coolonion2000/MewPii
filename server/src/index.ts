@@ -31,8 +31,6 @@ import { fileURLToPath } from "node:url";
 import { WebSocketServer, type WebSocket } from "ws";
 import {
   DefaultPackageManager,
-  ModelRegistry,
-  ModelRuntime,
   SettingsManager,
   createAgentSessionServices,
   getAgentDir,
@@ -47,6 +45,11 @@ import {
 } from "./static-assets.js";
 import { hasRunningSubagentRuns } from "./subagent-activity.js";
 import { resolveToolAuthorizedPreviewPath } from "./file-preview-access.js";
+import {
+  ModelServicesCache,
+  validateModelConfigFile,
+} from "./model-services.js";
+import { withStagedSessionImport } from "./import-staging.js";
 import {
   TunnelHub,
   attachWebSocketHeartbeat,
@@ -315,6 +318,7 @@ async function acquireHost(
   cwd: string,
   sessionPath?: string,
   onPreview?: HostPreviewListener,
+  requestedSessionId?: string,
 ): Promise<SessionHost> {
   if (options.uiOnly)
     throw new Error("ui-only mode: connect an agent to use conversations");
@@ -326,6 +330,13 @@ async function acquireHost(
     : (await resolveWorkspacePath(cwd, ".", {
         extraRoots: await knownWorkspaceRoots(),
       })).base;
+  if (!normalizedSession && requestedSessionId) {
+    const liveHost = hostForSessionId(requestedSessionId);
+    if (!liveHost) throw new Error("active session not found");
+    if (resolve(liveHost.cwd) !== resolve(normalizedCwd))
+      throw new Error("active session workspace mismatch");
+    return liveHost;
+  }
   const fileKey = normalizedSession ? `file:${normalizedSession}` : undefined;
   if (fileKey) {
     const existing = hosts.get(fileKey);
@@ -390,29 +401,28 @@ async function acquireHost(
 // ---------------------------------------------------------------------------
 // Shared model runtime for /api/models
 // ---------------------------------------------------------------------------
-interface ModelServices {
-  runtime: ModelRuntime;
-  registry: ModelRegistry;
+const modelServices = new ModelServicesCache();
+const getModelServices = () => modelServices.get();
+if (!options.uiOnly) {
+  const startedAt = performance.now();
+  void getModelServices().then(
+    ({ registry }) =>
+      process.stdout.write(
+        `[models] warmup_completed duration_ms=${Math.max(0, Math.round((performance.now() - startedAt) * 10) / 10)} models=${registry.getAll().length}\n`,
+      ),
+    (cause) =>
+      console.error(
+        `[models] warmup_failed duration_ms=${Math.max(0, Math.round((performance.now() - startedAt) * 10) / 10)} error=${JSON.stringify(cause instanceof Error ? cause.message : String(cause))}`,
+      ),
+  );
 }
-let modelServices: ModelServices | undefined;
-let modelServicesMtime = 0;
-async function getModelServices(): Promise<ModelServices> {
-  // recreate when models.json changed (e.g. user added a model via pi CLI)
-  let mtime = 0;
-  try {
-    mtime = (await stat(join(getAgentDir(), "models.json"))).mtimeMs;
-  } catch {
-    /* no custom models file */
-  }
-  if (!modelServices || mtime !== modelServicesMtime) {
-    const runtime = await ModelRuntime.create();
-    const registry = new ModelRegistry(runtime);
-    await registry.refresh().catch(() => undefined);
-    modelServices = { runtime, registry };
-    modelServicesMtime = mtime;
-  }
-  return modelServices;
-}
+const WEB_CUSTOM_PROVIDER_APIS = new Set([
+  "openai-completions",
+  "openai-responses",
+  "anthropic-messages",
+  "google-generative-ai",
+  "mistral-conversations",
+]);
 
 // ---------------------------------------------------------------------------
 // OAuth login flows (bridged to the browser over REST)
@@ -800,6 +810,73 @@ async function syncFile(path: string): Promise<void> {
   try { await handle.sync(); } finally { await handle.close(); }
 }
 
+async function atomicWritePrivateFile(
+  path: string,
+  content: string,
+  validate?: (candidatePath: string) => Promise<void>,
+): Promise<void> {
+  const directory = dirname(path);
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  let mode = 0o600;
+  try {
+    mode = (await stat(path)).mode & 0o777;
+  } catch (cause) {
+    if (
+      !cause ||
+      typeof cause !== "object" ||
+      !("code" in cause) ||
+      cause.code !== "ENOENT"
+    )
+      throw cause;
+  }
+
+  const tempPath = `${path}.${process.pid}-${crypto.randomUUID()}.tmp`;
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  try {
+    handle = await open(tempPath, "wx", mode);
+    // open() applies the process umask. Reapply an existing target's exact
+    // permission bits so atomic replacement never widens or narrows them.
+    await handle.chmod(mode);
+    await handle.writeFile(content, { encoding: "utf8" });
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+    await validate?.(tempPath);
+    await rename(tempPath, path);
+    const directoryHandle = await open(directory, "r");
+    try {
+      await directoryHandle.sync();
+    } finally {
+      await directoryHandle.close();
+    }
+  } finally {
+    await handle?.close().catch(() => undefined);
+    await unlink(tempPath).catch(() => undefined);
+  }
+}
+
+class InvalidModelConfigurationError extends Error {}
+
+async function validateCandidateModelConfig(path: string): Promise<void> {
+  try {
+    await validateModelConfigFile(path);
+  } catch (cause) {
+    throw new InvalidModelConfigurationError(
+      cause instanceof Error ? cause.message : String(cause),
+    );
+  }
+}
+
+let modelConfigMutationQueue: Promise<void> = Promise.resolve();
+function mutateModelConfig<T>(operation: () => Promise<T>): Promise<T> {
+  const result = modelConfigMutationQueue.then(operation);
+  modelConfigMutationQueue = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  return result;
+}
+
 async function writeState(state: PiiState): Promise<void> {
   const directory = dirname(STATE_PATH);
   await mkdir(directory, { recursive: true });
@@ -1163,6 +1240,16 @@ async function handleApi(
     const id = url.searchParams.get("id");
     if (!id) {
       sendJson(res, 400, { error: "missing id" });
+      return true;
+    }
+    const liveHost = hostForSessionId(id);
+    if (liveHost) {
+      sendJson(res, 200, {
+        cwd: liveHost.cwd,
+        path: liveHost.session.sessionFile,
+        id: liveHost.session.sessionId,
+        live: true,
+      });
       return true;
     }
     const { sessions: all } = await sessionCatalog.snapshot(sessionsVersion);
@@ -1716,25 +1803,56 @@ async function handleApi(
       });
       return true;
     }
-    const modelsPath = join(getAgentDir(), "models.json");
-    const doc = existsSync(modelsPath)
-      ? (parseJson(await readFile(modelsPath, "utf-8"), String(modelsPath)) as Record<
-          string,
-          unknown
-        >)
-      : {};
-    const providers = (doc.providers ?? {}) as Record<string, unknown>;
-    providers[body.id] = {
-      ...(body.name ? { name: body.name } : {}),
-      baseUrl: body.baseUrl,
-      api: body.api,
-      ...(body.apiKey ? { apiKey: body.apiKey } : {}),
-      models: body.models,
-    };
-    doc.providers = providers;
-    await writeFile(modelsPath, JSON.stringify(doc, null, 2) + "\n");
+    if (!WEB_CUSTOM_PROVIDER_APIS.has(body.api)) {
+      sendJson(res, 400, {
+        error: `unsupported api: ${body.api}`,
+      });
+      return true;
+    }
+    const invalidModelIndex = body.models.findIndex(
+      (model) =>
+        !model ||
+        typeof model !== "object" ||
+        typeof model.id !== "string" ||
+        model.id.trim().length === 0,
+    );
+    if (invalidModelIndex >= 0) {
+      sendJson(res, 400, {
+        error: `models[${invalidModelIndex}].id must be a non-empty string`,
+      });
+      return true;
+    }
+    try {
+      await mutateModelConfig(async () => {
+        const modelsPath = join(getAgentDir(), "models.json");
+        const doc = existsSync(modelsPath)
+          ? (parseJson(
+              await readFile(modelsPath, "utf-8"),
+              String(modelsPath),
+            ) as Record<string, unknown>)
+          : {};
+        const providers = (doc.providers ?? {}) as Record<string, unknown>;
+        providers[body.id!] = {
+          ...(body.name ? { name: body.name } : {}),
+          baseUrl: body.baseUrl,
+          api: body.api,
+          ...(body.apiKey ? { apiKey: body.apiKey } : {}),
+          models: body.models,
+        };
+        doc.providers = providers;
+        await atomicWritePrivateFile(
+          modelsPath,
+          JSON.stringify(doc, null, 2) + "\n",
+          validateCandidateModelConfig,
+        );
+      });
+    } catch (cause) {
+      if (!(cause instanceof InvalidModelConfigurationError)) throw cause;
+      sendJson(res, 400, { error: cause.message });
+      return true;
+    }
     // Recreate the shared model runtime so the new provider shows up.
-    modelServices = undefined;
+    modelServices.invalidate();
     sendJson(res, 200, { ok: true });
     return true;
   }
@@ -1745,22 +1863,30 @@ async function handleApi(
       sendJson(res, 400, { error: "missing id" });
       return true;
     }
-    const modelsPath = join(getAgentDir(), "models.json");
-    const doc = existsSync(modelsPath)
-      ? (parseJson(await readFile(modelsPath, "utf-8"), String(modelsPath)) as Record<
-          string,
-          unknown
-        >)
-      : {};
-    const providers = (doc.providers ?? {}) as Record<string, unknown>;
-    if (!(id in providers)) {
+    const removed = await mutateModelConfig(async () => {
+      const modelsPath = join(getAgentDir(), "models.json");
+      const doc = existsSync(modelsPath)
+        ? (parseJson(
+            await readFile(modelsPath, "utf-8"),
+            String(modelsPath),
+          ) as Record<string, unknown>)
+        : {};
+      const providers = (doc.providers ?? {}) as Record<string, unknown>;
+      if (!(id in providers)) return false;
+      delete providers[id];
+      doc.providers = providers;
+      await atomicWritePrivateFile(
+        modelsPath,
+        JSON.stringify(doc, null, 2) + "\n",
+        validateCandidateModelConfig,
+      );
+      return true;
+    });
+    if (!removed) {
       sendJson(res, 404, { error: "not a custom (models.json) provider" });
       return true;
     }
-    delete providers[id];
-    doc.providers = providers;
-    await writeFile(modelsPath, JSON.stringify(doc, null, 2) + "\n");
-    modelServices = undefined;
+    modelServices.invalidate();
     sendJson(res, 200, { ok: true });
     return true;
   }
@@ -2194,7 +2320,9 @@ async function handleApi(
       done: flow.done,
       error: flow.error,
     });
-    if (flow.done) deleteOAuthFlow(body.id!);
+    // Keep a completed result readable until its short expiry. Polling is an
+    // at-least-once transport: deleting on the first response could strand the
+    // browser forever if that final response was lost during navigation.
     return true;
   }
 
@@ -2309,29 +2437,37 @@ async function handleApi(
       });
       return true;
     }
-    const importsDir = join(getAgentDir(), "imports");
-    await mkdir(importsDir, { recursive: true });
-    const tmpPath = join(importsDir, `import-${Date.now()}.jsonl`);
-    await writeFile(tmpPath, body);
-    const host = await acquireHost(header.cwd);
-    try {
-      const result = await host.runtime_import(tmpPath);
-      if (!result.ok) {
-        sendJson(res, 400, { error: result.error ?? "import failed" });
-        return true;
-      }
-      sendJson(res, 200, {
-        ok: true,
-        cwd: host.cwd,
-        sessionFile: result.sessionFile,
-      });
-      return true;
-    } finally {
-      if (host.viewerCount === 0) {
-        removeHost(host);
-        await host.dispose();
-      }
-    }
+    const importResponse = await withStagedSessionImport(
+      join(getAgentDir(), "imports"),
+      body,
+      async (tmpPath) => {
+        const host = await acquireHost(header.cwd!);
+        try {
+          const result = await host.runtime_import(tmpPath);
+          if (!result.ok) {
+            return {
+              status: 400,
+              body: { error: result.error ?? "import failed" },
+            };
+          }
+          return {
+            status: 200,
+            body: {
+              ok: true,
+              cwd: host.cwd,
+              sessionFile: result.sessionFile,
+            },
+          };
+        } finally {
+          if (host.viewerCount === 0) {
+            removeHost(host);
+            await host.dispose();
+          }
+        }
+      },
+    );
+    sendJson(res, importResponse.status, importResponse.body);
+    return true;
   }
 
   // ---- auth: API key login / logout ----------------------------------
@@ -2749,6 +2885,7 @@ wss.on("connection", (ws: WebSocket, _req: IncomingMessage, url: URL) => {
   attachWebSocketHeartbeat(ws);
   const cwd = url.searchParams.get("cwd");
   const sessionPath = url.searchParams.get("session") ?? undefined;
+  const requestedSessionId = url.searchParams.get("sessionId") ?? undefined;
   const supportsReadyDelta = url.searchParams.get("snapshotDelta") === "1";
   if (!cwd) {
     ws.close(4000, "missing cwd");
@@ -2851,7 +2988,7 @@ wss.on("connection", (ws: WebSocket, _req: IncomingMessage, url: URL) => {
         finish("closed");
       }
     });
-  })
+  }, requestedSessionId)
     .then((h) => {
       host = h;
       h.attach(ws, preview, supportsReadyDelta);

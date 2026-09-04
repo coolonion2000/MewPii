@@ -34,7 +34,12 @@ import {
 } from "./state-utils";
 import Sidebar from "./components/Sidebar";
 import ChatView from "./components/ChatView";
+import ErrorBoundary from "./components/ErrorBoundary";
 import { getLang, onLangChange, t } from "./i18n";
+import {
+  sidebarResizeStep,
+  type SidebarDragPhase,
+} from "./ui-reliability";
 
 const ModelsPanel = lazy(() => import("./components/ModelsPanel"));
 const FilesPanel = lazy(() => import("./components/FilesPanel"));
@@ -89,6 +94,7 @@ function parsePath(): Route {
 
 export default function App() {
   const [projects, setProjects] = useState<ProjectGroup[]>([]);
+  const [projectsLoaded, setProjectsLoaded] = useState(false);
   const [authRequired, setAuthRequired] = useState(false);
   const [agents, setAgents] = useState<string[]>([]);
   const [archivedSessions, setArchivedSessions] = useState<SessionSummary[]>(
@@ -99,6 +105,7 @@ export default function App() {
   const resolveGeneration = useRef(0);
   const projectsGeneration = useMemo(() => createGenerationGate(), []);
   const projectsController = useRef<AbortController | undefined>(undefined);
+  const sidebarDragCleanup = useRef<(() => void) | undefined>(undefined);
   const [dark, setDark] = useState(
     () => localStorage.getItem("pii-theme") !== "light",
   );
@@ -169,9 +176,13 @@ export default function App() {
             .flatMap((project) => project.sessions)
             .filter((session) => session.archived),
         );
+        setProjectsLoaded(true);
       })
       .catch((cause) => {
-        if (!controller.signal.aborted) console.error("[sessions] refresh failed", cause);
+        if (!controller.signal.aborted) {
+          setProjectsLoaded(true);
+          console.error("[sessions] refresh failed", cause);
+        }
       });
   }, [projectsGeneration]);
 
@@ -271,10 +282,16 @@ export default function App() {
       signal: controller.signal,
     })
       .then((response) => {
+        if (response.status === 404) return undefined;
         if (!response.ok) throw new Error(`resolve session: ${response.status}`);
         return response.json();
       })
-      .then((d: { cwd?: string; path?: string; id?: string }) => {
+      .then((d: {
+        cwd?: string;
+        path?: string;
+        id?: string;
+        live?: boolean;
+      } | undefined) => {
         if (
           !acceptsGeneration(
             resolveGeneration.current,
@@ -285,11 +302,11 @@ export default function App() {
           return;
         setRouteState((current) => {
           if (current.pendingSessionId !== id) return current;
-          if (d.cwd && d.path) {
+          if (d?.cwd && (d.path || d.live)) {
             localStorage.setItem(LAST_CWD_KEY, d.cwd);
             const resolved = {
               cwd: d.cwd,
-              sessionPath: d.path,
+              sessionPath: d.path || undefined,
               sessionId: d.id ?? id,
             };
             rememberSession(resolved);
@@ -326,8 +343,14 @@ export default function App() {
       effectiveSelection.cwd,
       effectiveSelection.sessionPath,
       appAgent,
+      effectiveSelection.sessionId,
     );
-  }, [effectiveSelection?.cwd, effectiveSelection?.sessionPath, appAgent]);
+  }, [
+    effectiveSelection?.cwd,
+    effectiveSelection?.sessionPath,
+    effectiveSelection?.sessionId,
+    appAgent,
+  ]);
 
   // Connect after React commits so ChatView can subscribe before the first
   // snapshot arrives. Connecting during render can lose a fast initial frame.
@@ -555,46 +578,87 @@ export default function App() {
   );
 
   const startSidebarDrag = useCallback(
-    (e: React.MouseEvent) => {
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      if (e.button !== 0) return;
       e.preventDefault();
+      sidebarDragCleanup.current?.();
+      const handle = e.currentTarget;
+      const sidebar = handle.closest<HTMLElement>(".sidebar");
+      if (!sidebar) return;
+      const pointerId = e.pointerId;
       const startX = e.clientX;
       const startW = sidebarCollapsed ? 46 : sidebarWidth;
-      // One-way transitions per drag: expanded drags may only collapse, and a
-      // collapsed rail may only expand — never oscillate around the threshold.
-      let phase: "expanded" | "collapsed" = sidebarCollapsed
-        ? "collapsed"
-        : "expanded";
-      let width = startW;
-      const onMove = (ev: MouseEvent) => {
-        const raw = startW + ev.clientX - startX;
-        if (phase === "expanded") {
-          if (raw < 110) {
-            phase = "collapsed";
-            toggleCollapse();
-            return;
-          }
-          width = Math.min(480, Math.max(170, raw));
-          setSidebarWidth(width);
-        } else if (raw > 170) {
-          phase = "expanded";
-          toggleCollapse();
-          width = Math.min(480, Math.max(170, raw));
-          setSidebarWidth(width);
+      let clientX = startX;
+      let frame = 0;
+      let done = false;
+      let phase: SidebarDragPhase = sidebarCollapsed
+        ? "may-expand"
+        : "may-collapse";
+      let result = sidebarResizeStep(phase, startW);
+      const renderWidth = () => {
+        frame = 0;
+        sidebar.style.width = `${result.width}px`;
+      };
+      const onMove = (event: PointerEvent) => {
+        if (event.pointerId !== pointerId) return;
+        clientX = event.clientX;
+        result = sidebarResizeStep(phase, startW + clientX - startX);
+        phase = result.phase;
+        if (!frame) frame = requestAnimationFrame(renderWidth);
+      };
+      const removeListeners = () => {
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", finish);
+        window.removeEventListener("pointercancel", onCancel);
+        window.removeEventListener("blur", onBlur);
+        handle.removeEventListener("lostpointercapture", onCancel);
+        if (handle.hasPointerCapture?.(pointerId)) handle.releasePointerCapture(pointerId);
+        document.body.classList.remove("is-resizing");
+        sidebarDragCleanup.current = undefined;
+      };
+      const finish = (event?: PointerEvent) => {
+        if (done || (event && event.pointerId !== pointerId)) return;
+        done = true;
+        if (event) {
+          clientX = event.clientX;
+          result = sidebarResizeStep(phase, startW + clientX - startX);
+          phase = result.phase;
         }
-      };
-      const onUp = () => {
-        window.removeEventListener("mousemove", onMove);
-        window.removeEventListener("mouseup", onUp);
+        if (frame) cancelAnimationFrame(frame);
+        sidebar.style.width = `${result.width}px`;
+        setSidebarCollapsed(result.collapsed);
         localStorage.setItem(
-          "pii-sidebar-w",
-          String(Math.max(170, Math.min(480, width))),
+          "pii-sidebar",
+          result.collapsed ? "collapsed" : "open",
         );
+        if (!result.collapsed) {
+          setSidebarWidth(result.width);
+          localStorage.setItem("pii-sidebar-w", String(Math.round(result.width)));
+        }
+        removeListeners();
       };
-      window.addEventListener("mousemove", onMove);
-      window.addEventListener("mouseup", onUp);
+      const onBlur = () => finish();
+      const onCancel = (event: PointerEvent) => {
+        if (event.pointerId === pointerId) finish();
+      };
+      sidebarDragCleanup.current = () => {
+        if (done) return;
+        done = true;
+        if (frame) cancelAnimationFrame(frame);
+        removeListeners();
+      };
+      document.body.classList.add("is-resizing");
+      handle.setPointerCapture?.(pointerId);
+      window.addEventListener("pointermove", onMove, { passive: true });
+      window.addEventListener("pointerup", finish);
+      window.addEventListener("pointercancel", onCancel);
+      window.addEventListener("blur", onBlur);
+      handle.addEventListener("lostpointercapture", onCancel);
     },
-    [sidebarCollapsed, sidebarWidth, toggleCollapse],
+    [sidebarCollapsed, sidebarWidth],
   );
+
+  useEffect(() => () => sidebarDragCleanup.current?.(), []);
 
   const handleNavigate = useCallback(
     (view: View) => setRoute({ view, selection }),
@@ -650,6 +714,7 @@ export default function App() {
         agents={agents}
         currentAgent={appAgent}
         onSelectAgent={handleSelectAgent}
+        loading={!projectsLoaded}
       />
       <div className="main">
         {isSettingsish && (
@@ -716,15 +781,22 @@ export default function App() {
               <span>{t("loadingSession")}</span>
             </div>
           ) : conv ? (
-            <ChatView
-              key={`${effectiveSelection?.cwd}|${effectiveSelection?.sessionPath ?? "new"}`}
-              conv={conv}
-              onRefresh={refreshProjects}
-              onForked={handleForked}
-              projects={projects}
-              onSelectProject={handleSelectProject}
-              dark={dark}
-            />
+            <ErrorBoundary
+              key={`chat:${effectiveSelection?.cwd}|${effectiveSelection?.sessionPath ?? "new"}`}
+              className="chat-render-error"
+            >
+              <ChatView
+                conv={conv}
+                onRefresh={refreshProjects}
+                onForked={handleForked}
+                projects={projects}
+                onSelectProject={handleSelectProject}
+                dark={dark}
+                language={lang}
+              />
+            </ErrorBoundary>
+          ) : !projectsLoaded ? (
+            <PanelLoading />
           ) : (
             <HeroLanding projects={projects} onSelect={setSelection} />
           ))}

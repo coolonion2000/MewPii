@@ -27,7 +27,7 @@ interface Props {
   view: View;
   collapsed: boolean;
   width: number;
-  onStartDrag: (e: React.MouseEvent) => void;
+  onStartDrag: (e: React.PointerEvent<HTMLDivElement>) => void;
   onToggleCollapse: () => void;
   onNavigate: (view: View) => void;
   onSelect: (s: Selection) => void;
@@ -41,6 +41,7 @@ interface Props {
   agents?: string[];
   currentAgent?: string;
   onSelectAgent?: (name: string) => void;
+  loading?: boolean;
 }
 
 function basename(cwd: string): string {
@@ -75,7 +76,7 @@ export default function Sidebar(props: Props) {
   const {
     projects, archivedSessions, selection, view, collapsed, width, onStartDrag,
     onToggleCollapse, onNavigate, onSelect, onDelete, onRename, onArchive, onRefresh, dark, onToggleTheme, authRequired,
-    agents, currentAgent, onSelectAgent,
+    agents, currentAgent, onSelectAgent, loading,
   } = props;
 
   const [query, setQuery] = useState('');
@@ -427,7 +428,7 @@ export default function Sidebar(props: Props) {
   if (collapsed) {
     return (
       <div className="sidebar sidebar-collapsed">
-        <div className="sidebar-resize" onMouseDown={onStartDrag} />
+        <div className="sidebar-resize" onPointerDown={onStartDrag} />
         <img className="brand-logo" src="/favicon.png" alt="MewPii" style={{ margin: '2px auto 8px' }} />
         <button className="btn btn-icon" title={t('expandSidebar')} onClick={onToggleCollapse}>
           <IconChevronRight />
@@ -451,7 +452,7 @@ export default function Sidebar(props: Props) {
 
   return (
     <div className="sidebar" style={{ width }}>
-      <div className="sidebar-resize" onMouseDown={onStartDrag} />
+      <div className="sidebar-resize" onPointerDown={onStartDrag} />
       <div className="brand-row">
         <img
           className="brand-logo-wide"
@@ -662,8 +663,10 @@ export default function Sidebar(props: Props) {
         )}
 
         {sorted.length === 0 && !archivedSessions.length && (
-          <div style={{ padding: 16, fontSize: 12, color: 'var(--dsw-alias-label-tertiary)' }}>
-            {query ? t('noMatch') : t('noSessions')}
+          <div className="sidebar-empty" role={loading ? 'status' : undefined}>
+            {loading ? (
+              <><span className="working-dot" aria-hidden="true" /> {t('loadingSessions')}</>
+            ) : query ? t('noMatch') : t('noSessions')}
           </div>
         )}
       </div>

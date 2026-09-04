@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 import {
   appendPartialEvent,
   isBatchablePartialEvent,
+  normalizeMessageContent,
+  normalizeStreamingContent,
+  reconcileStreamingMessage,
 } from '../src/partial-events.ts';
 import {
   addUsedSession,
@@ -80,6 +83,113 @@ test('partial event batches merge compatible deltas and retain event order', () 
     true,
   );
   assert.equal(isBatchablePartialEvent({ type: 'message_end' }), false);
+});
+
+test('cumulative message_update is authoritative and does not repeat its delta', () => {
+  const current = {
+    role: 'assistant',
+    timestamp: 10,
+    content: [{ type: 'text', text: 'hel' }],
+  };
+  const next = reconcileStreamingMessage(current, {
+    type: 'message_update',
+    message: {
+      role: 'assistant',
+      timestamp: 10,
+      content: [{ type: 'text', text: 'hello' }],
+    },
+    assistantMessageEvent: {
+      type: 'text_delta',
+      contentIndex: 0,
+      delta: 'lo',
+    },
+  });
+
+  assert.equal(next.content[0].text, 'hello');
+});
+
+test('message_update recovers a missed message_start from its cumulative message', () => {
+  const sparse = [];
+  sparse[2] = { type: 'text', text: 'back online' };
+  const next = reconcileStreamingMessage(undefined, {
+    type: 'message_update',
+    message: { role: 'assistant', timestamp: 20, content: sparse },
+    assistantMessageEvent: {
+      type: 'text_delta',
+      contentIndex: 2,
+      delta: 'line',
+    },
+  });
+
+  assert.equal(next.role, 'assistant');
+  assert.equal(next.content.length, 3);
+  assert.ok(next.content.every((block) => block && typeof block === 'object'));
+  assert.deepEqual(next.content[0], { type: 'text', text: '' });
+  assert.equal(next.content[2].text, 'back online');
+});
+
+test('delta-only compatibility path creates safe indexed content blocks', () => {
+  const next = reconcileStreamingMessage(undefined, {
+    type: 'message_update',
+    assistantMessageEvent: {
+      type: 'thinking_delta',
+      contentIndex: 2,
+      delta: 'plan',
+    },
+  });
+
+  assert.equal(next.content.length, 3);
+  assert.ok(next.content.every((block) => block && typeof block === 'object'));
+  assert.deepEqual(next.content[2], { type: 'thinking', thinking: 'plan' });
+  assert.deepEqual(normalizeStreamingContent('answer'), [
+    { type: 'text', text: 'answer' },
+  ]);
+  assert.deepEqual(
+    normalizeMessageContent({
+      role: 'assistant',
+      content: [null, { type: 'text', text: 'done' }],
+    }).content,
+    [{ type: 'text', text: '' }, { type: 'text', text: 'done' }],
+  );
+});
+
+test('batched cumulative deltas retain the newest authoritative message', () => {
+  const first = {
+    type: 'message_update',
+    message: {
+      role: 'assistant',
+      content: [{ type: 'text', text: 'hel' }],
+    },
+    assistantMessageEvent: {
+      type: 'text_delta',
+      contentIndex: 0,
+      delta: 'hel',
+    },
+  };
+  const latest = {
+    type: 'message_update',
+    message: {
+      role: 'assistant',
+      content: [{ type: 'text', text: 'hello' }],
+    },
+    assistantMessageEvent: {
+      type: 'text_delta',
+      contentIndex: 0,
+      delta: 'lo',
+    },
+  };
+  const pending = appendPartialEvent(
+    appendPartialEvent([], first, 10),
+    latest,
+    11,
+  );
+
+  assert.equal(pending.length, 1);
+  assert.equal(pending[0].event.message.content[0].text, 'hello');
+  assert.equal(
+    reconcileStreamingMessage(undefined, pending[0].event).content[0].text,
+    'hello',
+  );
 });
 
 test('used-session top entry is idempotent but title and file changes publish', () => {

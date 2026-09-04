@@ -33,6 +33,7 @@ import {
 } from "./custom-ui-bridge.js";
 import type {
   ClientCommand,
+  PiiMessage,
   ServerMessage,
   SessionSnapshot,
   UiRequest,
@@ -50,6 +51,13 @@ const SESSION_PREVIEW_MAX_HEADER_BYTES = 1024 * 1024;
 const SLOW_EXTENSION_HANDLER_MS = 500;
 const SLOW_BIND_MS = 1_000;
 const SLOW_SNAPSHOT_MS = 25;
+const ACTIVE_TOOL_OUTPUT_SNAPSHOT_CHARS = 128 * 1024;
+const ACTIVE_TOOL_ARGS_SNAPSHOT_BYTES = 64 * 1024;
+// Cumulative checkpoints grow geometrically, so their total wire size remains
+// linear in the generated output instead of repeating the whole message for
+// every token. A reconnect never waits for one: snapshots carry the latest
+// in-flight message directly.
+const STREAM_CHECKPOINT_INITIAL_CHARS = 4 * 1024;
 
 type SessionLogValue = string | number | boolean | null | undefined;
 
@@ -187,6 +195,35 @@ function firstUserText(messages: readonly Record<string, unknown>[]): string {
   )?.text ?? "";
 }
 
+function toolOutputText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return "";
+  const content = (value as { content?: unknown }).content;
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .filter(
+      (block): block is { type?: string; text?: string } =>
+        Boolean(block) && typeof block === "object" && !Array.isArray(block),
+    )
+    .filter((block) => block.type === "text")
+    .map((block) => block.text ?? "")
+    .join("\n");
+}
+
+function snapshotToolArgs(
+  value: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+  try {
+    return Buffer.byteLength(JSON.stringify(value)) <=
+      ACTIVE_TOOL_ARGS_SNAPSHOT_BYTES
+      ? value
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Temporarily wrap startup handlers so a single slow extension is identifiable. */
 function instrumentExtensionHandlers(
   key: string,
@@ -298,14 +335,31 @@ class JSONDecoder {
   }
 }
 
-/** Strip the huge `partial` message from streaming events; keep everything else JSON-passthrough. */
-function serializeEvent(event: AgentSessionEvent): Record<string, unknown> {
+/**
+ * Strip SDK-only partials and, ordinarily, the cumulative message from a
+ * message_update. Keeping that message on every token makes the wire O(n^2).
+ */
+export function serializeEvent(
+  event: AgentSessionEvent,
+  includeStreamingCheckpoint = false,
+): Record<string, unknown> {
   try {
-    return JSON.parse(
-      JSON.stringify(event, (key, value) =>
-        key === "partial" ? undefined : value,
-      ),
-    ) as Record<string, unknown>;
+    const source = {
+      ...(event as unknown as Record<string, unknown>),
+    };
+    if (event.type === "message_update" && !includeStreamingCheckpoint)
+      delete source.message;
+    const assistantEvent = source.assistantMessageEvent;
+    if (
+      assistantEvent &&
+      typeof assistantEvent === "object" &&
+      !Array.isArray(assistantEvent)
+    ) {
+      const { partial: _sdkPartial, ...publicAssistantEvent } =
+        assistantEvent as Record<string, unknown>;
+      source.assistantMessageEvent = publicAssistantEvent;
+    }
+    return JSON.parse(JSON.stringify(source)) as Record<string, unknown>;
   } catch (cause) {
     console.error(`[session] event_serialize_failed type=${event.type}`, cause);
     return { type: event.type };
@@ -792,6 +846,7 @@ export class SessionHost {
     private hasBackgroundWork?: SessionHostOptions["hasBackgroundWork"],
     private readonly idleGraceMs = 5 * 60_000,
     private readonly activeRecheckMs = 30_000,
+    private readonly stopSettleTimeoutMs = 10_000,
   ) {}
 
   private sockets = new Set<WebSocket>();
@@ -816,7 +871,12 @@ export class SessionHost {
   /** Currently executing tool calls (toolCallId → name/args/startedAt), for ui.custom dialogs. */
   private activeToolCalls = new Map<
     string,
-    { toolName: string; args: Record<string, unknown>; startedAt: number }
+    {
+      toolName: string;
+      args: Record<string, unknown>;
+      startedAt: number;
+      liveOutput?: string;
+    }
   >();
   /** Hook (set by index.ts) invoked on every tool execution start/end. */
   onToolExecution?: (toolName: string, phase: "start" | "end") => void;
@@ -842,6 +902,10 @@ export class SessionHost {
   private watchDebounceTimer?: NodeJS.Timeout;
   private watchRetryTimer?: NodeJS.Timeout;
   private pendingSnapshotTimer?: NodeJS.Timeout;
+  /** Latest cumulative assistant state, sent only in snapshots/checkpoints. */
+  private streamingMessage?: PiiMessage;
+  private streamedDeltaChars = 0;
+  private nextStreamCheckpointChars = STREAM_CHECKPOINT_INITIAL_CHARS;
   /** Current agent run start time (undefined when fully settled). */
   runStartedAt?: number;
   private settledMtime = 0;
@@ -853,6 +917,17 @@ export class SessionHost {
   private disposePromise?: Promise<void>;
   private queueOperation: Promise<void> = Promise.resolve();
   private commandMutationChain: Promise<void> = Promise.resolve();
+  /** Invalidates commands admitted before a stop request reaches the SDK. */
+  private stopEpoch = 0;
+  /** Coalesces concurrent stop requests and blocks new mutations until settled. */
+  private stopPromise?: Promise<{
+    ok: boolean;
+    error?: string;
+    data?: Record<string, unknown>;
+  }>;
+  /** Includes commands waiting in the cross-viewer mutation lane. */
+  private pendingCommandMutations = 0;
+  private emptyNotified = false;
   private readonly queueAdapter = new SessionQueueAdapter(() => this.session);
 
   static async create(
@@ -1337,7 +1412,7 @@ export class SessionHost {
       this.restartFileWatch();
       return;
     }
-    if (this.runtime.session.isStreaming || this.reloading) {
+    if (this.isRunning || this.reloading) {
       this.scheduleExternalReload(250);
       return;
     }
@@ -1568,8 +1643,11 @@ export class SessionHost {
   }
 
   private enqueueUi<T>(open: () => Promise<T>): Promise<T> {
+    const admittedEpoch = this.stopEpoch;
     const result = this.uiQueue.then(() => {
       if (this.disposed) throw new Error("session disposed");
+      if (this.stopPromise || admittedEpoch !== this.stopEpoch)
+        throw new Error("session operation was cancelled by stop");
       return open();
     });
     this.uiQueue = result.then(
@@ -1646,6 +1724,14 @@ export class SessionHost {
     clearTimeout(this.pendingSnapshotTimer);
     this.pendingSnapshotTimer = undefined;
     this.unsubscribe?.();
+    const staleTools = [...this.activeToolCalls.values()];
+    this.activeToolCalls.clear();
+    for (const tool of staleTools)
+      this.onToolExecution?.(tool.toolName, "end");
+    this.streamingMessage = undefined;
+    this.streamedDeltaChars = 0;
+    this.nextStreamCheckpointChars = STREAM_CHECKPOINT_INITIAL_CHARS;
+    this.runStartedAt = undefined;
     const session = this.runtime.session;
     this.unsubscribe = session.subscribe((event) => {
       if (
@@ -1659,7 +1745,46 @@ export class SessionHost {
         this.statsCache = undefined;
         this.snapshotLogPending = true;
       }
-      const serializedEvent = serializeEvent(event);
+      let includeStreamingCheckpoint = false;
+      if (event.type === "agent_start") {
+        this.streamingMessage = undefined;
+        this.streamedDeltaChars = 0;
+        this.nextStreamCheckpointChars = STREAM_CHECKPOINT_INITIAL_CHARS;
+      } else if (event.type === "message_start") {
+        const message = (event as unknown as { message?: PiiMessage }).message;
+        if (message?.role === "assistant") {
+          this.streamingMessage = message;
+          this.streamedDeltaChars = 0;
+          this.nextStreamCheckpointChars = STREAM_CHECKPOINT_INITIAL_CHARS;
+        }
+      } else if (event.type === "message_update") {
+        const update = event as unknown as {
+          message?: PiiMessage;
+          assistantMessageEvent?: { delta?: unknown };
+        };
+        if (update.message?.role === "assistant")
+          this.streamingMessage = update.message;
+        const delta = update.assistantMessageEvent?.delta;
+        if (typeof delta === "string") {
+          this.streamedDeltaChars += delta.length;
+          if (
+            update.message?.role === "assistant" &&
+            this.streamedDeltaChars >= this.nextStreamCheckpointChars
+          ) {
+            includeStreamingCheckpoint = true;
+            while (
+              this.nextStreamCheckpointChars <= this.streamedDeltaChars &&
+              this.nextStreamCheckpointChars <= Number.MAX_SAFE_INTEGER / 2
+            ) {
+              this.nextStreamCheckpointChars *= 2;
+            }
+          }
+        }
+      }
+      const serializedEvent = serializeEvent(
+        event,
+        includeStreamingCheckpoint,
+      );
       if (event.type === "queue_update") {
         const queue = this.queueAdapter.view();
         serializedEvent.steering = queue.steering;
@@ -1667,6 +1792,15 @@ export class SessionHost {
         serializedEvent.queueCapabilities = queue.capabilities;
       }
       this.broadcast({ type: "event", event: serializedEvent });
+      if (
+        event.type === "message_end" ||
+        event.type === "agent_end" ||
+        event.type === "agent_settled"
+      ) {
+        this.streamingMessage = undefined;
+        this.streamedDeltaChars = 0;
+        this.nextStreamCheckpointChars = STREAM_CHECKPOINT_INITIAL_CHARS;
+      }
       // Keep late-joining clients consistent after meaningful state changes.
       // agent_end fires before the session manager finishes appending entries,
       // so defer the snapshot slightly; agent_settled marks full quiescence.
@@ -1713,6 +1847,20 @@ export class SessionHost {
           });
         this.onToolExecution?.(e.toolName ?? "", "start");
       }
+      if (event.type === "tool_execution_update") {
+        const e = event as unknown as {
+          toolCallId?: string;
+          partialResult?: unknown;
+          update?: unknown;
+        };
+        const active = e.toolCallId
+          ? this.activeToolCalls.get(e.toolCallId)
+          : undefined;
+        if (active) {
+          const output = toolOutputText(e.partialResult ?? e.update);
+          active.liveOutput = output.slice(-ACTIVE_TOOL_OUTPUT_SNAPSHOT_CHARS);
+        }
+      }
       if (event.type === "tool_execution_end") {
         // SAFETY: AgentSessionEvent's upstream union omits tool fields even though this event always carries them.
         const e = event as unknown as {
@@ -1734,20 +1882,29 @@ export class SessionHost {
   async runtime_import(
     inputPath: string,
   ): Promise<{ ok: boolean; sessionFile?: string; error?: string }> {
-    try {
-      const r = await this.runtime.importFromJsonl(inputPath);
-      this.broadcastSnapshot();
-      return {
-        ok: !r.cancelled,
-        sessionFile: this.runtime.session.sessionFile,
-        error: r.cancelled ? "cancelled" : undefined,
-      };
-    } catch (err) {
-      return {
-        ok: false,
-        error: err instanceof Error ? err.message : String(err),
-      };
-    }
+    return this.withCommandMutation(async () => {
+      // Re-check after waiting for an earlier mutation: another viewer may
+      // have attached while the REST upload was being parsed.
+      if (this.sockets.size > 1)
+        return {
+          ok: false,
+          error: "当前会话在多个窗口中打开；请只保留一个窗口后再导入会话。",
+        };
+      try {
+        const r = await this.runtime.importFromJsonl(inputPath);
+        this.broadcastSnapshot();
+        return {
+          ok: !r.cancelled,
+          sessionFile: this.runtime.session.sessionFile,
+          error: r.cancelled ? "cancelled" : undefined,
+        };
+      } catch (err) {
+        return {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    });
   }
 
   get cwd(): string {
@@ -1778,6 +1935,12 @@ export class SessionHost {
     preview?: SessionSnapshot,
     supportsReadyDelta = true,
   ): void {
+    if (this.disposed || this.disposePromise) {
+      process.stdout.write(
+        `[session] attach_rejected key=${JSON.stringify(this.key)} reason=disposing_or_disposed\n`,
+      );
+      throw new Error("session host is disposing or disposed");
+    }
     clearTimeout(this.idleTimer);
     this.idleTimer = undefined;
     this.retainedForBackgroundWork = false;
@@ -1826,10 +1989,12 @@ export class SessionHost {
   detach(ws: WebSocket): void {
     this.sockets.delete(ws);
     this.readyDeltaSockets.delete(ws);
-    if (this.sockets.size === 0) this.scheduleIdleCheck(this.idleGraceMs);
+    if (!this.disposed && this.sockets.size === 0)
+      this.scheduleIdleCheck(this.idleGraceMs);
   }
 
   private scheduleIdleCheck(delayMs: number): void {
+    if (this.disposed) return;
     clearTimeout(this.idleTimer);
     this.idleTimer = setTimeout(() => {
       this.idleTimer = undefined;
@@ -1872,6 +2037,10 @@ export class SessionHost {
       this.scheduleIdleCheck(this.idleGraceMs);
       return;
     }
+    // Remove the host from the shared index before disposal awaits. A socket
+    // arriving in that window must create a replacement instead of attaching
+    // to a runtime that is already closing.
+    this.notifyEmpty();
     try {
       await this.dispose();
     } catch (cause) {
@@ -1880,6 +2049,11 @@ export class SessionHost {
         cause,
       );
     }
+  }
+
+  private notifyEmpty(): void {
+    if (this.emptyNotified) return;
+    this.emptyNotified = true;
     try {
       this.onEmpty?.(this);
     } catch (cause) {
@@ -1904,7 +2078,21 @@ export class SessionHost {
   }
 
   get isRunning(): boolean {
-    return this.session.isStreaming;
+    if (this.disposed) return false;
+    const session = this.session;
+    return Boolean(
+      !this.isReady ||
+        this.reloading ||
+        this.stopPromise ||
+        this.pendingCommandMutations > 0 ||
+        session.isStreaming ||
+        session.isCompacting ||
+        session.isRetrying ||
+        session.isBashRunning ||
+        this.activeToolCalls.size > 0 ||
+        this.uiPending.size > 0 ||
+        this.customUi.isActive,
+    );
   }
 
   private slashCommands(): SessionSnapshot["slashCommands"] {
@@ -2089,6 +2277,17 @@ export class SessionHost {
       // may be displayed while initializing, but handleCommand still prevents
       // execution until readiness settles.
       tools: s.getActiveToolNames(),
+      activeToolCalls: [...this.activeToolCalls].map(([toolCallId, tool]) => ({
+        toolCallId,
+        toolName: tool.toolName,
+        args: snapshotToolArgs(tool.args),
+        startedAt: tool.startedAt,
+        liveOutput: tool.liveOutput,
+      })),
+      streamingMessage:
+        s.isStreaming && this.streamingMessage?.role === "assistant"
+          ? this.streamingMessage
+          : null,
       slashCommands: this.slashCommands(),
     };
     const duration = elapsedMs(startedAt);
@@ -2137,7 +2336,7 @@ export class SessionHost {
       model: s.model ? `${s.model.provider}/${s.model.id}` : undefined,
       modelName: s.model?.name,
       startedAt: this.runStartedAt ?? null,
-      isStreaming: s.isStreaming,
+      isStreaming: this.isRunning,
       queued: queue.steering.length + queue.followUp.length,
       active: this.activeExecutions,
     };
@@ -2177,6 +2376,25 @@ export class SessionHost {
         a.providerName.localeCompare(b.providerName) ||
         a.authType.localeCompare(b.authType),
     );
+  }
+
+  /** Pick up models.json edits made while this conversation was already open. */
+  private async findModel(provider: string, modelId: string) {
+    let model = this.modelRegistry.find(provider, modelId);
+    if (model) return model;
+    try {
+      await this.modelRegistry.refresh({
+        allowNetwork: false,
+        signal: AbortSignal.timeout(10_000),
+      });
+    } catch (cause) {
+      const error = cause instanceof Error ? cause.message : String(cause);
+      console.error(
+        `[models] session_refresh_failed key=${JSON.stringify(this.key)} provider=${JSON.stringify(provider)} model=${JSON.stringify(modelId)} error=${JSON.stringify(error)}`,
+      );
+    }
+    model = this.modelRegistry.find(provider, modelId);
+    return model;
   }
 
   private async chooseLogin(
@@ -2320,8 +2538,14 @@ export class SessionHost {
     const [name, ...args] = text.split(/\s+/);
     const arg = args.join(" ").trim();
     const out = (o: string) => ({ ok: true, data: { output: o } });
+    if (name === "new" && this.sockets.size > 1) {
+      return {
+        ok: false,
+        error: "当前会话在多个窗口中打开；请只保留一个窗口后再新建会话。",
+      };
+    }
     if (
-      s.isStreaming &&
+      (s.isStreaming || s.isCompacting) &&
       ["compact", "name", "new", "model", "login", "logout"].includes(name)
     ) {
       return {
@@ -2378,7 +2602,7 @@ export class SessionHost {
         const [prov, ...mid] = arg.split("/");
         if (!prov || mid.length === 0)
           return { ok: false, error: "用法: /model <provider/modelId>" };
-        const model = this.modelRegistry.find(prov, mid.join("/"));
+        const model = await this.findModel(prov, mid.join("/"));
         if (!model) return { ok: false, error: `模型未找到: ${arg}` };
         await s.setModel(model);
         this.statsCacheKey = undefined;
@@ -2421,8 +2645,28 @@ export class SessionHost {
     }
   }
 
-  private withQueueOperation<T>(operation: () => Promise<T>): Promise<T> {
-    const result = this.queueOperation.then(operation);
+  private withQueueOperation(
+    operation: () => Promise<{
+      ok: boolean;
+      error?: string;
+      data?: Record<string, unknown>;
+    }>,
+  ): Promise<{
+    ok: boolean;
+    error?: string;
+    data?: Record<string, unknown>;
+  }> {
+    const admittedEpoch = this.stopEpoch;
+    const result = this.queueOperation.then(() => {
+      if (this.disposed)
+        return { ok: false, error: "session host is disposed" };
+      if (this.stopPromise || admittedEpoch !== this.stopEpoch)
+        return {
+          ok: false,
+          error: "session operation was cancelled by stop",
+        };
+      return operation();
+    });
     this.queueOperation = result.then(
       () => undefined,
       () => undefined,
@@ -2497,6 +2741,336 @@ export class SessionHost {
     return runOutcome;
   }
 
+  /**
+   * Cancel every operation owned by the current session as one stop boundary.
+   * Queue clearing happens on both sides of settlement so a racing SDK queue
+   * update cannot resurrect work after the user pressed stop.
+   */
+  private stopAll(): Promise<{
+    ok: boolean;
+    error?: string;
+    data?: Record<string, unknown>;
+  }> {
+    if (this.stopPromise) return this.stopPromise;
+    const epoch = ++this.stopEpoch;
+    const initialSession = this.session;
+    const startedAt = performance.now();
+    const deadline = startedAt + this.stopSettleTimeoutMs;
+    const queueBarrier = this.queueOperation;
+    const mutationBarrier = this.commandMutationChain;
+    const hadPendingMutations = this.pendingCommandMutations > 0;
+    const failures: string[] = [];
+    let clearedQueue = 0;
+    let closedUi = 0;
+
+    const recordFailure = (operation: string, cause: unknown): void => {
+      const error = cause instanceof Error ? cause.message : String(cause);
+      failures.push(`${operation}: ${error}`);
+      console.error(
+        `[session] stop_operation_failed key=${JSON.stringify(this.key)} operation=${operation} error=${JSON.stringify(error)}`,
+      );
+    };
+    const clearQueue = (session: AgentSession, phase: string): void => {
+      try {
+        const cleared = session.clearQueue();
+        clearedQueue +=
+          (Array.isArray(cleared?.steering) ? cleared.steering.length : 0) +
+          (Array.isArray(cleared?.followUp) ? cleared.followUp.length : 0);
+      } catch (cause) {
+        recordFailure(`clear_queue_${phase}`, cause);
+      }
+    };
+    const invoke = (operation: string, action: (() => void) | undefined): void => {
+      if (!action) return;
+      try {
+        action();
+      } catch (cause) {
+        recordFailure(operation, cause);
+      }
+    };
+    const closeUi = (): void => {
+      closedUi += this.uiPending.size + (this.customUi.isActive ? 1 : 0);
+      for (const id of [...this.uiPending.keys()])
+        this.closeUiRequest(id, "dispose", undefined);
+      this.pendingUiRequest = undefined;
+      this.customUi.dispose();
+    };
+    const abortSession = (session: AgentSession, prefix: string): Promise<void> => {
+      const stoppable = session as AgentSession & {
+        abortRetry?: () => void;
+        abortCompaction?: () => void;
+        abortBranchSummary?: () => void;
+        abortBash?: () => void;
+        agent?: { abort?: () => void };
+      };
+      invoke(`${prefix}abort_retry`, stoppable.abortRetry?.bind(stoppable));
+      invoke(
+        `${prefix}abort_compaction`,
+        stoppable.abortCompaction?.bind(stoppable),
+      );
+      invoke(
+        `${prefix}abort_branch_summary`,
+        stoppable.abortBranchSummary?.bind(stoppable),
+      );
+      invoke(`${prefix}abort_bash`, stoppable.abortBash?.bind(stoppable));
+      invoke(
+        `${prefix}agent_abort`,
+        stoppable.agent?.abort?.bind(stoppable.agent),
+      );
+      try {
+        return Promise.resolve(session.abort());
+      } catch (cause) {
+        recordFailure(`${prefix}abort`, cause);
+        return Promise.resolve();
+      }
+    };
+    const settleUntilDeadline = async (
+      operations: { name: string; promise: Promise<unknown> }[],
+      timeoutOperation: string,
+    ): Promise<boolean> => {
+      const remaining = Math.max(0, deadline - performance.now());
+      if (remaining <= 0) {
+        recordFailure(
+          timeoutOperation,
+          new Error(`did not settle within ${this.stopSettleTimeoutMs}ms`),
+        );
+        return false;
+      }
+      const settlement = Promise.allSettled(
+        operations.map((operation) => operation.promise),
+      );
+      let timeout: NodeJS.Timeout | undefined;
+      const timedOut = Symbol("stop settlement timeout");
+      const settled = await Promise.race([
+        settlement,
+        new Promise<typeof timedOut>((resolvePromise) => {
+          timeout = setTimeout(() => resolvePromise(timedOut), remaining);
+        }),
+      ]);
+      clearTimeout(timeout);
+      if (settled === timedOut) {
+        recordFailure(
+          timeoutOperation,
+          new Error(`did not settle within ${this.stopSettleTimeoutMs}ms`),
+        );
+        return false;
+      }
+      settled.forEach((result, index) => {
+        if (result.status === "rejected")
+          recordFailure(operations[index].name, result.reason);
+      });
+      return true;
+    };
+
+    const openUiCount =
+      this.uiPending.size + (this.customUi.isActive ? 1 : 0);
+    process.stdout.write(
+      `[session] stop_started key=${JSON.stringify(this.key)} epoch=${epoch} streaming=${Boolean(initialSession.isStreaming)} compacting=${Boolean(initialSession.isCompacting)} queued=${this.queueAdapter.view().steering.length + this.queueAdapter.view().followUp.length} open_ui=${openUiCount} pending_mutations=${this.pendingCommandMutations}\n`,
+    );
+
+    // Synchronous boundary: no command admitted before this point can enqueue
+    // after stopEpoch changed, and dialogs blocking a tool are released first.
+    clearQueue(initialSession, "before");
+    closeUi();
+    const abortPromise = abortSession(initialSession, "");
+
+    const operation = (async () => {
+      await settleUntilDeadline(
+        [
+          { name: "abort", promise: abortPromise },
+          { name: "queue_settlement", promise: queueBarrier },
+          { name: "mutation_settlement", promise: mutationBarrier },
+        ],
+        "settlement_timeout",
+      );
+
+      // A mutation admitted before stop can start work after the first abort,
+      // or replace AgentSessionRuntime.session entirely. Sweep the current
+      // session once more after the mutation barrier so stop remains atomic.
+      closeUi();
+      const currentSession = this.session;
+      const sessionReplaced = currentSession !== initialSession;
+      if (hadPendingMutations || sessionReplaced) {
+        clearQueue(currentSession, "final_before");
+        await settleUntilDeadline(
+          [{ name: "final_abort", promise: abortSession(currentSession, "final_") }],
+          "final_settlement_timeout",
+        );
+      }
+      clearQueue(currentSession, "after");
+
+      // Tool end events normally remove these. Clear only leftovers so the run
+      // list cannot remain permanently busy after a successful stop.
+      const staleTools = [...this.activeToolCalls.values()];
+      this.activeToolCalls.clear();
+      for (const tool of staleTools)
+        this.onToolExecution?.(tool.toolName, "end");
+      this.runStartedAt = undefined;
+      this.broadcastSnapshot();
+
+      const duration = elapsedMs(startedAt);
+      process.stdout.write(
+        `[session] stop_completed key=${JSON.stringify(this.key)} epoch=${epoch} duration_ms=${duration} queue_cleared=${clearedQueue} ui_closed=${closedUi} stale_tools=${staleTools.length} session_replaced=${sessionReplaced} status=${failures.length === 0 ? "ok" : "partial"}\n`,
+      );
+      if (failures.length > 0) {
+        return {
+          ok: false,
+          error: `stop incomplete: ${failures.join("; ")}`,
+          data: { clearedQueue, closedUi },
+        };
+      }
+      return {
+        ok: true,
+        data: { clearedQueue, closedUi },
+      };
+    })();
+    let tracked!: typeof operation;
+    tracked = operation.finally(() => {
+      if (this.stopPromise === tracked) this.stopPromise = undefined;
+    });
+    this.stopPromise = tracked;
+    return tracked;
+  }
+
+  /**
+   * A runtime replacement can finish after the user-visible stop deadline.
+   * It still owns the old stop epoch and runs ahead of every newer serialized
+   * mutation, so quiesce that exact late result before releasing the lane.
+   */
+  private async quiesceLateMutation(admittedEpoch: number): Promise<void> {
+    if (admittedEpoch === this.stopEpoch || this.disposed) return;
+    const session = this.session;
+    const failures: string[] = [];
+    const invoke = (operation: string, action: (() => void) | undefined) => {
+      if (!action) return;
+      try {
+        action();
+      } catch (cause) {
+        failures.push(
+          `${operation}: ${cause instanceof Error ? cause.message : String(cause)}`,
+        );
+      }
+    };
+    const clearQueue = (phase: string) => {
+      try {
+        session.clearQueue();
+      } catch (cause) {
+        failures.push(
+          `clear_queue_${phase}: ${cause instanceof Error ? cause.message : String(cause)}`,
+        );
+      }
+    };
+
+    clearQueue("before");
+    for (const id of [...this.uiPending.keys()])
+      this.closeUiRequest(id, "dispose", undefined);
+    this.pendingUiRequest = undefined;
+    this.customUi.dispose();
+
+    const stoppable = session as AgentSession & {
+      abortRetry?: () => void;
+      abortCompaction?: () => void;
+      abortBranchSummary?: () => void;
+      abortBash?: () => void;
+      agent?: { abort?: () => void };
+    };
+    invoke("abort_retry", stoppable.abortRetry?.bind(stoppable));
+    invoke("abort_compaction", stoppable.abortCompaction?.bind(stoppable));
+    invoke(
+      "abort_branch_summary",
+      stoppable.abortBranchSummary?.bind(stoppable),
+    );
+    invoke("abort_bash", stoppable.abortBash?.bind(stoppable));
+    invoke("agent_abort", stoppable.agent?.abort?.bind(stoppable.agent));
+
+    let abortPromise: Promise<unknown>;
+    try {
+      abortPromise = Promise.resolve(session.abort());
+    } catch (cause) {
+      abortPromise = Promise.reject(cause);
+    }
+    let timer: NodeJS.Timeout | undefined;
+    const timedOut = Symbol("late mutation abort timeout");
+    const outcome = await Promise.race([
+      abortPromise.then(
+        () => undefined,
+        (cause) => {
+          failures.push(
+            `abort: ${cause instanceof Error ? cause.message : String(cause)}`,
+          );
+        },
+      ),
+      new Promise<typeof timedOut>((resolvePromise) => {
+        timer = setTimeout(
+          () => resolvePromise(timedOut),
+          this.stopSettleTimeoutMs,
+        );
+        timer.unref();
+      }),
+    ]);
+    clearTimeout(timer);
+    if (outcome === timedOut)
+      failures.push(
+        `abort: did not settle within ${this.stopSettleTimeoutMs}ms`,
+      );
+    clearQueue("after");
+
+    const staleTools = [...this.activeToolCalls.values()];
+    this.activeToolCalls.clear();
+    for (const tool of staleTools)
+      this.onToolExecution?.(tool.toolName, "end");
+    this.runStartedAt = undefined;
+    this.broadcastSnapshot();
+    process.stdout.write(
+      `[session] stale_mutation_quiesced key=${JSON.stringify(this.key)} admitted_epoch=${admittedEpoch} current_epoch=${this.stopEpoch} stale_tools=${staleTools.length} status=${failures.length === 0 ? "ok" : "partial"}${failures.length > 0 ? ` failures=${JSON.stringify(failures)}` : ""}\n`,
+    );
+  }
+
+  /**
+   * Serialize every session mutation, including REST imports, and make a stop
+   * request a hard admission boundary for work that was still waiting.
+   */
+  private withCommandMutation<T extends { ok: boolean; error?: string }>(
+    operation: () => T | Promise<T>,
+  ): Promise<T> {
+    const rejected = (error: string): T => ({ ok: false, error } as T);
+    if (this.disposed)
+      return Promise.resolve(rejected("session host is disposed"));
+    if (this.stopPromise)
+      return Promise.resolve(
+        rejected("session is stopping; command was not accepted"),
+      );
+    const admittedEpoch = this.stopEpoch;
+    this.pendingCommandMutations += 1;
+    const result = this.commandMutationChain.then(async () => {
+      if (this.disposed)
+        return rejected("session host is disposed");
+      if (this.stopPromise || admittedEpoch !== this.stopEpoch)
+        return rejected("session operation was cancelled by stop");
+      try {
+        const value = await operation();
+        if (admittedEpoch !== this.stopEpoch) {
+          await this.quiesceLateMutation(admittedEpoch);
+          return rejected(
+            "session operation completed after stop and was stopped",
+          );
+        }
+        return value;
+      } catch (cause) {
+        if (admittedEpoch !== this.stopEpoch)
+          await this.quiesceLateMutation(admittedEpoch);
+        throw cause;
+      }
+    });
+    this.commandMutationChain = result.then(() => undefined, () => undefined);
+    return result.finally(() => {
+      this.pendingCommandMutations = Math.max(
+        0,
+        this.pendingCommandMutations - 1,
+      );
+    });
+  }
+
   /** Serialize mutations across every browser attached to this Host. */
   handleOrdered(
     cmd: ClientCommand & { id?: string },
@@ -2508,15 +3082,15 @@ export class SessionHost {
       cmd.type === "custom_ui_resize" ||
       cmd.type === "custom_ui_cancel";
     if (bypass) return this.handleCommand(cmd);
-    const result = this.commandMutationChain.then(() => this.handleCommand(cmd));
-    this.commandMutationChain = result.then(() => undefined, () => undefined);
-    return result;
+    return this.withCommandMutation(() => this.handleCommand(cmd));
   }
 
   async handleCommand(
     cmd: ClientCommand & { id?: string },
   ): Promise<{ ok: boolean; error?: string; data?: Record<string, unknown> }> {
     if (this.disposed) return { ok: false, error: "session host is disposed" };
+    if (this.stopPromise && cmd.type !== "abort")
+      return { ok: false, error: "session is stopping; command was not accepted" };
     const initializationResponse =
       cmd.type === "abort" ||
       cmd.type === "ui_response" ||
@@ -2555,7 +3129,18 @@ export class SessionHost {
       cmd.type === "branch" ||
       cmd.type === "compact" ||
       cmd.type === "setToolMode";
-    if (s.isStreaming && idleOnlyMutation) {
+    if (
+      this.sockets.size > 1 &&
+      (cmd.type === "newSession" ||
+        cmd.type === "fork" ||
+        cmd.type === "branch")
+    ) {
+      return {
+        ok: false,
+        error: `当前会话在多个窗口中打开；请只保留一个窗口后再执行 ${cmd.type}。`,
+      };
+    }
+    if ((s.isStreaming || s.isCompacting) && idleOnlyMutation) {
       return {
         ok: false,
         error: `当前回复仍在运行，暂不能执行 ${cmd.type}；请先停止或等待完成。`,
@@ -2596,8 +3181,7 @@ export class SessionHost {
           this.broadcastSnapshot();
           return { ok: true };
         case "abort":
-          await s.abort();
-          return { ok: true };
+          return this.stopAll();
         case "newSession": {
           const r = await this.runtime.newSession();
           this.broadcastSnapshot();
@@ -2618,7 +3202,7 @@ export class SessionHost {
           };
         }
         case "setModel": {
-          const model = this.modelRegistry.find(cmd.provider, cmd.modelId);
+          const model = await this.findModel(cmd.provider, cmd.modelId);
           if (!model)
             return {
               ok: false,
@@ -2815,12 +3399,17 @@ export class SessionHost {
   dispose(): Promise<void> {
     if (this.disposePromise) return this.disposePromise;
     this.disposed = true;
+    const startedAt = performance.now();
+    process.stdout.write(
+      `[session] dispose_started key=${JSON.stringify(this.key)} viewers=${this.sockets.size}\n`,
+    );
     this.disposePromise = (async () => {
       clearTimeout(this.idleTimer);
       clearTimeout(this.watchDebounceTimer);
       clearTimeout(this.watchRetryTimer);
       clearTimeout(this.pendingSnapshotTimer);
       this.pendingSnapshotTimer = undefined;
+      this.streamingMessage = undefined;
       this.teardownSessionUi("dispose");
       this.fileWatcher?.close();
       this.fileWatcher = undefined;
@@ -2838,6 +3427,9 @@ export class SessionHost {
         for (const ws of this.sockets) ws.close(1000, "session disposed");
         this.sockets.clear();
       }
+      process.stdout.write(
+        `[session] dispose_completed key=${JSON.stringify(this.key)} duration_ms=${elapsedMs(startedAt)} status=${disposeFailed ? "error" : "ok"}\n`,
+      );
       if (disposeFailed) throw disposeError;
     })();
     return this.disposePromise;

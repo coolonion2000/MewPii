@@ -11,8 +11,9 @@ import {
   useState,
   useSyncExternalStore,
 } from 'react';
-import type { Conversation } from '../api';
+import type { Conversation, ToolActivity } from '../api';
 import MessageItem from './MessageItem';
+import ToolCard from './ToolCard';
 import Composer from './Composer';
 import StatsBar from './StatsBar';
 import RunsChip, { type RunInfo } from './RunsChip';
@@ -27,11 +28,17 @@ import {
   shouldShowDisconnected,
 } from '../state-utils';
 import {
+  clampResizeWidth,
+  collectToolCallIds,
+  orphanRunningTools,
+  validContentBlocks,
+} from '../ui-reliability';
+import {
   armCompletionSound,
   playCompletionSound,
   shouldPlayCompletionSound,
 } from '../completion-sound';
-import { getLang, t } from '../i18n';
+import { t } from '../i18n';
 
 const Trajectory = lazy(() => import('./Trajectory'));
 const FilePreview = lazy(() => import('./FilePreview'));
@@ -43,9 +50,10 @@ interface Props {
   projects?: ProjectGroup[];
   onSelectProject?: (cwd: string) => void;
   dark: boolean;
+  language: string;
 }
 
-function ChatView({ conv, onRefresh, onForked, projects, onSelectProject, dark }: Props) {
+function ChatView({ conv, onRefresh, onForked, projects, onSelectProject, dark, language }: Props) {
   const [, force] = useReducer((x: number) => x + 1, 0);
   // React rechecks the revision after subscribing, so even a snapshot arriving
   // between render and commit cannot leave this view on stale empty state.
@@ -104,6 +112,9 @@ function ChatView({ conv, onRefresh, onForked, projects, onSelectProject, dark }
   }, [conv.snapshot?.isStreaming]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const atBottomRef = useRef(true);
+  const userInteractingRef = useRef(false);
+  const interactionTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const previewDragCleanup = useRef<(() => void) | undefined>(undefined);
   const [showJump, setShowJump] = useState(false);
 
   const isNearBottom = () => {
@@ -123,55 +134,129 @@ function ChatView({ conv, onRefresh, onForked, projects, onSelectProject, dark }
   }, [projMenuOpen]);
   const [previewWidth, setPreviewWidth] = useState(() => Number(localStorage.getItem('pii-preview-w')) || 480);
 
-  const startPreviewDrag = (e: React.MouseEvent) => {
+  const startPreviewDrag = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
     e.preventDefault();
+    previewDragCleanup.current?.();
+    const handle = e.currentTarget;
+    const pane = handle.parentElement?.querySelector<HTMLElement>('.file-preview-pane');
+    if (!pane) return;
+    const pointerId = e.pointerId;
     const startX = e.clientX;
     const startW = previewWidth;
-    const onMove = (ev: MouseEvent) => {
-      const w = Math.min(window.innerWidth * 0.75, Math.max(280, startW + (startX - ev.clientX)));
-      setPreviewWidth(w);
+    let clientX = startX;
+    let frame = 0;
+    let done = false;
+    const widthForPointer = () => clampResizeWidth(
+      startW + (startX - clientX),
+      280,
+      Math.max(280, window.innerWidth * 0.75),
+    );
+    const renderWidth = () => {
+      frame = 0;
+      pane.style.width = `${widthForPointer()}px`;
     };
-    const onUp = () => {
-      window.removeEventListener('mousemove', onMove);
-      window.removeEventListener('mouseup', onUp);
-      setPreviewWidth((w) => {
-        localStorage.setItem('pii-preview-w', String(Math.round(w)));
-        return w;
-      });
+    const onMove = (event: PointerEvent) => {
+      if (event.pointerId !== pointerId) return;
+      clientX = event.clientX;
+      if (!frame) frame = requestAnimationFrame(renderWidth);
     };
-    window.addEventListener('mousemove', onMove);
-    window.addEventListener('mouseup', onUp);
-  };
+    const removeListeners = () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', finish);
+      window.removeEventListener('pointercancel', onCancel);
+      window.removeEventListener('blur', onBlur);
+      handle.removeEventListener('lostpointercapture', onCancel);
+      if (handle.hasPointerCapture?.(pointerId)) handle.releasePointerCapture(pointerId);
+      document.body.classList.remove('is-resizing');
+      userInteractingRef.current = false;
+      previewDragCleanup.current = undefined;
+    };
+    const finish = (event?: PointerEvent) => {
+      if (done || (event && event.pointerId !== pointerId)) return;
+      done = true;
+      if (event) clientX = event.clientX;
+      if (frame) cancelAnimationFrame(frame);
+      const width = widthForPointer();
+      pane.style.width = `${width}px`;
+      localStorage.setItem('pii-preview-w', String(Math.round(width)));
+      removeListeners();
+      setPreviewWidth(width);
+    };
+    const onBlur = () => finish();
+    const onCancel = (event: PointerEvent) => {
+      if (event.pointerId === pointerId) finish();
+    };
+    previewDragCleanup.current = () => {
+      if (done) return;
+      done = true;
+      if (frame) cancelAnimationFrame(frame);
+      removeListeners();
+    };
+    userInteractingRef.current = true;
+    document.body.classList.add('is-resizing');
+    handle.setPointerCapture?.(pointerId);
+    window.addEventListener('pointermove', onMove, { passive: true });
+    window.addEventListener('pointerup', finish);
+    window.addEventListener('pointercancel', onCancel);
+    window.addEventListener('blur', onBlur);
+    handle.addEventListener('lostpointercapture', onCancel);
+  }, [previewWidth]);
+
+  useEffect(() => () => {
+    previewDragCleanup.current?.();
+    clearTimeout(interactionTimerRef.current);
+  }, []);
   const snap = conv.snapshot;
   const newSessionDisabled = Boolean(snap?.isStreaming || conv.compaction);
-  const language = getLang();
 
   const baseMessages = useMemo<PiiMessage[]>(
     () => [
-      ...conv.messages,
-      ...conv.optimistic.map((item) => item.message),
+      ...conv.messages.filter((message): message is PiiMessage =>
+        Boolean(message && typeof message === 'object')),
+      ...conv.optimistic
+        .map((item) => item.message)
+        .filter((message): message is PiiMessage =>
+          Boolean(message && typeof message === 'object')),
     ],
     [conv.messages, conv.optimistic],
   );
-  const allMessages = useMemo<PiiMessage[]>(
-    () => (conv.streaming ? [...baseMessages, conv.streaming] : baseMessages),
-    [baseMessages, conv.streaming],
-  );
-  const { messageKeys, renderKeys } = useMemo(() => {
+  const { messageKeys, renderKeys, occurrences } = useMemo(() => {
     const anchors: string[] = [];
     const unique: string[] = [];
-    const occurrences = new Map<string, number>();
-    for (let index = 0; index < allMessages.length; index++) {
-      const base = messageTimelineKey(allMessages[index], index);
-      const occurrence = occurrences.get(base) ?? 0;
-      occurrences.set(base, occurrence + 1);
+    const counts = new Map<string, number>();
+    for (let index = 0; index < baseMessages.length; index++) {
+      const base = messageTimelineKey(baseMessages[index], index);
+      const occurrence = counts.get(base) ?? 0;
+      counts.set(base, occurrence + 1);
       anchors.push(base);
       unique.push(
         occurrence === 0 ? base : `${base}:occurrence:${occurrence}`,
       );
     }
-    return { messageKeys: anchors, renderKeys: unique };
-  }, [allMessages]);
+    return { messageKeys: anchors, renderKeys: unique, occurrences: counts };
+  }, [baseMessages]);
+  const streamingMessage = conv.streaming && typeof conv.streaming === 'object'
+    ? conv.streaming
+    : undefined;
+  const streamingMessageKey = streamingMessage
+    ? messageTimelineKey(streamingMessage, baseMessages.length)
+    : undefined;
+  const streamingRenderKey = streamingMessageKey
+    ? `${streamingMessageKey}:stream:${occurrences.get(streamingMessageKey) ?? 0}`
+    : undefined;
+  const finalizedToolCallIds = useMemo(
+    () => collectToolCallIds(baseMessages),
+    [baseMessages],
+  );
+  const orphanTools = useMemo(
+    () => orphanRunningTools(
+      conv.tools,
+      finalizedToolCallIds,
+      streamingMessage?.content,
+    ),
+    [conv.tools, finalizedToolCallIds, streamingMessage?.content],
+  );
   const { noticesBeforeMessages, noticesByMessage } = useMemo(() => {
     const before = conv.transcriptNotices.filter(
       (notice) => notice.afterMessageKey === undefined,
@@ -195,19 +280,48 @@ function ChatView({ conv, onRefresh, onForked, projects, onSelectProject, dark }
     return results;
   }, [conv.messages]);
 
+  const beginScrollInteraction = useCallback(() => {
+    clearTimeout(interactionTimerRef.current);
+    userInteractingRef.current = true;
+  }, []);
+  const endScrollInteraction = useCallback(() => {
+    clearTimeout(interactionTimerRef.current);
+    interactionTimerRef.current = setTimeout(() => {
+      userInteractingRef.current = false;
+    }, 80);
+  }, []);
+  const noteWheelInteraction = useCallback(() => {
+    beginScrollInteraction();
+    interactionTimerRef.current = setTimeout(() => {
+      userInteractingRef.current = false;
+    }, 180);
+  }, [beginScrollInteraction]);
+  useEffect(() => {
+    window.addEventListener('pointerup', endScrollInteraction);
+    window.addEventListener('pointercancel', endScrollInteraction);
+    return () => {
+      window.removeEventListener('pointerup', endScrollInteraction);
+      window.removeEventListener('pointercancel', endScrollInteraction);
+    };
+  }, [endScrollInteraction]);
+
   // auto-scroll while streaming — ONLY when the user is already at the bottom;
   // scrolling up to read history must never yank them back down
-  const lastMsg = allMessages[allMessages.length - 1];
+  const lastMsg = streamingMessage ?? baseMessages[baseMessages.length - 1];
   useEffect(() => {
     const frame = requestAnimationFrame(() => {
       const el = scrollRef.current;
-      if (el && atBottomRef.current) el.scrollTop = el.scrollHeight;
+      if (el && atBottomRef.current && !userInteractingRef.current)
+        el.scrollTop = el.scrollHeight;
       setShowJump(!atBottomRef.current);
     });
     return () => cancelAnimationFrame(frame);
   }, [lastMsg, conv.streaming, conv.tools, conv.snapshot?.isStreaming, conv.transcriptNoticeRevision]);
 
-  const title = snap?.name || firstUserText(allMessages) || '新会话';
+  const title = useMemo(
+    () => snap?.name || firstUserText(baseMessages) || '新会话',
+    [baseMessages, snap?.name],
+  );
   const handleFork = useCallback((entryId: string) => {
     void conv
       .send({ type: 'fork', entryId })
@@ -240,6 +354,7 @@ function ChatView({ conv, onRefresh, onForked, projects, onSelectProject, dark }
       );
   }, [conv]);
   const handleOpenFile = useCallback((path: string) => setPreviewPath(path), []);
+  const handleClosePreview = useCallback(() => setPreviewPath(undefined), []);
   const handleExport = useCallback(() => {
     void import('../export')
       .then(({ exportHtml }) =>
@@ -257,6 +372,11 @@ function ChatView({ conv, onRefresh, onForked, projects, onSelectProject, dark }
     };
   }, [title]);
 
+  // This is deliberately a plain derived value rather than a hook: existing
+  // sessions return a loading placeholder until their first snapshot, and all
+  // hooks must run in the same order before and after that snapshot arrives.
+  const hasUserMessage = baseMessages.some((message) => message.role === 'user');
+
   // Existing sessions should show a loading state until their first snapshot;
   // rendering the new-session hero here makes a successful refresh look empty.
   if (!snap && conv.sessionPath) {
@@ -273,7 +393,6 @@ function ChatView({ conv, onRefresh, onForked, projects, onSelectProject, dark }
   }
 
   // custom/system injections (e.g. ADHD ruleset) don't count as conversation
-  const hasUserMessage = allMessages.some((m) => m.role === 'user');
   if (!hasUserMessage && !conv.snapshot?.isStreaming) {
     return (
       <>
@@ -357,7 +476,13 @@ function ChatView({ conv, onRefresh, onForked, projects, onSelectProject, dark }
           className="btn btn-sm"
           title={t('clone')}
           onClick={() => {
-            const last = [...allMessages].reverse().find((m) => m._entryId);
+            let last: PiiMessage | undefined;
+            for (let index = baseMessages.length - 1; index >= 0; index--) {
+              if (baseMessages[index]._entryId) {
+                last = baseMessages[index];
+                break;
+              }
+            }
             if (!last?._entryId) return;
             void conv
               .send({ type: 'fork', entryId: last._entryId })
@@ -366,12 +491,12 @@ function ChatView({ conv, onRefresh, onForked, projects, onSelectProject, dark }
                 const file = data?.sessionFile as string | undefined;
                 if (file && onForked) onForked(conv.snapshot?.cwd ?? conv.cwd, file);
               })
-              .catch(() => undefined);
+              .catch((cause) => reportConversationError(conv, cause));
           }}
         >
           {t('clone')}
         </button>
-        <button className="btn btn-sm" title={t('compact')} onClick={() => void conv.send({ type: 'compact' }).catch(() => undefined)}>
+        <button className="btn btn-sm" title={t('compact')} onClick={() => void conv.send({ type: 'compact' }).catch((cause) => reportConversationError(conv, cause))}>
           {t('compact')}
         </button>
         <button className="btn btn-sm" title={t('export')} onClick={handleExport}>
@@ -413,6 +538,10 @@ function ChatView({ conv, onRefresh, onForked, projects, onSelectProject, dark }
       <div
         className="chat-scroll"
         ref={scrollRef}
+        onPointerDown={beginScrollInteraction}
+        onPointerUp={endScrollInteraction}
+        onPointerCancel={endScrollInteraction}
+        onWheel={noteWheelInteraction}
         onScroll={() => {
           atBottomRef.current = isNearBottom();
           setShowJump(!atBottomRef.current);
@@ -426,7 +555,7 @@ function ChatView({ conv, onRefresh, onForked, projects, onSelectProject, dark }
               </button>
             </div>
           )}
-          {allMessages.length === 0 && (
+          {baseMessages.length === 0 && !streamingMessage && (
             <div className="empty-state" style={{ minHeight: 240 }}>
               <div className="big">{t('startChat')}</div>
               <div>{t('piWorksIn')} {snap?.cwd ?? conv.cwd}</div>
@@ -435,53 +564,80 @@ function ChatView({ conv, onRefresh, onForked, projects, onSelectProject, dark }
           {noticesBeforeMessages.map((notice) => (
             <TranscriptNoticeView key={notice.id} notice={notice} />
           ))}
-          {allMessages.map((m, i) => (
-            <Fragment key={renderKeys[i]}>
-            <MessageItem
-              message={m}
-              streaming={conv.streaming === m}
-              live={
-                conv.streaming === m
-                  ? (() => {
-                      const run = conv.runStats;
-                      const partial = m.content;
-                      const partialLen = Array.isArray(partial)
-                        ? (partial as Record<string, unknown>[]).reduce(
-                            (n, b) => n + String(b.text ?? b.thinking ?? '').length,
-                            0,
-                          )
-                        : 0;
-                      const metrics = calculateLiveOutputMetrics({
-                        visibleChars: partialLen,
-                        outputChars: run.outputChars,
-                        firstDeltaAt: run.firstDeltaAt,
-                        deltaSamples: conv.deltaSamples,
-                        now: Date.now(),
-                      });
-                      return { model: snap?.model?.name, ...metrics };
-                    })()
-                  : undefined
-              }
-              toolResults={toolResults}
-              tools={conv.tools}
-              language={language}
-              onFork={handleFork}
-              onOpenFile={handleOpenFile}
-              onBranch={handleBranch}
-            />
-            {(noticesByMessage.get(messageKeys[i]) ?? []).map((notice) => (
-              <TranscriptNoticeView key={notice.id} notice={notice} />
-            ))}
+          <FinalizedTimeline
+            messages={baseMessages}
+            messageKeys={messageKeys}
+            renderKeys={renderKeys}
+            noticesByMessage={noticesByMessage}
+            toolResults={toolResults}
+            tools={conv.tools}
+            language={language}
+            onFork={handleFork}
+            onOpenFile={handleOpenFile}
+            onBranch={handleBranch}
+          />
+          {streamingMessage && streamingRenderKey && (
+            <Fragment key={streamingRenderKey}>
+              <MessageItem
+                message={streamingMessage}
+                streaming
+                live={(() => {
+                  const run = conv.runStats;
+                  const partialLen = validContentBlocks(streamingMessage.content).reduce(
+                    (count, block) => count + String(block.text ?? block.thinking ?? '').length,
+                    0,
+                  );
+                  const metrics = calculateLiveOutputMetrics({
+                    visibleChars: partialLen,
+                    outputChars: run.outputChars,
+                    firstDeltaAt: run.firstDeltaAt,
+                    deltaSamples: conv.deltaSamples,
+                    now: Date.now(),
+                  });
+                  return { model: snap?.model?.name, ...metrics };
+                })()}
+                toolResults={toolResults}
+                tools={conv.tools}
+                language={language}
+                onFork={handleFork}
+                onOpenFile={handleOpenFile}
+                onBranch={handleBranch}
+              />
+              {(streamingMessageKey
+                ? noticesByMessage.get(streamingMessageKey) ?? []
+                : []
+              ).map((notice) => (
+                <TranscriptNoticeView key={notice.id} notice={notice} />
+              ))}
             </Fragment>
-          ))}
+          )}
+          {orphanTools.length > 0 && (
+            <div className="msg-row assistant">
+              <div className="msg-assistant">
+                {orphanTools.map((activity) => (
+                  <ToolCard
+                    key={activity.toolCallId}
+                    call={{
+                      type: 'toolCall',
+                      id: activity.toolCallId,
+                      name: activity.toolName,
+                      arguments: activity.args,
+                    }}
+                    activity={activity}
+                    onOpenFile={handleOpenFile}
+                    language={language}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
           {conv.snapshot?.isStreaming && (() => {
-            const c = conv.streaming?.content;
-            const hasContent = Array.isArray(c) && c.some(
-              (b: Record<string, unknown>) =>
-                (b.type === 'text' && String(b.text ?? '').trim()) ||
-                (b.type === 'thinking' && String(b.thinking ?? '').trim()) ||
-                b.type === 'toolCall',
-            );
+            const hasContent = validContentBlocks(streamingMessage?.content).some(
+              (block) =>
+                (block.type === 'text' && String(block.text ?? '').trim()) ||
+                (block.type === 'thinking' && String(block.thinking ?? '').trim()) ||
+                block.type === 'toolCall',
+            ) || orphanTools.length > 0;
             if (hasContent) return null;
             const elapsed = conv.runStats.agentStartedAt
               ? Math.max(0, Math.floor((Date.now() - conv.runStats.agentStartedAt) / 1000))
@@ -546,7 +702,7 @@ function ChatView({ conv, onRefresh, onForked, projects, onSelectProject, dark }
             <button
               className="btn btn-sm"
               title={t('queueClear')}
-              onClick={() => void conv.send({ type: 'queue_clear' }).catch(() => undefined)}
+              onClick={() => void conv.send({ type: 'queue_clear' }).catch((cause) => reportConversationError(conv, cause))}
             >
               <IconTrash size={11} /> {t('queueClear')}
             </button>
@@ -603,7 +759,7 @@ function ChatView({ conv, onRefresh, onForked, projects, onSelectProject, dark }
       </div>
       {previewPath && (
         <>
-          <div className="preview-resize" onMouseDown={startPreviewDrag} />
+          <div className="preview-resize" onPointerDown={startPreviewDrag} />
           <Suspense fallback={null}>
             <FilePreview
               cwd={snap?.cwd ?? conv.cwd}
@@ -611,7 +767,8 @@ function ChatView({ conv, onRefresh, onForked, projects, onSelectProject, dark }
               width={previewWidth}
               agent={conv.agent}
               sessionId={snap?.sessionId}
-              onClose={() => setPreviewPath(undefined)}
+              onClose={handleClosePreview}
+              language={language}
             />
           </Suspense>
         </>
@@ -623,6 +780,51 @@ function ChatView({ conv, onRefresh, onForked, projects, onSelectProject, dark }
   );
 }
 
+interface FinalizedTimelineProps {
+  messages: PiiMessage[];
+  messageKeys: string[];
+  renderKeys: string[];
+  noticesByMessage: Map<string, Conversation['transcriptNotices']>;
+  toolResults: Map<string, PiiMessage>;
+  tools: Map<string, ToolActivity>;
+  language: string;
+  onFork: (entryId: string) => void;
+  onBranch: (entryId: string) => void;
+  onOpenFile: (path: string) => void;
+}
+
+/** A streaming text delta must not rebuild or rescan the finalized transcript. */
+const FinalizedTimeline = memo(function FinalizedTimeline({
+  messages,
+  messageKeys,
+  renderKeys,
+  noticesByMessage,
+  toolResults,
+  tools,
+  language,
+  onFork,
+  onBranch,
+  onOpenFile,
+}: FinalizedTimelineProps) {
+  return messages.map((message, index) => (
+    <Fragment key={renderKeys[index]}>
+      <MessageItem
+        message={message}
+        streaming={false}
+        toolResults={toolResults}
+        tools={tools}
+        language={language}
+        onFork={onFork}
+        onOpenFile={onOpenFile}
+        onBranch={onBranch}
+      />
+      {(noticesByMessage.get(messageKeys[index]) ?? []).map((notice) => (
+        <TranscriptNoticeView key={notice.id} notice={notice} />
+      ))}
+    </Fragment>
+  ));
+});
+
 export default memo(ChatView);
 
 function firstUserText(messages: PiiMessage[]): string {
@@ -631,11 +833,15 @@ function firstUserText(messages: PiiMessage[]): string {
     const c = m.content;
     if (typeof c === 'string') return c.slice(0, 60);
     if (Array.isArray(c)) {
-      const t = c.find((b) => (b as { type?: string }).type === 'text') as { text?: string } | undefined;
-      if (t?.text) return t.text.slice(0, 60);
+      const block = validContentBlocks(c).find((item) => item.type === 'text');
+      if (typeof block?.text === 'string') return block.text.slice(0, 60);
     }
   }
   return '';
+}
+
+function reportConversationError(conv: Conversation, cause: unknown): void {
+  conv.reportError(cause instanceof Error ? cause.message : String(cause));
 }
 
 
@@ -668,7 +874,7 @@ function QueueItem({ kind, index, msg, conv, capabilities, onEdit }: {
               index,
               expectedMessage: msg,
               revision: capabilities.revision,
-            }).catch(() => undefined);
+            }).catch((cause) => reportConversationError(conv, cause));
           }}
         >
           ⇄
@@ -685,7 +891,7 @@ function QueueItem({ kind, index, msg, conv, capabilities, onEdit }: {
               index,
               expectedMessage: msg,
               revision: capabilities.revision,
-            }).then(() => onEdit(msg)).catch(() => undefined);
+            }).then(() => onEdit(msg)).catch((cause) => reportConversationError(conv, cause));
           }}
         >
           <IconPencil size={11} />
@@ -702,7 +908,7 @@ function QueueItem({ kind, index, msg, conv, capabilities, onEdit }: {
               index,
               expectedMessage: msg,
               revision: capabilities.revision,
-            }).catch(() => undefined);
+            }).catch((cause) => reportConversationError(conv, cause));
           }}
         >
           <IconX size={11} />

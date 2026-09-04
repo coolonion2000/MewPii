@@ -252,6 +252,567 @@ test("SessionHost orders newSession, setModel and prompt across socket callers",
   await host.dispose();
 });
 
+test("stop-all cancels every SDK path, drains UI and invalidates queued mutations", async () => {
+  const events = [];
+  let releaseAbort;
+  let releaseMutationLane;
+  const abortGate = new Promise((resolvePromise) => {
+    releaseAbort = resolvePromise;
+  });
+  const mutationLane = new Promise((resolvePromise) => {
+    releaseMutationLane = resolvePromise;
+  });
+  const queued = {
+    steering: ["steer later"],
+    followUp: ["follow later"],
+  };
+  const agent = {
+    steeringQueue: {
+      messages: [{ role: "user", content: "steer later" }],
+    },
+    followUpQueue: {
+      messages: [{ role: "user", content: "follow later" }],
+    },
+    abort() {
+      events.push("agent_abort");
+    },
+  };
+  const session = {
+    isStreaming: true,
+    isCompacting: true,
+    isRetrying: true,
+    isBashRunning: true,
+    _steeringMessages: queued.steering,
+    _followUpMessages: queued.followUp,
+    _emitQueueUpdate() {},
+    agent,
+    clearQueue() {
+      events.push("clear_queue");
+      const result = {
+        steering: [...queued.steering],
+        followUp: [...queued.followUp],
+      };
+      queued.steering.length = 0;
+      queued.followUp.length = 0;
+      agent.steeringQueue.messages.length = 0;
+      agent.followUpQueue.messages.length = 0;
+      return result;
+    },
+    abortRetry() {
+      events.push("abort_retry");
+    },
+    abortCompaction() {
+      events.push("abort_compaction");
+    },
+    abortBranchSummary() {
+      events.push("abort_branch");
+    },
+    abortBash() {
+      events.push("abort_bash");
+    },
+    async abort() {
+      events.push("abort_wait");
+      await abortGate;
+      session.isStreaming = false;
+      session.isCompacting = false;
+      session.isRetrying = false;
+      session.isBashRunning = false;
+    },
+    async followUp() {
+      events.push("unexpected_follow_up");
+    },
+  };
+  const host = new SessionHost(
+    "stop-all",
+    { session, dispose: async () => undefined },
+    {},
+  );
+  host.broadcastSnapshot = () => events.push("snapshot");
+
+  const dialog = host.uiRequest({ kind: "input", title: "blocked tool" });
+  await new Promise((resolvePromise) => setImmediate(resolvePromise));
+  host.commandMutationChain = mutationLane;
+  const queuedCommand = host.handleOrdered({
+    type: "followUp",
+    message: "must not run",
+  });
+  const stopping = host.handleOrdered({ type: "abort" });
+  assert.equal(host.isRunning, true);
+
+  const racingCommand = await host.handleOrdered({
+    type: "prompt",
+    message: "arrived during stop",
+  });
+  assert.equal(racingCommand.ok, false);
+  assert.match(racingCommand.error, /stopping/);
+
+  releaseMutationLane();
+  releaseAbort();
+  const [stopResult, queuedResult, dialogResult] = await Promise.all([
+    stopping,
+    queuedCommand,
+    dialog,
+  ]);
+  assert.equal(stopResult.ok, true, stopResult.error);
+  assert.deepEqual(stopResult.data, { clearedQueue: 2, closedUi: 1 });
+  assert.equal(queuedResult.ok, false);
+  assert.match(queuedResult.error, /cancelled by stop/);
+  assert.equal(dialogResult, undefined);
+  assert.equal(events.includes("unexpected_follow_up"), false);
+  assert.deepEqual(events.slice(0, 7), [
+    "clear_queue",
+    "abort_retry",
+    "abort_compaction",
+    "abort_branch",
+    "abort_bash",
+    "agent_abort",
+    "abort_wait",
+  ]);
+  assert.equal(
+    events.filter((event) => event === "clear_queue").length,
+    3,
+    "stop did not perform its post-mutation queue sweep",
+  );
+  assert.equal(host.isRunning, false);
+  await host.dispose();
+});
+
+test("stop-all closes an active custom UI component immediately", async () => {
+  const frames = [];
+  let componentDisposed = 0;
+  const session = {
+    isStreaming: true,
+    clearQueue: () => ({ steering: [], followUp: [] }),
+    agent: { abort() {} },
+    abortRetry() {},
+    abortCompaction() {},
+    abortBranchSummary() {},
+    abortBash() {},
+    async abort() {
+      session.isStreaming = false;
+    },
+  };
+  const host = new SessionHost(
+    "stop-custom-ui",
+    { session, dispose: async () => undefined },
+    {},
+  );
+  host.broadcastSnapshot = () => undefined;
+  host.sockets.add({
+    OPEN: WebSocket.OPEN,
+    readyState: WebSocket.OPEN,
+    send: (raw) => frames.push(JSON.parse(String(raw))),
+    close() {},
+  });
+  const custom = host.customUiRequest(() => ({
+    render: () => ["waiting"],
+    invalidate() {},
+    dispose() {
+      componentDisposed += 1;
+    },
+  }));
+  await new Promise((resolvePromise) => setImmediate(resolvePromise));
+
+  const stopped = await host.handleOrdered({ type: "abort" });
+  assert.equal(stopped.ok, true, stopped.error);
+  assert.equal(stopped.data.closedUi, 1);
+  assert.equal(await custom, undefined);
+  assert.equal(componentDisposed, 1);
+  assert.equal(
+    frames.some((frame) => frame.type === "custom_ui_close"),
+    true,
+  );
+  await host.dispose();
+});
+
+test("a hung SDK abort times out and leaves stop retryable", async () => {
+  const never = new Promise(() => undefined);
+  let abortCalls = 0;
+  const session = {
+    isStreaming: true,
+    clearQueue: () => ({ steering: [], followUp: [] }),
+    agent: { abort() {} },
+    abortRetry() {},
+    abortCompaction() {},
+    abortBranchSummary() {},
+    abortBash() {},
+    abort() {
+      abortCalls += 1;
+      return never;
+    },
+  };
+  const host = new SessionHost(
+    "hung-stop",
+    { session, dispose: async () => undefined },
+    {},
+    undefined,
+    undefined,
+    undefined,
+    1_000,
+    1_000,
+    10,
+  );
+  host.broadcastSnapshot = () => undefined;
+
+  const first = await host.handleOrdered({ type: "abort" });
+  assert.equal(first.ok, false);
+  assert.match(first.error, /settlement_timeout/);
+  const second = await host.handleOrdered({ type: "abort" });
+  assert.equal(second.ok, false);
+  assert.equal(abortCalls, 2, "timed-out stop remained permanently coalesced");
+  await host.dispose();
+});
+
+test("stop sweeps a session installed by an in-flight replacement", async () => {
+  const events = [];
+  const makeSession = (name) => ({
+    isStreaming: false,
+    isCompacting: false,
+    isRetrying: false,
+    isBashRunning: false,
+    _steeringMessages: [],
+    _followUpMessages: [],
+    agent: {
+      steeringQueue: { messages: [] },
+      followUpQueue: { messages: [] },
+      abort() {
+        events.push(`${name}:agent_abort`);
+      },
+    },
+    clearQueue() {
+      events.push(`${name}:clear_queue`);
+      return { steering: [], followUp: [] };
+    },
+    abortRetry() {
+      events.push(`${name}:abort_retry`);
+    },
+    abortCompaction() {
+      events.push(`${name}:abort_compaction`);
+    },
+    abortBranchSummary() {
+      events.push(`${name}:abort_branch`);
+    },
+    abortBash() {
+      events.push(`${name}:abort_bash`);
+    },
+    async abort() {
+      events.push(`${name}:abort`);
+    },
+  });
+  let releaseReplacement;
+  let replacementStarted;
+  const replacementGate = new Promise((resolvePromise) => {
+    releaseReplacement = resolvePromise;
+  });
+  const started = new Promise((resolvePromise) => {
+    replacementStarted = resolvePromise;
+  });
+  const initialSession = makeSession("initial");
+  const replacementSession = makeSession("replacement");
+  const runtime = {
+    session: initialSession,
+    async newSession() {
+      replacementStarted();
+      await replacementGate;
+      runtime.session = replacementSession;
+      return { cancelled: false };
+    },
+    dispose: async () => undefined,
+  };
+  const host = new SessionHost("replacement-stop", runtime, {});
+  host.broadcastSnapshot = () => events.push("snapshot");
+
+  const replacing = host.handleOrdered({ type: "newSession" });
+  await started;
+  const stopping = host.handleOrdered({ type: "abort" });
+  releaseReplacement();
+  const [replaceResult, stopResult] = await Promise.all([replacing, stopping]);
+
+  assert.equal(replaceResult.ok, false);
+  assert.match(replaceResult.error, /completed after stop/);
+  assert.equal(stopResult.ok, true, stopResult.error);
+  assert.ok(events.includes("initial:abort"));
+  assert.ok(
+    events.includes("replacement:abort"),
+    "replacement session escaped the stop boundary",
+  );
+  assert.equal(host.isRunning, false);
+  await host.dispose();
+});
+
+test("a replacement completing after the stop deadline is still quiesced", async () => {
+  let releaseReplacement;
+  let replacementStarted;
+  const replacementGate = new Promise((resolvePromise) => {
+    releaseReplacement = resolvePromise;
+  });
+  const started = new Promise((resolvePromise) => {
+    replacementStarted = resolvePromise;
+  });
+  const initialSession = {
+    isStreaming: false,
+    isCompacting: false,
+    isRetrying: false,
+    isBashRunning: false,
+    clearQueue: () => ({ steering: [], followUp: [] }),
+    agent: { abort() {} },
+    abort: async () => undefined,
+  };
+  let replacementAborts = 0;
+  const replacementSession = {
+    ...initialSession,
+    isStreaming: true,
+    agent: {
+      abort() {
+        replacementSession.isStreaming = false;
+      },
+    },
+    async abort() {
+      replacementAborts += 1;
+      replacementSession.isStreaming = false;
+    },
+  };
+  const runtime = {
+    session: initialSession,
+    async newSession() {
+      replacementStarted();
+      await replacementGate;
+      runtime.session = replacementSession;
+      return { cancelled: false };
+    },
+    dispose: async () => undefined,
+  };
+  const host = new SessionHost(
+    "late-replacement-stop",
+    runtime,
+    {},
+    undefined,
+    undefined,
+    undefined,
+    1_000,
+    1_000,
+    10,
+  );
+  host.broadcastSnapshot = () => undefined;
+
+  const replacing = host.handleOrdered({ type: "newSession" });
+  await started;
+  const stopResult = await host.handleOrdered({ type: "abort" });
+  assert.equal(stopResult.ok, false);
+  assert.match(stopResult.error, /settlement_timeout/);
+
+  releaseReplacement();
+  const replaceResult = await replacing;
+  assert.equal(replaceResult.ok, false);
+  assert.match(replaceResult.error, /completed after stop/);
+  assert.equal(runtime.session, replacementSession);
+  assert.ok(replacementAborts > 0, "late replacement was never aborted");
+  assert.equal(replacementSession.isStreaming, false);
+  assert.equal(host.isRunning, false);
+  await host.dispose();
+});
+
+test("REST import shares the stop-aware session mutation lane", async () => {
+  let releaseLane;
+  const heldLane = new Promise((resolvePromise) => {
+    releaseLane = resolvePromise;
+  });
+  let imports = 0;
+  const session = {
+    isStreaming: false,
+    isCompacting: false,
+    isRetrying: false,
+    isBashRunning: false,
+    _steeringMessages: [],
+    _followUpMessages: [],
+    agent: {
+      steeringQueue: { messages: [] },
+      followUpQueue: { messages: [] },
+      abort() {},
+    },
+    clearQueue: () => ({ steering: [], followUp: [] }),
+    abort: async () => undefined,
+  };
+  const runtime = {
+    session,
+    async importFromJsonl() {
+      imports += 1;
+      return { cancelled: false };
+    },
+    dispose: async () => undefined,
+  };
+  const host = new SessionHost("import-stop", runtime, {});
+  host.commandMutationChain = heldLane;
+  host.broadcastSnapshot = () => undefined;
+
+  const importing = host.runtime_import("/tmp/test-import.jsonl");
+  await new Promise((resolvePromise) => setImmediate(resolvePromise));
+  const stopping = host.handleOrdered({ type: "abort" });
+  releaseLane();
+  const [importResult, stopResult] = await Promise.all([importing, stopping]);
+
+  assert.equal(importResult.ok, false);
+  assert.match(importResult.error, /cancelled by stop/);
+  assert.equal(imports, 0, "import bypassed the mutation lane");
+  assert.equal(stopResult.ok, true, stopResult.error);
+  await host.dispose();
+});
+
+test("isRunning covers binding, SDK background work and queued mutations", async () => {
+  const session = {
+    isStreaming: false,
+    isCompacting: false,
+    isRetrying: false,
+    isBashRunning: false,
+  };
+  const host = new SessionHost(
+    "busy-states",
+    { session, dispose: async () => undefined },
+    {},
+  );
+  assert.equal(host.isRunning, false);
+  session.isCompacting = true;
+  assert.equal(host.isRunning, true);
+  session.isCompacting = false;
+  session.isRetrying = true;
+  assert.equal(host.isRunning, true);
+  session.isRetrying = false;
+  session.isBashRunning = true;
+  assert.equal(host.isRunning, true);
+  session.isBashRunning = false;
+  host.readinessState = "binding";
+  assert.equal(host.isRunning, true);
+  host.readinessState = "ready";
+
+  let releaseCommand;
+  const commandGate = new Promise((resolvePromise) => {
+    releaseCommand = resolvePromise;
+  });
+  host.handleCommand = async () => {
+    await commandGate;
+    return { ok: true };
+  };
+  const pending = host.handleOrdered({ type: "setSessionName", name: "busy" });
+  await new Promise((resolvePromise) => setImmediate(resolvePromise));
+  assert.equal(host.isRunning, true);
+  releaseCommand();
+  await pending;
+  assert.equal(host.isRunning, false);
+  await host.dispose();
+});
+
+test("destructive session changes fail closed with multiple viewers", async () => {
+  const calls = [];
+  const session = {
+    isStreaming: false,
+    isCompacting: false,
+    async navigateTree() {
+      calls.push("branch");
+      return { cancelled: false };
+    },
+  };
+  const runtime = {
+    session,
+    async newSession() {
+      calls.push("new");
+      return { cancelled: false };
+    },
+    async fork() {
+      calls.push("fork");
+      return { cancelled: false };
+    },
+    dispose: async () => undefined,
+  };
+  const host = new SessionHost("shared-viewers", runtime, {});
+  host.broadcastSnapshot = () => undefined;
+  const viewerA = { close() {} };
+  const viewerB = { close() {} };
+  host.sockets.add(viewerA);
+  host.sockets.add(viewerB);
+
+  for (const command of [
+    { type: "newSession" },
+    { type: "fork", entryId: "entry" },
+    { type: "branch", entryId: "entry" },
+    { type: "slash", raw: "/new" },
+  ]) {
+    const result = await host.handleOrdered(command);
+    assert.equal(result.ok, false);
+    assert.match(result.error, /多个窗口/);
+  }
+  assert.deepEqual(calls, []);
+
+  host.sockets.delete(viewerB);
+  const singleViewer = await host.handleOrdered({ type: "newSession" });
+  assert.equal(singleViewer.ok, true, singleViewer.error);
+  assert.deepEqual(calls, ["new"]);
+  host.sockets.clear();
+  await host.dispose();
+});
+
+test("an open session refreshes models.json after a model lookup miss", async () => {
+  let refreshed = 0;
+  let selected;
+  const model = { provider: "late-provider", id: "late-model", name: "Late" };
+  const registry = {
+    find(provider, modelId) {
+      return refreshed > 0 && provider === model.provider && modelId === model.id
+        ? model
+        : undefined;
+    },
+    async refresh(options) {
+      assert.equal(options.allowNetwork, false);
+      refreshed += 1;
+    },
+  };
+  const session = {
+    isStreaming: false,
+    isCompacting: false,
+    async setModel(next) {
+      selected = next;
+    },
+  };
+  const host = new SessionHost(
+    "late-model",
+    { session, dispose: async () => undefined },
+    registry,
+  );
+  host.broadcastSnapshot = () => undefined;
+
+  const result = await host.handleOrdered({
+    type: "setModel",
+    provider: model.provider,
+    modelId: model.id,
+  });
+  assert.equal(result.ok, true, result.error);
+  assert.equal(refreshed, 1);
+  assert.equal(selected, model);
+  await host.dispose();
+});
+
+test("attach rejects a runtime after disposal has started", async () => {
+  let finishDispose;
+  const disposeGate = new Promise((resolvePromise) => {
+    finishDispose = resolvePromise;
+  });
+  const host = new SessionHost(
+    "attach-dispose-race",
+    {
+      session: { isStreaming: false },
+      dispose: () => disposeGate,
+    },
+    {},
+  );
+  const disposing = host.dispose();
+  assert.throws(
+    () => host.attach({}),
+    /disposing or disposed/,
+  );
+  assert.equal(host.viewerCount, 0);
+  finishDispose();
+  await disposing;
+});
+
 test("prompt admission releases the mutation lane for live queue operations", async () => {
   const events = [];
   let releasePrompt;
@@ -562,6 +1123,7 @@ test("ui_response bypasses a held prompt through handleOrdered", async () => {
 
 test("rebind clears delayed snapshot timer", async () => {
   let subscriber;
+  let toolEndCalls = 0;
   const session = {
     subscribe: (callback) => {
       subscriber = callback;
@@ -574,6 +1136,9 @@ test("rebind clears delayed snapshot timer", async () => {
     { session, dispose: async () => undefined },
     {},
   );
+  host.onToolExecution = (_toolName, phase) => {
+    if (phase === "end") toolEndCalls += 1;
+  };
   host.sockets.add({
     OPEN: WebSocket.OPEN,
     readyState: WebSocket.OPEN,
@@ -581,8 +1146,17 @@ test("rebind clears delayed snapshot timer", async () => {
     close: () => undefined,
   });
   host.bindSession();
+  subscriber({
+    type: "tool_execution_start",
+    toolCallId: "old-session-tool",
+    toolName: "bash",
+    args: {},
+  });
+  assert.equal(host.activeToolCalls.size, 1);
   subscriber({ type: "agent_end" });
   host.bindSession();
+  assert.equal(host.activeToolCalls.size, 0);
+  assert.equal(toolEndCalls, 1);
   await new Promise((resolvePromise) => setTimeout(resolvePromise, 200));
   assert.equal(
     frames.some((frame) => frame.type === "snapshot"),
@@ -824,6 +1398,62 @@ test("session single-flight, init buffering, rebind index and watcher", {
     assert.equal(logoutResponse.status, 404);
     assert.match((await logoutResponse.json()).error, /provider not found/);
 
+    const modelsPath = join(home, ".pi", "agent", "models.json");
+    const modelsBeforeInvalidProvider = await readFile(modelsPath, "utf8").catch(
+      (cause) => {
+        if (cause?.code === "ENOENT") return undefined;
+        throw cause;
+      },
+    );
+    for (const [api, model, expectedError] of [
+      ["openai-completions", { id: "" }, /models\[0\]\.id/],
+      [
+        "openai-completions",
+        { id: "valid-model", contextWindow: "invalid" },
+        /contextWindow/,
+      ],
+      ["unsupported-api", { id: "valid-model" }, /unsupported api/],
+    ]) {
+      const invalidProvider = await fetch(
+        `http://127.0.0.1:${port}/api/providers`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            origin: `http://127.0.0.1:${port}`,
+          },
+          body: JSON.stringify({
+            id: "invalid-provider",
+            baseUrl: "http://127.0.0.1:1/v1",
+            api,
+            models: [model],
+          }),
+        },
+      );
+      assert.equal(invalidProvider.status, 400);
+      assert.match((await invalidProvider.json()).error, expectedError);
+      const modelsAfterInvalidProvider = await readFile(
+        modelsPath,
+        "utf8",
+      ).catch((cause) => {
+        if (cause?.code === "ENOENT") return undefined;
+        throw cause;
+      });
+      assert.equal(
+        modelsAfterInvalidProvider,
+        modelsBeforeInvalidProvider,
+        "invalid provider replaced the healthy model configuration",
+      );
+    }
+    const modelsAfterRejectedProvider = await fetch(
+      `http://127.0.0.1:${port}/api/models`,
+    );
+    assert.equal(
+      modelsAfterRejectedProvider.status,
+      200,
+      await modelsAfterRejectedProvider.text(),
+    );
+
     const skillResponse = await fetch(`http://127.0.0.1:${port}/api/skills`, {
       method: "POST",
       headers: {
@@ -869,11 +1499,53 @@ test("session single-flight, init buffering, rebind index and watcher", {
     );
     sockets.push(newWs);
     const newInbox = socketInbox(newWs);
+    const newSnapshot = await newInbox.waitFor(
+      (message) =>
+        (message.type === "snapshot" || message.type === "session_ready") &&
+        message.snapshot.initializing !== true,
+    );
     assert.equal(
-      (await newInbox.waitFor((message) => message.type === "snapshot"))
-        .snapshot.cwd,
+      newSnapshot.snapshot.cwd,
       await realpath(workspace),
     );
+
+    const liveResolve = await fetch(
+      `http://127.0.0.1:${port}/api/sessions/resolve?id=${encodeURIComponent(newSnapshot.snapshot.sessionId)}`,
+    );
+    assert.equal(liveResolve.status, 200);
+    const liveResolvedSession = await liveResolve.json();
+    assert.equal(liveResolvedSession.cwd, await realpath(workspace));
+    assert.equal(liveResolvedSession.id, newSnapshot.snapshot.sessionId);
+    assert.equal(liveResolvedSession.live, true);
+
+    const resumedNewWs = new WebSocket(
+      `ws://127.0.0.1:${port}/ws?cwd=${encodeURIComponent(workspace)}&sessionId=${encodeURIComponent(newSnapshot.snapshot.sessionId)}`,
+    );
+    sockets.push(resumedNewWs);
+    const resumedNewInbox = socketInbox(resumedNewWs);
+    assert.equal(
+      (
+        await resumedNewInbox.waitFor(
+          (message) => message.type === "snapshot",
+        )
+      ).snapshot.sessionId,
+      newSnapshot.snapshot.sessionId,
+      "refreshing a live new session created a different runtime",
+    );
+
+    const mismatchedResumeWs = new WebSocket(
+      `ws://127.0.0.1:${port}/ws?cwd=${encodeURIComponent(wrongCwd)}&sessionId=${encodeURIComponent(newSnapshot.snapshot.sessionId)}`,
+    );
+    sockets.push(mismatchedResumeWs);
+    const [mismatchedResumeCode] = await new Promise((resolvePromise) =>
+      mismatchedResumeWs.once("close", (...args) => resolvePromise(args)),
+    );
+    assert.equal(
+      mismatchedResumeCode,
+      1011,
+      "live session resumed from a mismatched workspace",
+    );
+    resumedNewWs.close();
     newWs.close();
 
     const url = `ws://127.0.0.1:${port}/ws?cwd=${encodeURIComponent("/etc")}&session=${encodeURIComponent(sessionPath)}`;
@@ -1053,8 +1725,21 @@ test("session single-flight, init buffering, rebind index and watcher", {
     const entryId = firstSnapshot1.snapshot.messages[0]?._entryId;
     assert.ok(entryId, "seed entry missing");
     ws1.send(JSON.stringify({ id: "fork-1", type: "fork", entryId }));
-    const forkResult = await inbox1.waitFor(
+    const sharedFork = await inbox1.waitFor(
       (message) => message.type === "command_result" && message.id === "fork-1",
+      15_000,
+    );
+    assert.equal(sharedFork.ok, false);
+    assert.match(sharedFork.error, /多个窗口/);
+
+    await new Promise((resolvePromise) => {
+      ws2.once("close", resolvePromise);
+      ws2.close();
+    });
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
+    ws1.send(JSON.stringify({ id: "fork-2", type: "fork", entryId }));
+    const forkResult = await inbox1.waitFor(
+      (message) => message.type === "command_result" && message.id === "fork-2",
       15_000,
     );
     assert.equal(forkResult.ok, true, forkResult.error);
@@ -1133,6 +1818,11 @@ test("session single-flight, init buffering, rebind index and watcher", {
     );
     assert.equal(watched.snapshot.cwd, workspace, "watcher rebind changed cwd");
 
+    await new Promise((resolvePromise) => {
+      ws3.once("close", resolvePromise);
+      ws3.close();
+    });
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
     ws1.send(JSON.stringify({ id: "ordered-new", type: "newSession" }));
     ws1.send(
       JSON.stringify({

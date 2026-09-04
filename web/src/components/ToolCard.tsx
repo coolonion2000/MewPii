@@ -3,6 +3,13 @@ import type { PiiMessage } from '../types';
 import { stripAnsi, type ToolActivity } from '../api';
 import { t } from '../i18n';
 import { ToolIcon, IconChevronRight, type ToolIconName } from '../icons';
+import {
+  isContentBlock,
+  MAX_NUMBERED_CODE_LINES,
+  preferredToolOutput,
+  sameToolCardMemoInputs,
+  validContentBlocks,
+} from '../ui-reliability';
 
 export interface ToolCallBlock {
   type: 'toolCall';
@@ -16,6 +23,8 @@ interface Props {
   result?: PiiMessage;
   activity?: ToolActivity;
   onOpenFile?: (path: string) => void;
+  /** Memo invalidation key for labels read from the global i18n catalog. */
+  language: string;
 }
 
 
@@ -55,10 +64,9 @@ function resultText(result?: PiiMessage): { text: string; isError: boolean; diff
   let text = '';
   if (typeof content === 'string') text = content;
   else if (Array.isArray(content)) {
-    text = content
-      .map((b) => (b as { type?: string; text?: string }))
-      .filter((b) => b.type === 'text')
-      .map((b) => b.text ?? '')
+    text = validContentBlocks(content)
+      .filter((block) => block.type === 'text')
+      .map((block) => typeof block.text === 'string' ? block.text : '')
       .join('\n');
   }
   const details = (result as { details?: { diff?: string } }).details;
@@ -67,10 +75,16 @@ function resultText(result?: PiiMessage): { text: string; isError: boolean; diff
 
 /** Renders text with diff line coloring. */
 export function DiffPre({ text, isError, className }: { text: string; isError?: boolean; className?: string }) {
-  const lines = useMemo(() => text.split('\n'), [text]);
+  const lines = useMemo(() => {
+    let count = 1;
+    for (let index = 0; index < text.length && count <= MAX_NUMBERED_CODE_LINES; index++) {
+      if (text.charCodeAt(index) === 10) count += 1;
+    }
+    return count <= MAX_NUMBERED_CODE_LINES ? text.split('\n') : undefined;
+  }, [text]);
   return (
     <pre className={`tool-pre ${isError ? 'is-error' : ''} ${className ?? ''}`}>
-      {lines.map((line, i) => {
+      {lines ? lines.map((line, i) => {
         const cls =
           line.startsWith('+') && !line.startsWith('+++')
             ? 'diff-add'
@@ -78,14 +92,14 @@ export function DiffPre({ text, isError, className }: { text: string; isError?: 
               ? 'diff-del'
               : '';
         return <div key={i} className={cls}>{line}</div>;
-      })}
+      }) : text}
     </pre>
   );
 }
 
 /** edit tool input: render each edits[] entry as -old/+new pair. */
 function EditInput({ args }: { args: Record<string, unknown> }) {
-  const edits = (Array.isArray(args.edits) ? args.edits : []) as EditEntry[];
+  const edits = [...(Array.isArray(args.edits) ? args.edits : [])] as EditEntry[];
   if (edits.length === 0 && typeof args.oldText === 'string') {
     edits.push({ oldText: args.oldText, newText: args.newText as string });
   }
@@ -111,8 +125,10 @@ function EditInput({ args }: { args: Record<string, unknown> }) {
 function ToolCard({ call, result, activity, onOpenFile }: Props) {
   // auto-open while the tool is running, collapse when done (unless user toggled)
   const [userToggled, setUserToggled] = useState<boolean>();
-  const name = call.name ?? activity?.toolName ?? 'tool';
-  const args = call.arguments ?? activity?.args;
+  const rawName = call.name ?? activity?.toolName;
+  const name = typeof rawName === 'string' ? rawName : 'tool';
+  const rawArgs = call.arguments ?? activity?.args;
+  const args = isContentBlock(rawArgs) ? rawArgs : undefined;
   const running = activity?.running ?? (!result && Boolean(call.id));
   const open = userToggled ?? running;
   const error = Boolean(result?.isError) || activity?.isError;
@@ -122,7 +138,7 @@ function ToolCard({ call, result, activity, onOpenFile }: Props) {
   let showOutput = '';
   if (open) {
     const { text: output, diff } = resultText(result);
-    showOutput = diff ?? output ?? activity?.liveOutput ?? '';
+    showOutput = preferredToolOutput(diff, output, activity?.liveOutput, running);
   }
   // Finalized cards are collapsed by default. Avoid stripping potentially
   // large outputs and formatting tool arguments until the body is visible.
@@ -177,4 +193,4 @@ function ToolCard({ call, result, activity, onOpenFile }: Props) {
   );
 }
 
-export default memo(ToolCard);
+export default memo(ToolCard, sameToolCardMemoInputs);

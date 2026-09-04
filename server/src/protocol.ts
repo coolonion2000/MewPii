@@ -180,6 +180,14 @@ export interface SlashCommandLite {
   source: "builtin" | "extension" | "prompt" | "skill";
 }
 
+export interface ActiveToolSnapshot {
+  toolCallId: string;
+  toolName: string;
+  args?: Record<string, unknown>;
+  startedAt?: number;
+  liveOutput?: string;
+}
+
 export interface SessionSnapshot {
   sessionId: string;
   sessionFile?: string;
@@ -212,6 +220,10 @@ export interface SessionSnapshot {
   stats?: SessionStatsLite;
   /** Names of currently active tools. */
   tools: string[];
+  /** Tool executions still running, replayed to viewers that attach late. */
+  activeToolCalls?: ActiveToolSnapshot[];
+  /** In-flight assistant message used to resume a late or reconnected viewer. */
+  streamingMessage?: PiiMessage | null;
   /** Commands currently available to the web composer. */
   slashCommands: SlashCommandLite[];
 }

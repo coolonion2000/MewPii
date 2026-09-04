@@ -48,3 +48,28 @@ export function setComposerDraft(key: string, draft: ComposerDraft): void {
 export function clearComposerDraft(key: string): void {
   drafts.delete(key);
 }
+
+/**
+ * Restore a submission that never reached the server (for example, when its
+ * cold conversation is disposed during a session switch). Read current state
+ * at commit time so a late failure cannot replace text typed after switching
+ * back to the conversation.
+ */
+export function restoreFailedComposerDraft(
+  key: string,
+  submitted: ComposerDraft,
+): ComposerDraft {
+  const current = getComposerDraft(key);
+  const seen = new Set<string>();
+  const restored = {
+    text: current?.text ? current.text : submitted.text,
+    images: [...submitted.images, ...(current?.images ?? [])].filter((image) => {
+      const imageKey = `${image.mimeType}:${image.data}`;
+      if (seen.has(imageKey)) return false;
+      seen.add(imageKey);
+      return true;
+    }),
+  };
+  setComposerDraft(key, restored);
+  return restored;
+}
