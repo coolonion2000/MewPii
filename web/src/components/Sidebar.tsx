@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { createPortal } from 'react-dom';
 import type { ProjectGroup, SessionSummary } from '../types';
 import type { Selection, View } from '../App';
+import { buildSessionTree, type SessionTreeNode } from '../session-tree';
 import { setLang, getLang, t } from '../i18n';
 import {
   normalizeSessionRename,
@@ -384,25 +385,9 @@ export default function Sidebar(props: Props) {
   };
 
   const renderProjectSessions = (p: ProjectGroup) => {
-    const byParent = new Map<string, SessionSummary[]>();
-    const tops: SessionSummary[] = [];
-    const pathSet = new Set(p.sessions.map((s) => s.path));
-    const isSubagent = (s: SessionSummary) => {
-      const label = (s.name || s.firstMessage || '').toLowerCase();
-      return label.startsWith('subagent');
-    };
-    for (const s of p.sessions) {
-      // Only true subagent sessions nest; forks/clones stay top-level siblings.
-      if (s.parentSessionPath && pathSet.has(s.parentSessionPath) && isSubagent(s)) {
-        const list = byParent.get(s.parentSessionPath) ?? [];
-        list.push(s);
-        byParent.set(s.parentSessionPath, list);
-      } else {
-        tops.push(s);
-      }
-    }
-    const renderNode = (s: SessionSummary, depth: number): React.ReactNode => {
-      const kids = byParent.get(s.path) ?? [];
+    // Like Pi's session selector, search results are flat and always visible.
+    if (query.trim()) return p.sessions.map((s) => renderSessionRow(s, 0));
+    const renderNode = ({ session: s, children: kids }: SessionTreeNode, depth: number): React.ReactNode => {
       const open = openParents.has(s.path);
       const toggle = () =>
         setOpenParents((prev) => {
@@ -422,7 +407,7 @@ export default function Sidebar(props: Props) {
         </div>
       );
     };
-    return tops.map((s) => renderNode(s, 0));
+    return buildSessionTree(p.sessions).map((node) => renderNode(node, 0));
   };
 
   if (collapsed) {
