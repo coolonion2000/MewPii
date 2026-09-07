@@ -16,6 +16,7 @@ import {
   setAgent,
 } from "./api";
 import { addUsedSession } from "./used-sessions";
+import { reconcileConversationBinding } from "./conversation-identity";
 import type { ProjectGroup, SessionSummary } from "./types";
 import {
   acceptsGeneration,
@@ -333,24 +334,19 @@ export default function App() {
     return () => controller.abort();
   }, [route.pendingSessionId]);
 
-  const effectiveSelection = selection;
-
-  // One Conversation per chat selection. View changes keep it alive and never
-  // create a new host; only cwd/session/agent identity may replace it.
-  const conv = useMemo(() => {
-    if (!effectiveSelection?.cwd) return undefined;
-    return new Conversation(
-      effectiveSelection.cwd,
-      effectiveSelection.sessionPath,
-      appAgent,
-      effectiveSelection.sessionId,
-    );
-  }, [
-    effectiveSelection?.cwd,
-    effectiveSelection?.sessionPath,
-    effectiveSelection?.sessionId,
-    appAgent,
-  ]);
+  const createConversation = (next: Selection, agent: string | undefined) =>
+    new Conversation(next.cwd, next.sessionPath, agent, next.sessionId);
+  const [conversationBinding, setConversationBinding] = useState(() =>
+    reconcileConversationBinding(undefined, selection, appAgent, createConversation),
+  );
+  const nextBinding = reconcileConversationBinding(
+    conversationBinding, selection, appAgent, createConversation,
+  );
+  // Adjust this component's state before commit, without connecting in render.
+  // Preview canonicalization and /new follow the existing host; user switches
+  // replace it. View-only changes retain the same connection and notices.
+  if (nextBinding !== conversationBinding) setConversationBinding(nextBinding);
+  const conv = nextBinding.conversation;
 
   // Connect after React commits so ChatView can subscribe before the first
   // snapshot arrives. Connecting during render can lose a fast initial frame.
@@ -368,7 +364,10 @@ export default function App() {
     const id = conv?.snapshot?.sessionId ?? sessionIdFromPath(file);
     const next = { cwd: selection.cwd, sessionPath: file, sessionId: id };
     if (selection.sessionPath !== file || selection.sessionId !== id) {
-      setRouteState((current) => ({ ...current, selection: next }));
+      setRouteState((current) => current.selection === selection
+        ? { ...current, selection: next }
+        : current,
+      );
     }
     rememberSession(next);
     if (id && !location.pathname.endsWith(`/${id}`))
@@ -682,7 +681,7 @@ export default function App() {
     [setSelection],
   );
 
-  const defaultCwd = effectiveSelection?.cwd ?? projects[0]?.cwd ?? "/";
+  const defaultCwd = selection?.cwd ?? projects[0]?.cwd ?? "/";
   const isSettingsish =
     route.view === "settings" ||
     route.view === "models" ||
@@ -782,7 +781,7 @@ export default function App() {
             </div>
           ) : conv ? (
             <ErrorBoundary
-              key={`chat:${effectiveSelection?.cwd}|${effectiveSelection?.sessionPath ?? "new"}`}
+              key={`chat:${conv.agent ?? "local"}|${conv.cwd}|${conv.sessionPath ?? conv.requestedSessionId ?? "new"}`}
               className="chat-render-error"
             >
               <ChatView

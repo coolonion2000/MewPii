@@ -501,11 +501,15 @@ export class Conversation {
     if (this.closedIntentionally) return;
     clearTimeout(this.reconnectTimer);
     const proto = location.protocol === "https:" ? "wss" : "ws";
+    // A stable Conversation can start blank or rebind via /new. Reconnect to
+    // its current host, never the constructor's superseded session identity.
+    const sessionPath = this.snapshot ? this.snapshot.sessionFile : this.sessionPath;
+    const sessionId = this.snapshot ? this.snapshot.sessionId : this.requestedSessionId;
     let url = `${proto}://${location.host}/ws?snapshotDelta=1&cwd=${encodeURIComponent(this.cwd)}${
-      this.sessionPath ? `&session=${encodeURIComponent(this.sessionPath)}` : ""
+      sessionPath ? `&session=${encodeURIComponent(sessionPath)}` : ""
     }${
-      !this.sessionPath && this.requestedSessionId
-        ? `&sessionId=${encodeURIComponent(this.requestedSessionId)}`
+      !sessionPath && sessionId
+        ? `&sessionId=${encodeURIComponent(sessionId)}`
         : ""
     }`;
     url = withAgent(url, this.agent);

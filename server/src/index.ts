@@ -45,6 +45,7 @@ import {
 } from "./static-assets.js";
 import { hasRunningSubagentRuns } from "./subagent-activity.js";
 import { resolveToolAuthorizedPreviewPath } from "./file-preview-access.js";
+import { PendingHostCreations, type HostPreviewListener } from "./pending-host-creations.js";
 import {
   ModelServicesCache,
   validateModelConfigFile,
@@ -224,15 +225,7 @@ function requireAuth(req: IncomingMessage, res: ServerResponse): boolean {
 // Session hosts (one per conversation, shared across browsers)
 // ---------------------------------------------------------------------------
 const hosts = new Map<string, SessionHost>();
-const hostCreations = new Map<string, Promise<SessionHost>>();
-type HostPreviewListener = (
-  snapshot: import("./protocol").SessionSnapshot,
-) => void | Promise<void>;
-interface HostCreationPreviewState {
-  latest?: import("./protocol").SessionSnapshot;
-  listeners: Set<HostPreviewListener>;
-}
-const hostCreationPreviews = new Map<string, HostCreationPreviewState>();
+const hostCreations = new PendingHostCreations<SessionHost>();
 const sessionCatalog = new SessionCatalog();
 
 function removeHost(host: SessionHost): void {
@@ -319,9 +312,21 @@ async function acquireHost(
   sessionPath?: string,
   onPreview?: HostPreviewListener,
   requestedSessionId?: string,
+  signal?: AbortSignal,
 ): Promise<SessionHost> {
   if (options.uiOnly)
     throw new Error("ui-only mode: connect an agent to use conversations");
+  // Only a path published by a currently initializing host bypasses disk
+  // validation. Do not make unflushed paths trusted for other API operations.
+  const pendingPreview = sessionPath ? hostCreations.get(sessionPath) : undefined;
+  if (pendingPreview) {
+    const [requestedCwd, ownerCwd] = await Promise.all([
+      realpath(resolve(cwd)), realpath(resolve(pendingPreview.cwd)),
+    ]);
+    if (requestedCwd !== ownerCwd) throw new Error("initializing session workspace mismatch");
+    process.stdout.write(`[session] pending_reattach pending=${hostCreations.size}\n`);
+    return hostCreations.join(pendingPreview, onPreview, signal);
+  }
   const normalizedSession = sessionPath
     ? await trustedSessionPath(sessionPath)
     : undefined;
@@ -345,57 +350,28 @@ async function acquireHost(
       if (host.session.sessionFile && resolve(host.session.sessionFile) === normalizedSession)
         return host;
     }
-    const pending = hostCreations.get(fileKey);
-    if (pending) {
-      const previewState = hostCreationPreviews.get(fileKey);
-      if (onPreview && previewState) {
-        previewState.listeners.add(onPreview);
-        if (previewState.latest) await onPreview(previewState.latest);
-      }
-      return pending;
-    }
+    const pending = hostCreations.get(normalizedSession!);
+    if (pending) return hostCreations.join(pending, onPreview, signal);
   }
 
   const key = fileKey ?? `new:${normalizedCwd}:${crypto.randomUUID()}`;
-  const previewState: HostCreationPreviewState | undefined = fileKey
-    ? {
-        listeners: new Set(onPreview ? [onPreview] : []),
-      }
-    : undefined;
-  if (fileKey && previewState) hostCreationPreviews.set(fileKey, previewState);
-  const publishPreview: HostPreviewListener | undefined = previewState
-    ? async (snapshot) => {
-        previewState.latest = snapshot;
-        await Promise.allSettled(
-          [...previewState.listeners].map((listener) => listener(snapshot)),
-        );
-      }
-    : onPreview;
-  const creation = SessionHost.create(key, {
-    cwd: normalizedCwd,
-    sessionPath: normalizedSession,
-    onPreview: publishPreview,
-    onEmpty: removeHost,
-    onSessionChanged: reindexHost,
-    hasBackgroundWork: (activeHost) =>
-      hasRunningSubagentRuns(activeHost.session.sessionFile),
-  }).then((host) => {
+  return hostCreations.start(key, normalizedCwd, normalizedSession, async (publishPreview) => {
+    const host = await SessionHost.create(key, {
+      cwd: normalizedCwd,
+      sessionPath: normalizedSession,
+      onPreview: publishPreview,
+      onEmpty: removeHost,
+      onSessionChanged: reindexHost,
+      hasBackgroundWork: (activeHost) =>
+        hasRunningSubagentRuns(activeHost.session.sessionFile),
+    });
     hosts.set(key, host);
     host.onToolExecution = (toolName, _phase) => {
       if (toolName === "subagent" || toolName.startsWith("subagent_"))
         bumpSessionsVersion();
     };
     return host;
-  });
-  if (fileKey) hostCreations.set(fileKey, creation);
-  try {
-    return await creation;
-  } finally {
-    if (fileKey && hostCreations.get(fileKey) === creation)
-      hostCreations.delete(fileKey);
-    if (fileKey && hostCreationPreviews.get(fileKey) === previewState)
-      hostCreationPreviews.delete(fileKey);
-  }
+  }, onPreview, signal);
 }
 
 // ---------------------------------------------------------------------------
@@ -1248,6 +1224,16 @@ async function handleApi(
         cwd: liveHost.cwd,
         path: liveHost.session.sessionFile,
         id: liveHost.session.sessionId,
+        live: true,
+      });
+      return true;
+    }
+    const pendingPreview = hostCreations.previewForSessionId(id);
+    if (pendingPreview?.sessionFile) {
+      sendJson(res, 200, {
+        cwd: pendingPreview.cwd,
+        path: pendingPreview.sessionFile,
+        id: pendingPreview.sessionId,
         live: true,
       });
       return true;
@@ -2892,6 +2878,8 @@ wss.on("connection", (ws: WebSocket, _req: IncomingMessage, url: URL) => {
     return;
   }
 
+  const initializationController = new AbortController();
+  ws.once("close", () => initializationController.abort());
   let host: SessionHost | undefined;
   let preview: import("./protocol").SessionSnapshot | undefined;
   const waitingCommands: (ClientCommand & { id?: string })[] = [];
@@ -2988,7 +2976,7 @@ wss.on("connection", (ws: WebSocket, _req: IncomingMessage, url: URL) => {
         finish("closed");
       }
     });
-  }, requestedSessionId)
+  }, requestedSessionId, initializationController.signal)
     .then((h) => {
       host = h;
       h.attach(ws, preview, supportsReadyDelta);
@@ -3086,8 +3074,6 @@ function gracefulShutdown(exitCode: number, reason: string): Promise<void> {
       if (result.status === "fulfilled") allHosts.add(result.value);
     }
     hosts.clear();
-    hostCreations.clear();
-    hostCreationPreviews.clear();
     disposeOAuthFlows();
     await Promise.allSettled([...allHosts].map((host) => host.dispose()));
     await Promise.race([
