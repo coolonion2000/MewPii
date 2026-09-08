@@ -381,6 +381,8 @@ export class Conversation {
   private noticeSeq = 0;
   private replaceableInfoNoticeId?: number;
   uiRequest?: UiRequest;
+  editorUpdate?: { text: string; mode: "replace" | "append"; revision: number };
+  quitRequested = false;
   customUi?: CustomUiFrame;
   /** Browser-only notifications; extension command output never enters this list. */
   toasts: { id: number; message: string; level: string }[] = [];
@@ -505,7 +507,7 @@ export class Conversation {
     // its current host, never the constructor's superseded session identity.
     const sessionPath = this.snapshot ? this.snapshot.sessionFile : this.sessionPath;
     const sessionId = this.snapshot ? this.snapshot.sessionId : this.requestedSessionId;
-    let url = `${proto}://${location.host}/ws?snapshotDelta=1&cwd=${encodeURIComponent(this.cwd)}${
+    let url = `${proto}://${location.host}/ws?snapshotDelta=1&cwd=${encodeURIComponent(this.snapshot?.cwd ?? this.cwd)}${
       sessionPath ? `&session=${encodeURIComponent(sessionPath)}` : ""
     }${
       !sessionPath && sessionId
@@ -615,6 +617,11 @@ export class Conversation {
         CONVERSATION_STATE_CACHE_CAPACITY,
       );
     }
+  }
+
+  requestQuit(): void {
+    this.quitRequested = true;
+    this.emit();
   }
 
   dispose(): void {
@@ -778,6 +785,8 @@ export class Conversation {
       this.historyFrom = msg.before;
       this.syncSnapshotMessages();
       this.cacheCurrentState();
+    } else if (msg.type === "editor_text") {
+      this.editorUpdate = { text: msg.text, mode: msg.mode, revision: (this.editorUpdate?.revision ?? 0) + 1 };
     } else if (msg.type === "ui_request") {
       this.uiRequest = msg.request;
     } else if (msg.type === "ui_close") {
@@ -1230,6 +1239,8 @@ export class Conversation {
     this.sendNotification({ type: "custom_ui_cancel", requestId });
   }
 
+  syncEditorText(text: string): void { this.sendNotification({ type: "editor_state", text }); }
+
   private sendNotification(cmd: ClientCommand): void {
     const ws = this.ws;
     if (this.connected && ws?.readyState === WebSocket.OPEN)
@@ -1259,15 +1270,16 @@ export class Conversation {
     if (!this.connected || !ws || ws.readyState !== WebSocket.OPEN)
       return Promise.reject(new Error("session is not ready"));
     const id = `c${++this.commandSeq}`;
+    const timeoutMs = cmd.type === "slash" ? 12 * 60_000 : COMMAND_TIMEOUT_MS;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(
           new Error(
-            `command ${cmd.type} timed out after ${COMMAND_TIMEOUT_MS}ms`,
+            `command ${cmd.type} timed out after ${timeoutMs}ms`,
           ),
         );
-      }, COMMAND_TIMEOUT_MS);
+      }, timeoutMs);
       this.pending.set(id, { resolve, reject, timer });
       try {
         ws.send(JSON.stringify({ id, ...cmd }));

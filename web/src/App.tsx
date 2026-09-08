@@ -16,6 +16,7 @@ import {
   setAgent,
 } from "./api";
 import { addUsedSession } from "./used-sessions";
+import { conversationDraftKey, getComposerDraft, setComposerDraft } from "./draft-store";
 import { reconcileConversationBinding } from "./conversation-identity";
 import type { ProjectGroup, SessionSummary } from "./types";
 import {
@@ -44,6 +45,7 @@ import {
 
 const ModelsPanel = lazy(() => import("./components/ModelsPanel"));
 const FilesPanel = lazy(() => import("./components/FilesPanel"));
+const TerminalPanel = lazy(() => import("./components/TerminalPanel"));
 const SkillsPanel = lazy(() => import("./components/SkillsPanel"));
 const ExtensionsPanel = lazy(() => import("./components/ExtensionsPanel"));
 const SettingsPanel = lazy(() => import("./components/SettingsPanel"));
@@ -102,6 +104,9 @@ export default function App() {
     [],
   );
   const [route, setRouteState] = useState<Route>(parsePath);
+  const [terminalContext, setTerminalContext] = useState<{ cwd: string; agent?: string }>();
+  const [terminalVisible, setTerminalVisible] = useState(false);
+  const [filesCwd, setFilesCwd] = useState<string>();
   const appAgent = useMemo(() => getAgent(), []);
   const resolveGeneration = useRef(0);
   const projectsGeneration = useMemo(() => createGenerationGate(), []);
@@ -356,13 +361,18 @@ export default function App() {
     return () => conv.dispose();
   }, [conv]);
 
+  useEffect(() => {
+    if (!conv) return;
+    return conv.subscribe(() => { if (conv.quitRequested) setSelection(undefined); });
+  }, [conv, setSelection]);
+
   // Follow host-side session changes and persist a canonical refresh route.
   useEffect(() => {
     if (route.view !== "chat" || !selection) return;
     const file = conv?.snapshot?.sessionFile;
     if (!file) return;
     const id = conv?.snapshot?.sessionId ?? sessionIdFromPath(file);
-    const next = { cwd: selection.cwd, sessionPath: file, sessionId: id };
+    const next = { cwd: conv?.snapshot?.cwd ?? selection.cwd, sessionPath: file, sessionId: id };
     if (selection.sessionPath !== file || selection.sessionId !== id) {
       setRouteState((current) => current.selection === selection
         ? { ...current, selection: next }
@@ -714,7 +724,13 @@ export default function App() {
         currentAgent={appAgent}
         onSelectAgent={handleSelectAgent}
         loading={!projectsLoaded}
+        terminalVisible={terminalVisible}
+        onToggleTerminal={() => {
+          if (!terminalContext) setTerminalContext({ cwd: route.view === 'files' ? filesCwd || defaultCwd : defaultCwd, agent: appAgent });
+          setTerminalVisible(value => !value);
+        }}
       />
+      <div className="main-workspace">
       <div className="main">
         {isSettingsish && (
           <div className="unified-settings">
@@ -770,7 +786,15 @@ export default function App() {
         )}
         {route.view === "files" && (
           <Suspense fallback={<PanelLoading />}>
-            <FilesPanel key={defaultCwd} cwd={defaultCwd} />
+            <FilesPanel key={defaultCwd} cwd={defaultCwd} projects={projects.map(project => project.cwd)}
+              onCwdChange={setFilesCwd}
+              onReference={(path) => {
+                const target = selection ?? { cwd: defaultCwd };
+                const key = conversationDraftKey(getAgent(), target.cwd, target.sessionPath);
+                const previous = getComposerDraft(key) ?? { text: '', images: [] };
+                setComposerDraft(key, { ...previous, text: `${previous.text}${previous.text ? '\n\n' : ''}${JSON.stringify(path)}` });
+                setRoute({ view: 'chat', selection: target });
+              }} />
           </Suspense>
         )}
         {route.view === "chat" &&
@@ -799,6 +823,11 @@ export default function App() {
           ) : (
             <HeroLanding projects={projects} onSelect={setSelection} />
           ))}
+      </div>
+      {terminalContext && <Suspense fallback={null}>
+        <TerminalPanel cwd={terminalContext.cwd} agent={terminalContext.agent} visible={terminalVisible} dark={dark}
+          onHide={() => setTerminalVisible(false)} onClose={() => { setTerminalContext(undefined); setTerminalVisible(false); }} />
+      </Suspense>}
       </div>
     </div>
   );

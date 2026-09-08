@@ -4,6 +4,8 @@ import remarkGfm from 'remark-gfm';
 import { IconX } from '../icons';
 import { t } from '../i18n';
 import { withAgent } from '../api';
+import FileActions from './FileActions';
+import { fileJson, FileApiError, fullFilePath, markdownFilePath } from '../file-workspace';
 import {
   canFormatJson,
   canRenderRichMarkdown,
@@ -13,7 +15,12 @@ import {
 interface Props {
   cwd: string;
   path: string;
-  width: number;
+  width?: number;
+  embedded?: boolean;
+  revision?: number;
+  diffScope?: string;
+  onReference?: () => void;
+  onNavigate?: (path: string) => void;
   agent?: string;
   sessionId?: string;
   onClose: () => void;
@@ -47,18 +54,20 @@ function formatJson(raw: string, ext: string): string {
 }
 
 /** Right-side file preview drawer (pi-web style): markdown rendering, JSON formatting, raw toggle. */
-function FilePreview({ cwd, path, width, agent, sessionId, onClose }: Props) {
+function FilePreview({ cwd, path, width, agent, sessionId, onClose, embedded, revision, diffScope, onReference, onNavigate }: Props) {
   const requestGeneration = useRef(0);
   const [content, setContent] = useState<string>();
   const [error, setError] = useState<string>();
   const [loading, setLoading] = useState(true);
   const [showRaw, setShowRaw] = useState(false);
+  const [retry, setRetry] = useState(0);
+  const [notice, setNotice] = useState<string>();
 
   const ext = path.slice(path.lastIndexOf('.')).toLowerCase();
-  const isImage = IMAGE_EXTS.has(ext);
+  const isImage = diffScope === undefined && IMAGE_EXTS.has(ext);
   const isMd = MD_EXTS.has(ext);
   const isJson = JSON_EXTS.has(ext);
-  const hasRichView = isMd || isJson;
+  const hasRichView = diffScope === undefined && (isMd || isJson);
   const sessionQuery = sessionId
     ? `&sessionId=${encodeURIComponent(sessionId)}`
     : '';
@@ -66,6 +75,7 @@ function FilePreview({ cwd, path, width, agent, sessionId, onClose }: Props) {
     `/api/file?cwd=${encodeURIComponent(cwd)}&path=${encodeURIComponent(path)}${sessionQuery}`,
     agent,
   );
+  const dataUrl = diffScope === undefined ? fileUrl : withAgent(`/api/git/diff?cwd=${encodeURIComponent(cwd)}&path=${encodeURIComponent(path)}&scope=${diffScope}`, agent);
 
   useEffect(() => {
     const generation = ++requestGeneration.current;
@@ -74,64 +84,71 @@ function FilePreview({ cwd, path, width, agent, sessionId, onClose }: Props) {
     setError(undefined);
     setContent(undefined);
     setShowRaw(false);
+    setNotice(undefined);
     if (isImage) {
-      setLoading(false);
       return () => controller.abort();
     }
-    void fetch(fileUrl, { signal: controller.signal })
-      .then(async (r) => {
-        const d = (await r.json()) as { content?: string; error?: string };
+    void fileJson<{ content?: string; diff?: string }>(dataUrl, controller.signal)
+      .then((d) => {
         if (controller.signal.aborted || generation !== requestGeneration.current) return;
-        if (d.content !== undefined) setContent(d.content);
-        else setError(d.error ?? 'preview failed');
+        setContent(d.content ?? d.diff ?? '');
       })
       .catch((cause) => {
-        if (!controller.signal.aborted && generation === requestGeneration.current) setError(String(cause));
+        if (!controller.signal.aborted && generation === requestGeneration.current)
+          setError(cause instanceof FileApiError && cause.status === 413 ? t('fileTooLarge')
+            : cause instanceof FileApiError && cause.status === 415 ? t('fileBinary') : String(cause));
       })
       .finally(() => {
         if (!controller.signal.aborted && generation === requestGeneration.current) setLoading(false);
       });
     return () => controller.abort();
-  }, [fileUrl, isImage]);
+  }, [dataUrl, isImage, revision, retry]);
 
   const fileName = path.split('/').pop() ?? path;
-  const richMarkdown = isMd && content !== undefined && canRenderRichMarkdown(content.length);
+  const richMarkdown = diffScope === undefined && isMd && content !== undefined && canRenderRichMarkdown(content.length);
   const formattedContent = useMemo(() => {
-    if (content === undefined || !isJson || showRaw || !canFormatJson(content.length))
+    if (content === undefined || diffScope !== undefined || !isJson || showRaw || !canFormatJson(content.length))
       return content;
     return formatJson(content, ext);
-  }, [content, ext, isJson, showRaw]);
+  }, [content, ext, isJson, showRaw, diffScope]);
 
   return (
-    <div className="file-preview-pane" style={{ width, maxWidth: '75vw', minWidth: 280 }}>
+    <div className={`file-preview-pane ${embedded ? 'file-preview-embedded' : ''}`} style={embedded ? undefined : { width, maxWidth: '75vw', minWidth: 280 }}>
       <div className="fpp-header">
-        <span className="fpp-path mono" title={path}>{fileName}</span>
+        <div className="fpp-file-heading"><strong title={fileName}>{fileName}</strong><span className="fpp-path mono" title={fullFilePath(cwd, path)}>{path}</span></div>
         {hasRichView && (
           <button className={`btn btn-sm ${!showRaw ? 'tab-active' : ''}`} onClick={() => setShowRaw(false)}>{t('previewView')}</button>
         )}
         {hasRichView && (
           <button className={`btn btn-sm ${showRaw ? 'tab-active' : ''}`} onClick={() => setShowRaw(true)}>{t('rawView')}</button>
         )}
-        <button className="btn btn-icon" onClick={onClose}><IconX size={13} /></button>
+        <FileActions name={fileName} download={`${fileUrl}&download=1`} onReference={onReference}
+          onCopy={() => { void navigator.clipboard.writeText(fullFilePath(cwd, path)).then(() => setNotice(t('fileCopied')), e => setNotice(String(e))); }} />
+        <button className="btn btn-icon" aria-label={t('close')} onClick={onClose}><IconX size={13} /></button>
       </div>
       <div className="fpp-body">
-        {loading && <div className="dim" style={{ padding: 16 }}>…</div>}
-        {error && <div className="msg-error">{error}</div>}
+        {notice && <div className="fpp-large-preview-note" role="status">{notice}</div>}
+        {loading && <div className="file-loading" role="status">{t('fileLoading')}</div>}
+        {error && <div className="file-preview-error" role="alert"><p>{error}</p><button className="btn btn-sm" onClick={() => setRetry(v => v + 1)}>{t('retry')}</button> <a className="btn btn-sm" href={`${fileUrl}&download=1`} download>{t('downloadFile')}</a></div>}
         {isImage && (
           <img
-            src={fileUrl}
+            key={`${fileUrl}|${retry}|${revision}`}
+            src={`${fileUrl}&v=${revision ?? 0}-${retry}`}
             alt={path}
+            onLoad={() => setLoading(false)}
+            onError={() => { setLoading(false); setError(t('fileImageError')); }}
             style={{ maxWidth: '100%', borderRadius: 8, padding: '0 12px' }}
           />
         )}
         {content !== undefined && !showRaw && richMarkdown && (
-          <MarkdownPreview content={content} />
+          <MarkdownPreview content={content} cwd={cwd} path={path} agent={agent} sessionId={sessionId} onNavigate={onNavigate} />
         )}
-        {content !== undefined && !showRaw && isMd && !richMarkdown && (
+        {content !== undefined && diffScope === undefined && !showRaw && isMd && !richMarkdown && (
           <div className="fpp-large-preview-note" role="status">{t('largePreviewFallback')}</div>
         )}
-        {content !== undefined && (showRaw || !isMd || !richMarkdown) && (
-          <CodeView text={formattedContent ?? content} />
+        {content === '' && diffScope !== undefined && <div className="file-empty">{t('fileNoDiff')}</div>}
+        {content !== undefined && (diffScope !== undefined || showRaw || !isMd || !richMarkdown) && (
+          <CodeView text={formattedContent ?? content} diff={diffScope !== undefined} />
         )}
       </div>
     </div>
@@ -140,15 +157,28 @@ function FilePreview({ cwd, path, width, agent, sessionId, onClose }: Props) {
 
 export default memo(FilePreview);
 
-const MarkdownPreview = memo(function MarkdownPreview({ content }: { content: string }) {
+const MarkdownPreview = memo(function MarkdownPreview({ content, cwd, path, agent, sessionId, onNavigate }: {
+  content: string; cwd: string; path: string; agent?: string; sessionId?: string; onNavigate?: (path: string) => void;
+}) {
+  const resourceUrl = (target: string) => withAgent(`/api/file?cwd=${encodeURIComponent(cwd)}&path=${encodeURIComponent(target)}${sessionId ? `&sessionId=${encodeURIComponent(sessionId)}` : ''}`, agent);
   return (
     <div className="md fpp-md">
-      <Markdown remarkPlugins={[remarkGfm]}>{content}</Markdown>
+      <Markdown remarkPlugins={[remarkGfm]} components={{
+        img: ({ src, alt }) => {
+          const resolved = typeof src === 'string' ? markdownFilePath(path, src) : undefined;
+          return <img src={resolved ? resourceUrl(resolved) : src} alt={alt} loading="lazy" />;
+        },
+        a: ({ href, children }) => {
+          const resolved = href ? markdownFilePath(path, href) : undefined;
+          return <a href={resolved ? `${resourceUrl(resolved)}&download=1` : href}
+            onClick={resolved && onNavigate ? e => { e.preventDefault(); onNavigate(resolved); } : undefined}>{children}</a>;
+        },
+      }}>{content}</Markdown>
     </div>
   );
 });
 
-const CodeView = memo(function CodeView({ text }: { text: string }) {
+const CodeView = memo(function CodeView({ text, diff }: { text: string; diff?: boolean }) {
   const lines = useMemo(() => {
     let count = 1;
     for (let index = 0; index < text.length && count <= MAX_NUMBERED_CODE_LINES; index++) {
@@ -159,7 +189,7 @@ const CodeView = memo(function CodeView({ text }: { text: string }) {
   return (
     <pre className="tool-pre fpp-pre">
       {lines ? lines.map((line, i) => (
-          <div key={i} className="fpp-line">
+          <div key={i} className={`fpp-line ${diff && line.startsWith('+') ? 'diff-add' : diff && line.startsWith('-') ? 'diff-del' : ''}`}>
             <span className="fpp-lineno">{i + 1}</span>
             <span>{line || ' '}</span>
           </div>

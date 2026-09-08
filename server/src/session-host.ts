@@ -4,6 +4,9 @@ import {
   stat as statFile,
   type FileHandle,
 } from "node:fs/promises";
+import { join } from "node:path";
+import { homedir } from "node:os";
+import { ResourceWatch } from "./resource-watch.js";
 import { createHash } from "node:crypto";
 import type { WebSocket } from "ws";
 import {
@@ -39,6 +42,7 @@ import type {
   UiRequest,
   WidgetState,
 } from "./protocol.js";
+import { WEB_BUILTIN_SLASH_COMMANDS, runNativeCommand, NATIVE_COMMANDS } from "./native-commands.js";
 import { SessionQueueAdapter } from "./queue-adapter.js";
 
 export const SESSION_HISTORY_MAX_MESSAGES = 50;
@@ -437,24 +441,6 @@ interface LoginChoice {
   interactive: boolean;
 }
 
-const WEB_BUILTIN_SLASH_COMMANDS = [
-  { name: "compact", description: "压缩当前会话上下文", source: "builtin" },
-  {
-    name: "model",
-    description: "切换模型（provider/model）",
-    source: "builtin",
-  },
-  {
-    name: "reload",
-    description: "重新加载扩展、技能、提示词和设置",
-    source: "builtin",
-  },
-  { name: "login", description: "登录模型提供商", source: "builtin" },
-  { name: "logout", description: "退出模型提供商", source: "builtin" },
-  { name: "name", description: "设置当前会话名称", source: "builtin" },
-  { name: "session", description: "查看当前会话信息", source: "builtin" },
-  { name: "new", description: "新建会话", source: "builtin" },
-] satisfies SessionSnapshot["slashCommands"];
 
 function normalizedBranch(
   entries: readonly unknown[],
@@ -887,6 +873,10 @@ export class SessionHost {
   private branchCacheKey?: string;
   private statsCacheKey?: string;
   private statsCache?: SessionSnapshot["stats"];
+  private resourceWatch?: ResourceWatch;
+  private resourceReloadTimer?: NodeJS.Timeout;
+  private resourcesDirty = false;
+  private editorText = "";
   private slashCommandCache?: SessionSnapshot["slashCommands"];
   private runTitleCacheKey?: string;
   private runTitleText = "";
@@ -1284,11 +1274,62 @@ export class SessionHost {
           this.slashCommandCache = undefined;
           this.snapshotLogPending = true;
           this.broadcastReadyState();
+          this.restartResourceWatch();
         }
       }
     })();
     this.readinessPromise = binding;
     return binding;
+  }
+
+  private restartResourceWatch(): void {
+    this.resourceWatch?.close();
+    if (this.disposed || !this.runtime.services?.agentDir) return;
+    const files = this.session.resourceLoader.getExtensions().extensions.map(extension => extension.path);
+    this.resourceWatch = new ResourceWatch([
+      this.runtime.services.agentDir, join(this.cwd, ".pi"),
+      join(this.cwd, ".agents"), join(homedir(), ".agents"),
+    ], files, () => {
+      this.resourcesDirty = true;
+      this.scheduleResourceReload();
+    });
+  }
+
+  private get resourceReloadBlocked(): boolean {
+    const s = this.session;
+    return Boolean(s.isStreaming || s.isCompacting || s.isRetrying || s.isBashRunning
+      || this.stopPromise || this.reloading || this.activeToolCalls.size
+      || this.uiPending.size || this.customUi.isActive);
+  }
+
+  private scheduleResourceReload(): void {
+    clearTimeout(this.resourceReloadTimer);
+    if (this.disposed || !this.resourcesDirty) return;
+    this.resourceReloadTimer = setTimeout(() => {
+      if (this.disposed) return;
+      if (!this.isReady || this.resourceReloadBlocked || this.pendingCommandMutations > 0 || this.sockets.size === 0) {
+        this.scheduleResourceReload();
+        return;
+      }
+      this.resourcesDirty = false;
+      void this.withCommandMutation(async () => {
+        // Recheck admission after waiting for another browser's command.
+        if (this.resourceReloadBlocked) {
+          this.resourcesDirty = true;
+          return { ok: true };
+        }
+        console.log(`[session] resource_reload_started key=${JSON.stringify(this.key)}`);
+        const result = await this.runSlash("/reload");
+        if (!result.ok) this.broadcast({ type: "toast", message: `插件自动重载失败：${result.error}；可执行 /reload 重试。`, level: "warning" });
+        return result;
+      }).catch(cause => {
+        console.error(`[session] resource_reload_failed key=${JSON.stringify(this.key)}`, cause);
+        this.broadcast({ type: "toast", message: `插件自动重载失败：${cause instanceof Error ? cause.message : String(cause)}；可执行 /reload 重试。`, level: "warning" });
+        this.slashCommandCache = undefined;
+        this.broadcastSnapshot();
+      }).finally(() => this.scheduleResourceReload());
+    }, 1_000);
+    this.resourceReloadTimer.unref();
   }
 
   /** Bind the watcher to the runtime's current file, replacing any stale binding. */
@@ -1583,13 +1624,17 @@ export class SessionHost {
           setHiddenThinkingLabel() {},
           // remaining ExtensionUIContext members (no-ops on web; some extensions
           // like pi-subagents call these unconditionally)
-          pasteToEditor() {},
-          setEditorText() {},
-          getEditorText() {
-            return "";
+          pasteToEditor(text: string) {
+            host.editorText += text;
+            host.broadcast({ type: "editor_text", text, mode: "append" });
           },
-          editor() {
-            return Promise.resolve(undefined);
+          setEditorText(text: string) {
+            host.editorText = text;
+            host.broadcast({ type: "editor_text", text, mode: "replace" });
+          },
+          getEditorText() { return host.editorText; },
+          editor(title: string, prefill?: string) {
+            return host.uiRequest<string | undefined>({ kind: "editor", title, content: prefill });
           },
           addAutocompleteProvider() {},
           setEditorComponent() {},
@@ -2116,8 +2161,10 @@ export class SessionHost {
         add(command.invocationName, command.description, "extension");
       for (const prompt of session.promptTemplates)
         add(prompt.name, prompt.description, "prompt");
-      for (const skill of session.resourceLoader.getSkills().skills)
-        add(`skill:${skill.name}`, skill.description, "skill");
+      if (session.settingsManager?.getEnableSkillCommands?.() !== false) {
+        for (const skill of session.resourceLoader.getSkills().skills)
+          add(`skill:${skill.name}`, skill.description, "skill");
+      }
     } catch (cause) {
       console.error(`[session] slash_commands_failed key=${this.key}`, cause);
     }
@@ -2535,30 +2582,52 @@ export class SessionHost {
   ): Promise<{ ok: boolean; error?: string; data?: Record<string, unknown> }> {
     const s = this.session;
     const text = raw.replace(/^\s*\/+\s*/, "").trim();
-    const [name, ...args] = text.split(/\s+/);
-    const arg = args.join(" ").trim();
+    const parsed = /^(\S+)(?:\s+([\s\S]*))?$/.exec(text);
+    const name = parsed?.[1] ?? "";
+    const arg = parsed?.[2]?.trim() ?? "";
     const out = (o: string) => ({ ok: true, data: { output: o } });
-    if (name === "new" && this.sockets.size > 1) {
+    if (["new", "fork", "clone", "resume", "import", "tree"].includes(name) && this.sockets.size > 1) {
       return {
         ok: false,
-        error: "当前会话在多个窗口中打开；请只保留一个窗口后再新建会话。",
+        error: `当前会话在多个窗口中打开；请只保留一个窗口后再执行 /${name}。`,
       };
     }
     if (
       (s.isStreaming || s.isCompacting) &&
-      ["compact", "name", "new", "model", "login", "logout"].includes(name)
+      (Object.hasOwn(NATIVE_COMMANDS, name) && !["session", "copy", "changelog", "hotkeys", "quit"].includes(name))
     ) {
       return {
         ok: false,
         error: `当前回复仍在运行，暂不能执行 /${name}；请先停止或等待完成。`,
       };
     }
+    // Built-in TUI components and plugin custom() use one serialized UI lane.
+    if (!(name === "model" && arg.includes("/"))) {
+      try {
+        const result = await runNativeCommand(name, arg, {
+          session: s, runtime: this.runtime,
+          assertCanReplace: () => {
+            if (this.sockets.size > 1) throw new Error("当前会话在多个窗口中打开，请只保留一个窗口后再切换会话。");
+            if (this.disposed || this.stopPromise || this.session !== s) throw new Error("会话操作已取消。");
+          },
+          ui: request => this.uiRequest(request),
+          custom: factory => this.customUiRequest(factory),
+        });
+        if (result) {
+          this.invalidateSnapshotCaches(true);
+          this.broadcastSnapshot();
+          return { ok: true, data: { ...result } };
+        }
+      } catch (cause) {
+        return { ok: false, error: cause instanceof Error ? cause.message : String(cause) };
+      }
+    }
     switch (name) {
       case "compact":
-        await s.compact();
+        await s.compact(arg || undefined);
         return out("已触发上下文压缩。");
       case "name":
-        if (!arg) return { ok: false, error: "用法: /name <会话名>" };
+        if (!arg) return out(s.sessionName ? `当前会话名：${s.sessionName}` : "用法: /name <会话名>");
         s.setSessionName(arg);
         this.broadcastSnapshot();
         return out(`会话已命名为：${arg}`);
@@ -2566,13 +2635,14 @@ export class SessionHost {
         const st = s.sessionName ?? "";
         const model = s.model ? `${s.model.provider}/${s.model.id}` : "-";
         return out(
-          `会话: ${st || "(未命名)"}\n模型: ${model}\n流式: ${s.isStreaming ? "是" : "否"}`,
+          `会话: ${st || "(未命名)"}\n模型: ${model}\n流式: ${s.isStreaming ? "是" : "否"}\n${JSON.stringify(s.getSessionStats(), null, 2)}`,
         );
       }
-      case "new":
-        await this.runtime.newSession();
+      case "new": {
+        const result = await this.runtime.newSession();
         this.broadcastSnapshot();
-        return out("已新建会话。");
+        return out(result.cancelled ? "已取消。" : "已新建会话。");
+      }
       case "reload":
         if (s.isStreaming)
           return { ok: false, error: "请等待当前回复结束后再执行 /reload。" };
@@ -2594,6 +2664,7 @@ export class SessionHost {
         } finally {
           this.slashCommandCache = undefined;
         }
+        this.restartResourceWatch();
         this.broadcastSnapshot();
         console.log(`[session] reload_completed key=${this.key}`);
         return out("已重新加载扩展、技能、提示词、设置和上下文文件。");
@@ -2604,7 +2675,7 @@ export class SessionHost {
           return { ok: false, error: "用法: /model <provider/modelId>" };
         const model = await this.findModel(prov, mid.join("/"));
         if (!model) return { ok: false, error: `模型未找到: ${arg}` };
-        await s.setModel(model);
+        await s.setModel(model, { persist: false });
         this.statsCacheKey = undefined;
         this.statsCache = undefined;
         this.broadcastSnapshot();
@@ -2614,8 +2685,6 @@ export class SessionHost {
         return out(await this.runLoginCommand(arg || undefined));
       case "logout":
         return out(await this.runLogoutCommand(arg || undefined));
-      case "export":
-        return { ok: false, error: "/export 请使用界面右上角的「导出」按钮。" };
       default: {
         const command = this.slashCommands().find(
           (candidate) =>
@@ -2633,7 +2702,8 @@ export class SessionHost {
           });
           // AgentSession emits queue_update before both of its queue mirrors are
           // stable. Publish one settled snapshot so mutation controls recover.
-          if (wasStreaming) this.broadcastSnapshot();
+          this.slashCommandCache = undefined;
+          this.broadcastSnapshot();
           return out(`已执行 /${name}。`);
         } catch (err) {
           return {
@@ -3077,6 +3147,7 @@ export class SessionHost {
   ): Promise<{ ok: boolean; error?: string; data?: Record<string, unknown> }> {
     const bypass =
       cmd.type === "abort" ||
+      cmd.type === "editor_state" ||
       cmd.type === "ui_response" ||
       cmd.type === "custom_ui_input" ||
       cmd.type === "custom_ui_resize" ||
@@ -3093,6 +3164,7 @@ export class SessionHost {
       return { ok: false, error: "session is stopping; command was not accepted" };
     const initializationResponse =
       cmd.type === "abort" ||
+      cmd.type === "editor_state" ||
       cmd.type === "ui_response" ||
       cmd.type === "custom_ui_input" ||
       cmd.type === "custom_ui_resize" ||
@@ -3208,7 +3280,7 @@ export class SessionHost {
               ok: false,
               error: `model not found: ${cmd.provider}/${cmd.modelId}`,
             };
-          await s.setModel(model);
+          await s.setModel(model, { persist: false });
           this.statsCacheKey = undefined;
           this.statsCache = undefined;
           this.broadcastSnapshot();
@@ -3273,6 +3345,10 @@ export class SessionHost {
         case "queue_clear":
           s.clearQueue();
           this.broadcastSnapshot();
+          return { ok: true };
+        case "editor_state":
+          if (typeof cmd.text !== "string" || cmd.text.length > 256 * 1024) return { ok: false, error: "invalid editor state" };
+          this.editorText = cmd.text;
           return { ok: true };
         case "ui_response":
           return this.closeUiRequest(cmd.requestId, "answered", cmd.value)
@@ -3405,6 +3481,8 @@ export class SessionHost {
     );
     this.disposePromise = (async () => {
       clearTimeout(this.idleTimer);
+      clearTimeout(this.resourceReloadTimer);
+      this.resourceWatch?.close();
       clearTimeout(this.watchDebounceTimer);
       clearTimeout(this.watchRetryTimer);
       clearTimeout(this.pendingSnapshotTimer);

@@ -29,6 +29,11 @@ function base(props: IconProps, children: React.ReactNode, filled = false) {
 }
 
 export const IconPlus = (p: IconProps) => base(p, <path d="M12 5v14M5 12h14" />);
+export const IconMore = (p: IconProps) => base(p, <><circle cx="5" cy="12" r="1" /><circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" /></>);
+export const IconFile = (p: IconProps) => base(p, <><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6" /></>);
+export const IconFileCode = (p: IconProps) => base(p, <><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6m-10 4-2 3 2 3m4-6 2 3-2 3" /></>);
+export const IconDownload = (p: IconProps) => base(p, <path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5" />);
+export const IconImage = (p: IconProps) => base(p, <><rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="8" cy="8" r="1.5" /><path d="m21 15-5-5L5 21" /></>);
 export const IconSearch = (p: IconProps) => base(p, <><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></>);
 export const IconSettings = (p: IconProps) => base(p, <><path d="M4 8h10M18 8h2M4 16h2M10 16h10" /><circle cx="16" cy="8" r="2" /><circle cx="8" cy="16" r="2" /></>);
 export const IconX = (p: IconProps) => base(p, <path d="M18 6 6 18M6 6l12 12" />);

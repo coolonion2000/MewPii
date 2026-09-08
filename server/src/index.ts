@@ -29,6 +29,7 @@ import { extname, join, normalize, resolve, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer, type WebSocket } from "ws";
+import { TerminalService } from "./terminal.js";
 import {
   DefaultPackageManager,
   SettingsManager,
@@ -45,6 +46,7 @@ import {
 } from "./static-assets.js";
 import { hasRunningSubagentRuns } from "./subagent-activity.js";
 import { resolveToolAuthorizedPreviewPath } from "./file-preview-access.js";
+import { handleWorkspaceFiles, FileRequestError } from "./workspace-files.js";
 import { PendingHostCreations, type HostPreviewListener } from "./pending-host-creations.js";
 import {
   ModelServicesCache,
@@ -1042,64 +1044,6 @@ async function trustedSessionPath(input: string): Promise<string> {
   throw new Error("session path is not managed by pi");
 }
 
-const TEXT_EXTS = new Set([
-  ".txt",
-  ".md",
-  ".markdown",
-  ".json",
-  ".jsonl",
-  ".js",
-  ".jsx",
-  ".ts",
-  ".tsx",
-  ".mjs",
-  ".cjs",
-  ".css",
-  ".scss",
-  ".less",
-  ".html",
-  ".xml",
-  ".svg",
-  ".yml",
-  ".yaml",
-  ".toml",
-  ".ini",
-  ".cfg",
-  ".py",
-  ".rb",
-  ".go",
-  ".rs",
-  ".java",
-  ".c",
-  ".h",
-  ".cpp",
-  ".hpp",
-  ".cs",
-  ".sh",
-  ".bash",
-  ".zsh",
-  ".sql",
-  ".vue",
-  ".svelte",
-  ".env",
-  ".gitignore",
-  ".lock",
-  ".log",
-  ".csv",
-  ".swift",
-  ".kt",
-  ".lua",
-]);
-const IMAGE_EXTS = new Set([
-  ".png",
-  ".jpg",
-  ".jpeg",
-  ".gif",
-  ".webp",
-  ".svg",
-  ".ico",
-  ".bmp",
-]);
 function sendJson(res: ServerResponse, status: number, data: unknown): void {
   res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
   res.end(JSON.stringify(data));
@@ -2521,146 +2465,16 @@ async function handleApi(
     return true;
   }
 
-  if (path === "/api/files" && req.method === "GET") {
-    const cwd = url.searchParams.get("cwd");
-    const rel = url.searchParams.get("path") ?? ".";
-    if (!cwd) {
-      sendJson(res, 400, { error: "missing cwd" });
-      return true;
-    }
-    const resolved = await resolveWorkspacePath(cwd, rel, {
-      extraRoots: await knownWorkspaceRoots(),
-    });
-    const dir = resolved.path;
-    const entries = await readdir(dir, { withFileTypes: true });
-    const items = await Promise.all(
-      entries.map(async (e) => {
-        const st = await stat(join(dir, e.name)).catch(() => undefined);
-        return {
-          name: e.name,
-          isDir: e.isDirectory(),
-          size: st?.size ?? 0,
-          modified: st?.mtime.toISOString(),
-        };
-      }),
-    );
-    items.sort(
-      (a, b) =>
-        Number(b.isDir) - Number(a.isDir) || a.name.localeCompare(b.name),
-    );
-    sendJson(res, 200, { cwd: resolved.base, path: rel, items });
-    return true;
-  }
-
-  if (path === "/api/file" && req.method === "GET") {
-    const cwd = url.searchParams.get("cwd");
-    const rel = url.searchParams.get("path");
-    if (!cwd || !rel) {
-      sendJson(res, 400, { error: "missing cwd or path" });
-      return true;
-    }
-    const file = await resolvePreviewFile(
-      cwd,
-      rel,
-      url.searchParams.get("sessionId") ?? undefined,
-    );
-    const st = await stat(file);
-    const ext = extname(file).toLowerCase();
-    if (IMAGE_EXTS.has(ext)) {
-      res.writeHead(200, {
-        "Content-Type": MIME[ext] ?? "application/octet-stream",
-      });
-      createReadStream(file).pipe(res);
-      return true;
-    }
-    if (st.size > 2 * 1024 * 1024) {
-      sendJson(res, 413, { error: "file too large" });
-      return true;
-    }
-    if (!TEXT_EXTS.has(ext)) {
-      sendJson(res, 415, { error: "binary file, preview unsupported" });
-      return true;
-    }
-    const content = await readFile(file, "utf-8");
-    sendJson(res, 200, { name: file.split("/").pop(), path: rel, content });
-    return true;
-  }
-
-  if (path === "/api/files/upload" && req.method === "POST") {
-    const cwd = url.searchParams.get("cwd");
-    const rel = url.searchParams.get("path");
-    if (!cwd || !rel) {
-      sendJson(res, 400, { error: "missing cwd or path" });
-      return true;
-    }
-    const { path: file } = await resolveWorkspacePath(cwd, rel, {
-      write: true,
-      extraRoots: await knownWorkspaceRoots(),
-    });
-    await mkdir(dirname(file), { recursive: true });
-    await writeFile(file, await readBody(req));
-    sendJson(res, 200, { ok: true, path: rel });
-    return true;
-  }
-
-  // ---- git -------------------------------------------------------------
-  if (path === "/api/git" && req.method === "GET") {
-    const cwd = url.searchParams.get("cwd");
-    if (!cwd) {
-      sendJson(res, 400, { error: "missing cwd" });
-      return true;
-    }
-    try {
-      const { base } = await resolveWorkspacePath(cwd, ".", {
-        extraRoots: await knownWorkspaceRoots(),
-      });
-      const branch = (
-        await exec("git", ["rev-parse", "--abbrev-ref", "HEAD"], base)
-      ).trim();
-      const status = await exec("git", ["status", "--porcelain"], base);
-      const changes = status
-        .split("\n")
-        .filter(Boolean)
-        .map((line) => ({
-          status: line.slice(0, 2).trim(),
-          path: line.slice(3),
-        }));
-      const statOut = await exec("git", ["diff", "--stat", "HEAD"], base).catch(
-        () => "",
-      );
-      sendJson(res, 200, { branch, changes, diffStat: statOut });
-    } catch (err) {
-      sendJson(res, 200, {
-        error: err instanceof Error ? err.message : "not a git repo",
-      });
-    }
-    return true;
-  }
-
-  if (path === "/api/git/diff" && req.method === "GET") {
-    const cwd = url.searchParams.get("cwd");
-    const rel = url.searchParams.get("path");
-    if (!cwd) {
-      sendJson(res, 400, { error: "missing cwd" });
-      return true;
-    }
-    const { base } = await resolveWorkspacePath(cwd, ".", {
-      extraRoots: await knownWorkspaceRoots(),
-    });
-    const target = rel
-      ? (
-          await resolveWorkspacePath(cwd, rel, {
-            extraRoots: await knownWorkspaceRoots(),
-          })
-        ).path
-      : undefined;
-    const args = target ? ["diff", "HEAD", "--", target] : ["diff", "HEAD"];
-    const diff = await exec("git", args, base).catch(
-      (err: Error) => `error: ${err.message}`,
-    );
-    sendJson(res, 200, { diff });
-    return true;
-  }
+  if (await handleWorkspaceFiles(req, res, url, {
+    roots: knownWorkspaceRoots,
+    preview: async (cwd, target, sessionId) => {
+      try { return await resolvePreviewFile(cwd, target, sessionId); }
+      catch (cause) {
+        if (cause instanceof PreviewAuthorizationError) throw new FileRequestError(403, cause.message);
+        throw cause;
+      }
+    },
+  })) return true;
 
   return false;
 }
@@ -2816,6 +2630,7 @@ const wss = new WebSocketServer({
     zlibDeflateOptions: { level: 4 },
   },
 });
+const terminals = new TerminalService();
 
 /** Browsers must not open cross-site WebSockets to us (CSWSH). */
 server.on("upgrade", (req, socket, head) => {
@@ -2843,7 +2658,7 @@ server.on("upgrade", (req, socket, head) => {
     );
     return;
   }
-  if (url.pathname !== "/ws") {
+  if (url.pathname !== "/ws" && url.pathname !== "/ws/terminal") {
     socket.destroy();
     return;
   }
@@ -2869,6 +2684,10 @@ server.on("upgrade", (req, socket, head) => {
 
 wss.on("connection", (ws: WebSocket, _req: IncomingMessage, url: URL) => {
   attachWebSocketHeartbeat(ws);
+  if (url.pathname === "/ws/terminal") {
+    void terminals.connect(ws, url, knownWorkspaceRoots);
+    return;
+  }
   const cwd = url.searchParams.get("cwd");
   const sessionPath = url.searchParams.get("session") ?? undefined;
   const requestedSessionId = url.searchParams.get("sessionId") ?? undefined;
@@ -3001,6 +2820,7 @@ wss.on("connection", (ws: WebSocket, _req: IncomingMessage, url: URL) => {
     }
     const mayBypassInitializationDrain =
       cmd.type === "abort" ||
+      cmd.type === "editor_state" ||
       cmd.type === "ui_response" ||
       cmd.type === "custom_ui_input" ||
       cmd.type === "custom_ui_resize" ||
@@ -3011,6 +2831,7 @@ wss.on("connection", (ws: WebSocket, _req: IncomingMessage, url: URL) => {
     const mayBypassReadiness =
       cmd.type === "abort" ||
       cmd.type === "history" ||
+      cmd.type === "editor_state" ||
       cmd.type === "ui_response" ||
       cmd.type === "custom_ui_input" ||
       cmd.type === "custom_ui_resize" ||
@@ -3053,6 +2874,7 @@ function gracefulShutdown(exitCode: number, reason: string): Promise<void> {
       }
       server.close(() => resolvePromise());
     });
+    terminals.dispose();
     hub.dispose();
     await tunnelAgent?.dispose();
     tunnelAgent = undefined;

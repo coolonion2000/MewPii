@@ -4,7 +4,7 @@ import type { SelectionState } from "./state-utils";
 interface ConversationIdentity {
   cwd: string;
   agent: string | undefined;
-  snapshot?: { sessionFile?: string; sessionId?: string };
+  snapshot?: { cwd?: string; sessionFile?: string; sessionId?: string };
 }
 
 export interface ConversationBinding<T extends ConversationIdentity> {
@@ -40,7 +40,7 @@ export function reconcileConversationBinding<T extends ConversationIdentity>(
   // after /new, a blank selection, and another agent must create a new owner.
   const followsHost = conversation &&
     conversation.agent === agent &&
-    selection?.cwd === conversation.cwd &&
+    selection?.cwd === (snapshot?.cwd ?? conversation.cwd) &&
     (selection.sessionPath
       ? selection.sessionPath === snapshot?.sessionFile &&
         (!selection.sessionId || selection.sessionId === snapshot?.sessionId)

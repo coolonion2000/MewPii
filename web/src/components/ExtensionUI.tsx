@@ -58,7 +58,7 @@ export default function ExtensionUI({ conv }: { conv: Conversation }) {
   const req = conv.uiRequest;
   useEffect(() => {
     // Input text belongs to one concrete extension request only.
-    setInputDraft('');
+    setInputDraft(req?.content ?? '');
   }, [req?.id]);
 
   return (
@@ -103,6 +103,42 @@ export default function ExtensionUI({ conv }: { conv: Conversation }) {
                 <button className="btn btn-sm" style={{ alignSelf: 'flex-end' }} onClick={() => conv.answerUi(undefined)}>
                   {t('cancel')}
                 </button>
+              </div>
+            )}
+
+            {req.kind === 'editor' && (
+              <div style={{ display: 'grid', gap: 8 }}>
+                <textarea className="extension-editor" autoFocus aria-label={req.title} value={inputDraft}
+                  onChange={e => setInputDraft(e.target.value)} rows={12} />
+                <button className="btn btn-sm" onClick={() => conv.answerUi(inputDraft)}>{t('submit')}</button>
+              </div>
+            )}
+            {req.kind === 'file' && (
+              <input type="file" accept=".jsonl" aria-label={req.title} onChange={async e => {
+                const file = e.target.files?.[0];
+                if (!file) return;
+                if (file.size > 16 * 1024 * 1024) { conv.toast('文件超过 16 MiB，请使用 /import <服务器路径>', 'error'); return; }
+                try {
+                  const content = await file.text();
+                  if (conv.uiRequest?.id === req.id) conv.answerUi({ name: file.name, content });
+                } catch (cause) { conv.toast(String(cause), 'error'); }
+              }} />
+            )}
+            {(req.kind === 'copy' || req.kind === 'download') && (
+              <div style={{ display: 'grid', gap: 8 }}>
+                {req.kind === 'copy' && <textarea className="extension-editor" readOnly aria-label={req.title} rows={8} value={req.content ?? ''} />}
+                {req.filename && <span>{req.filename}</span>}
+                <button className="btn btn-sm" onClick={async () => {
+                  try {
+                    if (req.kind === 'copy') await navigator.clipboard.writeText(req.content ?? '');
+                    else {
+                      const url = URL.createObjectURL(new Blob([req.content ?? ''], { type: req.filename?.endsWith('.html') ? 'text/html' : 'application/x-ndjson' }));
+                      const link = document.createElement('a'); link.href = url; link.download = req.filename ?? 'session.jsonl';
+                      link.click(); setTimeout(() => URL.revokeObjectURL(url), 30_000);
+                    }
+                    if (conv.uiRequest?.id === req.id) conv.answerUi(true);
+                  } catch (cause) { conv.toast(String(cause), 'error'); }
+                }}>{req.kind === 'copy' ? '复制' : '下载'}</button>
               </div>
             )}
 
@@ -206,7 +242,7 @@ function CustomTerminalDialog({ conv }: { conv: Conversation }) {
     <div className={`modal-mask custom-ui-mask ${frame.overlay ? 'is-overlay' : ''}`} onClick={() => captureRef.current?.focus()}>
       <div className="custom-ui-modal" onClick={(event) => event.stopPropagation()}>
         <div className="custom-ui-head">
-          <span className="mono">Extension UI</span>
+          <span className="mono">{t('piInteraction')}</span>
           <span className="dim">↑↓ / Enter / Esc</span>
           <button className="btn btn-sm btn-icon" aria-label={t('close')} onClick={() => conv.cancelCustomUi()}>×</button>
         </div>

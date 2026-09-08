@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
 import type { ProjectGroup, SessionSummary } from '../types';
 import type { Selection, View } from '../App';
@@ -14,11 +14,12 @@ import {
   subscribeUsedSessions,
 } from '../used-sessions';
 import DirectoryPicker from './DirectoryPicker';
+import SessionActions from './SessionActions';
 import {
   IconPlus, IconSearch, IconSettings, IconTrash, IconStar, IconStarFilled,
-  IconArchive, IconUnarchive, IconPencil, IconFolder, IconChevronLeft,
+  IconArchive, IconUnarchive, IconFolder, IconChevronLeft,
   IconChevronRight, IconRefresh, IconSun, IconMoon, IconExport, IconChat, IconLogout,
-  IconCheck, IconX,
+  IconCheck, IconX, IconTerminal,
 } from '../icons';
 
 interface Props {
@@ -43,6 +44,8 @@ interface Props {
   currentAgent?: string;
   onSelectAgent?: (name: string) => void;
   loading?: boolean;
+  terminalVisible?: boolean;
+  onToggleTerminal?: () => void;
 }
 
 function basename(cwd: string): string {
@@ -198,8 +201,8 @@ export default function Sidebar(props: Props) {
     );
   }, [filtered, favs, projectOrder]);
 
-  const selectedAncestorPaths = useMemo(() => {
-    if (!selection?.sessionPath) return [];
+  const selectedAncestorKey = useMemo(() => {
+    if (!selection?.sessionPath) return '';
     const sessions = projects.flatMap((project) => project.sessions);
     const byPath = new Map(sessions.map((session) => [session.path, session]));
     const ancestors: string[] = [];
@@ -214,11 +217,12 @@ export default function Sidebar(props: Props) {
       ancestors.push(current.parentSessionPath);
       current = byPath.get(current.parentSessionPath);
     }
-    return ancestors;
+    return ancestors.join('\0');
   }, [projects, selection?.sessionPath]);
 
   useEffect(() => {
-    if (selectedAncestorPaths.length === 0) return;
+    if (!selectedAncestorKey) return;
+    const selectedAncestorPaths = selectedAncestorKey.split('\0');
     setOpenParents((previous) => {
       if (selectedAncestorPaths.every((path) => previous.has(path)))
         return previous;
@@ -226,7 +230,8 @@ export default function Sidebar(props: Props) {
       for (const path of selectedAncestorPaths) next.add(path);
       return next;
     });
-  }, [selectedAncestorPaths]);
+    // Refreshing timestamps must not undo a manually collapsed ancestor.
+  }, [selectedAncestorKey, selection?.sessionPath]);
 
   const newSessionCwd = selection?.cwd ?? projects[0]?.cwd ?? '/';
   const agentOffline = Boolean(currentAgent && !agents?.includes(currentAgent));
@@ -260,7 +265,7 @@ export default function Sidebar(props: Props) {
     depth: number,
     kids?: { count: number; open: boolean; toggle: () => void },
   ) => {
-    const indent = 4 + depth * 8;
+    const indent = 4 + depth * 14;
     if (renamingPath === s.path) {
       const renameValue = normalizeSessionRename(renameDraft, s.running);
       const cancelRename = () => setRenamingPath(undefined);
@@ -273,7 +278,7 @@ export default function Sidebar(props: Props) {
         <div
           key={s.path}
           className="session-rename"
-          style={{ margin: `2px 0 2px ${indent + 14}px` }}
+          style={{ margin: '2px 0', paddingLeft: indent + 24 }}
           onClick={(e) => e.stopPropagation()}
           onMouseDown={(e) => e.stopPropagation()}
         >
@@ -327,20 +332,22 @@ export default function Sidebar(props: Props) {
     }
     const selectSession = () => {
       onSelect({ cwd: s.cwd || '', sessionPath: s.path, sessionId: s.id });
-      if (kids && !kids.open) kids.toggle();
     };
     return (
       <div
         key={s.path}
         className={`session-item ${selection?.sessionPath === s.path ? 'active' : ''}`}
-        style={{ marginLeft: indent }}
+        style={{ paddingLeft: indent }}
       >
         {kids ? (
           <button
+            type="button"
             className={`sub-chevron ${kids.open ? 'open' : ''}`}
+            aria-label={`${t(kids.open ? 'collapseChildren' : 'expandChildren')}: ${s.name || s.firstMessage}`}
+            aria-expanded={kids.open}
             onClick={kids.toggle}
           >
-            <IconChevronRight size={10} />
+            <IconChevronRight size={14} />
           </button>
         ) : (
           <span className="sub-chevron-placeholder" />
@@ -351,35 +358,20 @@ export default function Sidebar(props: Props) {
           aria-current={selection?.sessionPath === s.path ? 'page' : undefined}
           onClick={selectSession}
         >
-          <span className={`status-dot ${s.running ? 'on' : ''}`} />
+          {s.running && <span className="status-dot on" />}
           <span className="title" title={s.name || s.firstMessage}>{s.name || s.firstMessage || '(空会话)'}</span>
-          {kids && <span className="sub-count">{kids.count}</span>}
-          <span className="time">{relTime(s.modified)}</span>
+          {kids && !kids.open && <span className="sub-count">· {kids.count}</span>}
         </button>
-        <span className="session-actions">
-          <button
-            className="btn btn-icon btn-sm"
-            title={s.running ? t('renameRunning') : t('rename')}
-            aria-label={s.running ? t('renameRunning') : t('rename')}
-            disabled={s.running}
-            onClick={() => {
-              setRenameDraft(s.name || '');
-              setRenamingPath(s.path);
-            }}
-          >
-            <IconPencil size={12} />
-          </button>
-          <button className="btn btn-icon btn-sm" title={t('archive')} onClick={() => onArchive(s.path, true)}>
-            <IconArchive size={12} />
-          </button>
-          <button
-            className="btn btn-icon btn-sm"
-            title={t('deleteSession')}
-            onClick={() => setDeleteTarget(s)}
-          >
-            <IconTrash size={12} />
-          </button>
-        </span>
+        <SessionActions
+          session={s}
+          time={relTime(s.modified)}
+          onRename={() => {
+            setRenameDraft(s.name || '');
+            setRenamingPath(s.path);
+          }}
+          onArchive={() => onArchive(s.path, true)}
+          onDelete={() => setDeleteTarget(s)}
+        />
       </div>
     );
   };
@@ -402,7 +394,9 @@ export default function Sidebar(props: Props) {
             ? renderSessionRow(s, depth, { count: kids.length, open, toggle })
             : renderSessionRow(s, depth)}
           {kids.length > 0 && open && (
-            <div className="subagent-group">{kids.map((k) => renderNode(k, depth + 1))}</div>
+            <div className="session-children" style={{ '--tree-guide': `${14 + depth * 14}px` } as CSSProperties}>
+              {kids.map((k) => renderNode(k, depth + 1))}
+            </div>
           )}
         </div>
       );
@@ -428,6 +422,7 @@ export default function Sidebar(props: Props) {
         <button className={`btn btn-icon ${view === 'files' ? 'tab-active' : ''}`} title={t('navFiles')} onClick={() => onNavigate('files')}>
           <IconFolder />
         </button>
+        <button className={`btn btn-icon ${props.terminalVisible ? 'tab-active' : ''}`} title={t('terminal')} aria-label={t('terminal')} aria-expanded={props.terminalVisible} onClick={props.onToggleTerminal}><IconTerminal /></button>
         <button className={`btn btn-icon ${view !== 'chat' && view !== 'files' ? 'tab-active' : ''}`} title={t('navSettings')} onClick={() => onNavigate('settings')}>
           <IconSettings />
         </button>
@@ -661,10 +656,11 @@ export default function Sidebar(props: Props) {
           <IconChat size={20} />
           <span>{t('navChat')}</span>
         </button>
-        <button className={`footer-nav-btn ${view === 'files' ? 'tab-active' : ''}`} title={t('navFiles')} onClick={() => onNavigate('files')}>
+        <div className="footer-files-terminal"><button className={`footer-nav-btn ${view === 'files' ? 'tab-active' : ''}`} title={t('navFiles')} onClick={() => onNavigate('files')}>
           <IconFolder size={20} />
           <span>{t('navFiles')}</span>
         </button>
+        <button className={`btn btn-icon ${props.terminalVisible ? 'tab-active' : ''}`} title={t('terminal')} aria-label={t('terminal')} aria-expanded={props.terminalVisible} onClick={props.onToggleTerminal}><IconTerminal size={19} /></button></div>
         <div className="footer-row">
           <button className={`btn btn-icon ${view !== 'chat' && view !== 'files' ? 'tab-active' : ''}`} title={t('navSettings')} onClick={() => onNavigate('settings')}>
             <IconSettings size={14} />

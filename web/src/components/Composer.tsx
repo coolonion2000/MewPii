@@ -29,8 +29,8 @@ type PendingImage = ComposerDraftImage;
 export default function Composer({ conv, draft, onDraft }: Props) {
   const initialDraftKey = conversationDraftKey(
     conv.agent,
-    conv.cwd,
-    conv.sessionPath ?? conv.snapshot?.sessionFile,
+    conv.snapshot?.cwd ?? conv.cwd,
+    conv.snapshot?.sessionFile ?? conv.sessionPath,
   );
   const [initialDraft] = useState(() => getComposerDraft(initialDraftKey));
   const [text, setText] = useState(initialDraft?.text ?? '');
@@ -41,6 +41,7 @@ export default function Composer({ conv, draft, onDraft }: Props) {
   const [menuOpen, setMenuOpen] = useState<'model' | 'thinking' | 'tools' | undefined>();
   const [queueMode, setQueueMode] = useState<'steer' | 'followUp'>('steer');
   const [submitPending, setSubmitPending] = useState(false);
+  const [pendingSlash, setPendingSlash] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [stopError, setStopError] = useState<string>();
   const submitPendingRef = useRef(false);
@@ -52,10 +53,21 @@ export default function Composer({ conv, draft, onDraft }: Props) {
   const imgInputRef = useRef<HTMLInputElement>(null);
   const draftKey = conversationDraftKey(
     conv.agent,
-    conv.cwd,
-    conv.sessionPath ?? conv.snapshot?.sessionFile,
+    conv.snapshot?.cwd ?? conv.cwd,
+    conv.snapshot?.sessionFile ?? conv.sessionPath,
   );
   const previousDraftKey = useRef(draftKey);
+  useEffect(() => {
+    const timer = setTimeout(() => conv.syncEditorText(text), 150);
+    return () => clearTimeout(timer);
+  }, [conv, conv.connected, text]);
+  const appliedEditorRevision = useRef(0);
+  useEffect(() => {
+    const update = conv.editorUpdate;
+    if (!update || update.revision <= appliedEditorRevision.current) return;
+    appliedEditorRevision.current = update.revision;
+    setText(current => update.mode === 'append' ? current + update.text : update.text);
+  }, [conv, conv.editorUpdate?.revision]);
 
   useEffect(() => {
     if (previousDraftKey.current !== draftKey)
@@ -188,6 +200,7 @@ export default function Composer({ conv, draft, onDraft }: Props) {
     let optimisticKey = -1;
     let dispatched = false;
     const slashMatch = value.match(/^\s*\/([^\s/]+)(\s+.*)?$/);
+    setPendingSlash(Boolean(slashMatch));
     try {
       clearComposerDraft(draftKey);
       setText('');
@@ -227,6 +240,8 @@ export default function Composer({ conv, draft, onDraft }: Props) {
         const noticeRevision = conv.transcriptNoticeRevision;
         dispatched = true;
         const res = await conv.send({ type: 'slash', raw: value });
+        if (typeof res?.editorText === 'string') setText(res.editorText);
+        if (res?.action === 'quit') conv.requestQuit();
         const output = (res as { output?: string } | undefined)?.output;
         const notice = commandNoticeFallback(
           noticeRevision,
@@ -265,6 +280,7 @@ export default function Composer({ conv, draft, onDraft }: Props) {
     } finally {
       submitPendingRef.current = false;
       setSubmitPending(false);
+      setPendingSlash(false);
     }
   };
 
@@ -289,9 +305,13 @@ export default function Composer({ conv, draft, onDraft }: Props) {
     return m ? m[1].toLowerCase() : undefined;
   })();
   const slashMatches = slashQuery !== undefined
-    ? slashItems.filter((it) => it.cmd.slice(1).toLowerCase().startsWith(slashQuery)).slice(0, 8)
+    ? slashItems.filter((it) => it.cmd.slice(1).toLowerCase().startsWith(slashQuery))
     : [];
   const [slashIndex, setSlashIndex] = useState(0);
+  const slashMenuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    slashMenuRef.current?.querySelector('.active')?.scrollIntoView({ block: 'nearest' });
+  }, [slashIndex, slashQuery]);
 
   const currentModel = snap?.model;
   const currentModelInfo = models?.models.find(
@@ -328,7 +348,7 @@ export default function Composer({ conv, draft, onDraft }: Props) {
         </div>
       )}
       {slashMatches.length > 0 && (
-        <div className="slash-menu">
+        <div className="slash-menu" ref={slashMenuRef}>
           {slashMatches.map((it, i) => (
             <button
               key={it.cmd}
@@ -354,7 +374,7 @@ export default function Composer({ conv, draft, onDraft }: Props) {
           connectionKnownFailed
             ? t('disconnected')
             : submitPending
-              ? t('connectingSession')
+              ? t(pendingSlash && conv.connected ? 'commandPending' : 'connectingSession')
               : streaming
                 ? t('steerPlaceholder')
                 : t('sendPlaceholder')
@@ -598,7 +618,7 @@ export default function Composer({ conv, draft, onDraft }: Props) {
         ) : (
           <button
             className={`send-circle send-sm ${submitPending ? 'waiting' : ''}`}
-            title={submitPending ? t('connectingSession') : t('send')}
+            title={submitPending ? t(pendingSlash && conv.connected ? 'commandPending' : 'connectingSession') : t('send')}
             aria-busy={submitPending}
             disabled={!canSend}
             onClick={() => void submit()}

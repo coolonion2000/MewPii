@@ -105,6 +105,7 @@ export type ClientCommand =
   | { type: "queue_clear" }
   | { type: "history"; before: number; requestId: string }
   | { type: "setToolMode"; mode: "off" | "read-only" | "default" | "full" }
+  | { type: "editor_state"; text: string }
   | { type: "ui_response"; requestId: string; value: unknown }
   | { type: "custom_ui_input"; requestId: string; data: string }
   | { type: "custom_ui_resize"; requestId: string; width: number }
@@ -119,7 +120,9 @@ export interface WidgetState {
 
 export interface UiRequest {
   id: string;
-  kind: "select" | "confirm" | "input" | "question" | "questionnaire";
+  kind: "select" | "confirm" | "input" | "question" | "questionnaire" | "editor" | "file" | "copy" | "download";
+  content?: string;
+  filename?: string;
   title: string;
   message?: string;
   options?: string[];
@@ -154,6 +157,7 @@ export type ServerMessage =
   | { type: "widgets"; widgets: WidgetState[] }
   | { type: "statuses"; statuses: Record<string, string> }
   | { type: "toast"; message: string; level: "info" | "warning" | "error" }
+  | { type: "editor_text"; text: string; mode: "replace" | "append" }
   | { type: "ui_request"; request: UiRequest }
   | { type: "ui_close"; requestId: string; reason: "answered" | "timeout" | "rebind" | "dispose" }
   | { type: "custom_ui_frame"; frame: CustomUiFrame }

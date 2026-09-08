@@ -764,6 +764,7 @@ function ChatView({ conv, onRefresh, onForked, projects, onSelectProject, dark, 
             <FilePreview
               cwd={snap?.cwd ?? conv.cwd}
               path={previewPath}
+              onNavigate={handleOpenFile}
               width={previewWidth}
               agent={conv.agent}
               sessionId={snap?.sessionId}

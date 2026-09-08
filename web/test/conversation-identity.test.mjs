@@ -198,3 +198,22 @@ test("a pathless live rebind reconnects by its latest session ID", () => {
     assert.equal(url.searchParams.get("sessionId"), idB);
   } finally { app.dispose(); }
 });
+
+
+test("cross-workspace resume keeps the host and reconnects with its new cwd", () => {
+  const app = lifecycle();
+  try {
+    const a = snapshot("/resume-project-a", idA, false);
+    const b = snapshot("/resume-project-b", idB, false);
+    const conversation = app.select(selectionFor(a));
+    const ws = Socket.instances.at(-1);
+    ws.receive({ type: "snapshot", snapshot: a });
+    ws.receive({ type: "snapshot", snapshot: b });
+    assert.equal(app.select(selectionFor(b)), conversation);
+    assert.equal(ws.closes, 0);
+    ws.onclose({ code: 1006 });
+    conversation.connect();
+    assert.equal(Socket.instances.at(-1).url.searchParams.get("cwd"), b.cwd);
+    assert.equal(Socket.instances.at(-1).url.searchParams.get("session"), b.sessionFile);
+  } finally { app.dispose(); }
+});

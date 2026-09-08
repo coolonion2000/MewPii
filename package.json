@@ -15,7 +15,8 @@
     "test": "npm run test -w server && npm run test -w web",
     "sync-protocol": "node scripts/sync-protocol.mjs",
     "check-protocol": "node scripts/sync-protocol.mjs --check",
-    "prepack": "npm run build"
+    "prepack": "npm run build",
+    "postinstall": "node scripts/prepare-terminal.mjs"
   },
   "devDependencies": {
     "concurrently": "^9.1.2"
@@ -30,13 +31,15 @@
     "web/dist",
     "docs",
     "README.md",
-    "NOTICE"
+    "NOTICE",
+    "scripts/prepare-terminal.mjs"
   ],
   "engines": {
     "node": ">=22.19.0"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "^0.85.1",
+    "node-pty": "^1.1.0",
     "ws": "^8.18.0"
   },
   "license": "MIT"
