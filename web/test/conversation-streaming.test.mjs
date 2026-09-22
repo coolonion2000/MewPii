@@ -53,6 +53,41 @@ function snapshot(overrides = {}) {
   };
 }
 
+test('compaction is restored on late attach and cleared or replaced across sessions', () => {
+  const conv = new Conversation('/compaction-snapshot');
+  const running = { status: 'running', reason: 'overflow', startedAt: 100 };
+  conv.applySnapshot(snapshot({ isStreaming: false, compactionState: running }));
+  assert.deepEqual(conv.compaction, { reason: 'overflow' });
+  const completed = { ...running, status: 'completed', endedAt: 200, tokensBefore: 900000, estimatedTokensAfter: 80000 };
+  conv.applySnapshot(snapshot({ compactionState: completed }));
+  assert.equal(conv.compaction, undefined);
+  assert.deepEqual(conv.snapshot.compactionState, completed);
+  conv.applyEvent({ type: 'compaction_start', reason: 'manual', compactionState: { ...running, reason: 'manual' } });
+  assert.equal(conv.compaction.reason, 'manual');
+  conv.applyEvent({ type: 'compaction_end', compactionState: { status: 'cancelled', reason: 'manual' } });
+  assert.equal(conv.compaction, undefined);
+  assert.equal(conv.snapshot.compactionState.status, 'cancelled');
+  conv.applySnapshot(snapshot({ sessionId: 'another-session', compactionState: null }));
+  assert.equal(conv.compaction, undefined);
+  assert.equal(conv.snapshot.compactionState, null);
+});
+
+test('provider state survives reconnect snapshot and is cleared on settlement', () => {
+  const conversation = new Conversation('/provider-state');
+  conversation.snapshot = snapshot();
+  const state = { phase: 'waiting_headers', transport: 'sse', startedAt: 123, since: 456 };
+  conversation.applyEvent({ type: 'provider_request', state });
+  assert.deepEqual(conversation.snapshot.providerRequest, state);
+  conversation.applySnapshot(snapshot({ providerRequest: state }));
+  assert.deepEqual(conversation.snapshot.providerRequest, state);
+  conversation.applyEvent({ type: 'auto_retry_start', attempt: 1, maxAttempts: 1 });
+  conversation.applyEvent({ type: 'agent_settled' });
+  assert.equal(conversation.snapshot.providerRequest, undefined);
+  assert.equal(conversation.retry, undefined);
+  conversation.applySnapshot(snapshot({ isStreaming: false }));
+  assert.equal(conversation.snapshot.providerRequest, undefined);
+});
+
 test('conversation cache restores an in-flight message and active tool', () => {
   // The agent_start snapshot can lag the first event by one task. Active local
   // state must still make the cache resumable during that narrow race.

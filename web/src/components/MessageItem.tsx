@@ -1,8 +1,7 @@
 import { memo, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { IconX } from '../icons';
-import Markdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
+import MarkdownBody from './MessageMarkdownBody';
 import type { PiiMessage } from '../types';
 import type { ToolActivity } from '../api';
 import ToolCard, { type ToolCallBlock } from './ToolCard';
@@ -32,17 +31,12 @@ interface Props {
   onFork: (entryId: string) => void;
   onBranch: (entryId: string) => void;
   onOpenFile?: (path: string) => void;
+  cwd?: string;
   /** live counter data for the streaming message header (pi-web style) */
   live?: { model?: string; tokens?: number; tps?: number } | undefined;
 }
 
-const MARKDOWN_PLUGINS = [remarkGfm];
 const STREAMING_MARKDOWN_REFRESH_MS = 250;
-
-/** Keep expensive Markdown parsing behind a primitive-prop memo boundary. */
-const MarkdownBody = memo(function MarkdownBody({ text }: { text: string }) {
-  return <Markdown remarkPlugins={MARKDOWN_PLUGINS}>{text}</Markdown>;
-});
 
 /**
  * Streaming deltas may arrive faster than Markdown can parse a growing block.
@@ -53,9 +47,13 @@ const MarkdownBody = memo(function MarkdownBody({ text }: { text: string }) {
 const MessageMarkdown = memo(function MessageMarkdown({
   text,
   streaming,
+  cwd,
+  onOpenFile,
 }: {
   text: string;
   streaming: boolean;
+  cwd?: string;
+  onOpenFile?: (path: string) => void;
 }) {
   const latestText = useRef(text);
   latestText.current = text;
@@ -76,7 +74,7 @@ const MessageMarkdown = memo(function MessageMarkdown({
   if (!canRenderMessageMarkdown(text.length, streaming)) {
     return <pre className="message-plain-text">{visibleText}</pre>;
   }
-  return <MarkdownBody text={visibleText} />;
+  return <MarkdownBody text={visibleText} cwd={cwd} onOpenFile={onOpenFile} />;
 });
 
 function MessageActions({ entryId, text, onFork, onBranch }: { entryId?: string; text: string; onFork: (id: string) => void; onBranch: (id: string) => void }) {
@@ -101,7 +99,7 @@ function MessageActions({ entryId, text, onFork, onBranch }: { entryId?: string;
   );
 }
 
-function MessageItem({ message, streaming, toolResults, tools, language, onFork, onBranch, onOpenFile, live }: Props) {
+function MessageItem({ message, streaming, toolResults, tools, language, onFork, onBranch, onOpenFile, cwd, live }: Props) {
   const [preview, setPreview] = useState<string>();
   const entryId = message._entryId;
 
@@ -205,7 +203,7 @@ function MessageItem({ message, streaming, toolResults, tools, language, onFork,
           if (!text.trim()) return null;
           return (
             <div key={i} className="md">
-              <MessageMarkdown text={text} streaming={streaming} />
+              <MessageMarkdown text={text} streaming={streaming} cwd={cwd} onOpenFile={onOpenFile} />
             </div>
           );
         }
@@ -256,6 +254,7 @@ function sameMessageItem(previous: Props, next: Props): boolean {
     previous.onFork !== next.onFork ||
     previous.onBranch !== next.onBranch ||
     previous.onOpenFile !== next.onOpenFile ||
+    previous.cwd !== next.cwd ||
     !sameLiveMetrics(previous.live, next.live)
   )
     return false;

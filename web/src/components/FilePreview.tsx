@@ -17,7 +17,8 @@ interface Props {
   path: string;
   width?: number;
   embedded?: boolean;
-  revision?: number;
+  revision?: number | string;
+  pending?: boolean;
   diffScope?: string;
   onReference?: () => void;
   onNavigate?: (path: string) => void;
@@ -54,10 +55,11 @@ function formatJson(raw: string, ext: string): string {
 }
 
 /** Right-side file preview drawer (pi-web style): markdown rendering, JSON formatting, raw toggle. */
-function FilePreview({ cwd, path, width, agent, sessionId, onClose, embedded, revision, diffScope, onReference, onNavigate }: Props) {
+function FilePreview({ cwd, path, width, agent, sessionId, onClose, embedded, revision, pending = false, diffScope, onReference, onNavigate }: Props) {
   const requestGeneration = useRef(0);
   const [content, setContent] = useState<string>();
   const [error, setError] = useState<string>();
+  const [downloadAllowed, setDownloadAllowed] = useState(true);
   const [loading, setLoading] = useState(true);
   const [showRaw, setShowRaw] = useState(false);
   const [retry, setRetry] = useState(0);
@@ -82,9 +84,14 @@ function FilePreview({ cwd, path, width, agent, sessionId, onClose, embedded, re
     const controller = new AbortController();
     setLoading(true);
     setError(undefined);
+    setDownloadAllowed(true);
     setContent(undefined);
     setShowRaw(false);
     setNotice(undefined);
+    if (pending) {
+      setDownloadAllowed(false);
+      return () => controller.abort();
+    }
     if (isImage) {
       return () => controller.abort();
     }
@@ -94,15 +101,20 @@ function FilePreview({ cwd, path, width, agent, sessionId, onClose, embedded, re
         setContent(d.content ?? d.diff ?? '');
       })
       .catch((cause) => {
-        if (!controller.signal.aborted && generation === requestGeneration.current)
+        if (!controller.signal.aborted && generation === requestGeneration.current) {
+          setDownloadAllowed(cause instanceof FileApiError && [413, 415].includes(cause.status));
           setError(cause instanceof FileApiError && cause.status === 413 ? t('fileTooLarge')
-            : cause instanceof FileApiError && cause.status === 415 ? t('fileBinary') : String(cause));
+            : cause instanceof FileApiError && cause.status === 415 ? t('fileBinary')
+            : cause instanceof FileApiError && cause.status === 404 ? t('fileNotFound')
+            : cause instanceof FileApiError && (cause.status === 403 || /(?:path|symlink) escapes workspace/.test(cause.message)) ? t('fileAccessDenied')
+            : String(cause));
+        }
       })
       .finally(() => {
         if (!controller.signal.aborted && generation === requestGeneration.current) setLoading(false);
       });
     return () => controller.abort();
-  }, [dataUrl, isImage, revision, retry]);
+  }, [dataUrl, isImage, revision, retry, pending]);
 
   const fileName = path.split('/').pop() ?? path;
   const richMarkdown = diffScope === undefined && isMd && content !== undefined && canRenderRichMarkdown(content.length);
@@ -122,15 +134,15 @@ function FilePreview({ cwd, path, width, agent, sessionId, onClose, embedded, re
         {hasRichView && (
           <button className={`btn btn-sm ${showRaw ? 'tab-active' : ''}`} onClick={() => setShowRaw(true)}>{t('rawView')}</button>
         )}
-        <FileActions name={fileName} download={`${fileUrl}&download=1`} onReference={onReference}
+        <FileActions name={fileName} download={downloadAllowed ? `${fileUrl}&download=1` : undefined} onReference={onReference}
           onCopy={() => { void navigator.clipboard.writeText(fullFilePath(cwd, path)).then(() => setNotice(t('fileCopied')), e => setNotice(String(e))); }} />
         <button className="btn btn-icon" aria-label={t('close')} onClick={onClose}><IconX size={13} /></button>
       </div>
       <div className="fpp-body">
         {notice && <div className="fpp-large-preview-note" role="status">{notice}</div>}
-        {loading && <div className="file-loading" role="status">{t('fileLoading')}</div>}
-        {error && <div className="file-preview-error" role="alert"><p>{error}</p><button className="btn btn-sm" onClick={() => setRetry(v => v + 1)}>{t('retry')}</button> <a className="btn btn-sm" href={`${fileUrl}&download=1`} download>{t('downloadFile')}</a></div>}
-        {isImage && (
+        {(pending || loading) && <div className="file-loading" role="status">{t(pending ? 'fileToolPending' : 'fileLoading')}</div>}
+        {!pending && error && <div className="file-preview-error" role="alert"><p>{error}</p><button className="btn btn-sm" onClick={() => setRetry(v => v + 1)}>{t('retry')}</button> {downloadAllowed && <a className="btn btn-sm" href={`${fileUrl}&download=1`} download>{t('downloadFile')}</a>}</div>}
+        {!pending && isImage && (
           <img
             key={`${fileUrl}|${retry}|${revision}`}
             src={`${fileUrl}&v=${revision ?? 0}-${retry}`}

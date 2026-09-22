@@ -7,6 +7,7 @@ import {
   checkedJsonResponse,
   clampResizeWidth,
   collectToolCallIds,
+  hasConversationHistory,
   isContentBlock,
   MAX_FORMATTED_JSON_CHARS,
   MAX_FINAL_MESSAGE_MARKDOWN_CHARS,
@@ -20,6 +21,21 @@ import {
   sameToolCardMemoInputs,
   validContentBlocks,
 } from '../src/ui-reliability.ts';
+
+test('paged assistant/tool-only history remains a conversation after streaming ends', () => {
+  const page = [...Array(6).fill({ role: 'assistant' }), ...Array(5).fill({ role: 'toolResult' })];
+  assert.equal(hasConversationHistory(page, 5206, 5217), true);
+  assert.equal(hasConversationHistory([{ role: 'assistant' }], 0, 1), true);
+  assert.equal(hasConversationHistory([{ role: 'toolResult' }], 0, 1), true);
+  assert.equal(hasConversationHistory([], 100, 100), true);
+  assert.equal(hasConversationHistory([], 0, 5217), true);
+});
+
+test('only truly new sessions and custom-only startup injections show the hero', () => {
+  assert.equal(hasConversationHistory([], 0, 0), false);
+  assert.equal(hasConversationHistory([{ role: 'custom' }], 0, 1), false);
+  assert.equal(hasConversationHistory([{ role: 'user' }], 0, 0), true);
+});
 
 test('resize helpers clamp widths and preserve sidebar hysteresis', () => {
   assert.equal(clampResizeWidth(90, 170, 480), 170);

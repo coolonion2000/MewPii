@@ -1,4 +1,5 @@
 import { memo, useMemo, useState } from 'react';
+import SubagentTaskCard from './SubagentTaskCard';
 import type { PiiMessage } from '../types';
 import { stripAnsi, type ToolActivity } from '../api';
 import { t } from '../i18n';
@@ -136,7 +137,7 @@ function ToolCard({ call, result, activity, onOpenFile }: Props) {
 
   let inputNode: React.ReactNode = null;
   let showOutput = '';
-  if (open) {
+  if (open || name === 'subagent') {
     const { text: output, diff } = resultText(result);
     showOutput = preferredToolOutput(diff, output, activity?.liveOutput, running);
   }
@@ -149,6 +150,7 @@ function ToolCard({ call, result, activity, onOpenFile }: Props) {
     else inputNode = <DiffPre text={JSON.stringify(args, null, 2)} />;
   }
 
+  if (name === 'subagent') return <SubagentTaskCard call={call} output={showOutput} />;
   return (
     <div className="tool-card">
       <div className="tool-card-header" onClick={() => setUserToggled(!open)}>

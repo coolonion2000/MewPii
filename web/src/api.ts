@@ -29,6 +29,7 @@ import {
   type TranscriptNotice,
 } from "./state-utils";
 import { ReadinessWaiters } from "./readiness-waiters";
+import { notifyModelCatalogChanged } from "./ui-reliability";
 import {
   appendPartialEvent,
   isBatchablePartialEvent,
@@ -105,6 +106,7 @@ export async function deleteSession(path: string): Promise<void> {
 }
 
 export interface ModelsResponse {
+  catalogRefreshing?: boolean;
   providers: {
     id: string;
     name: string;
@@ -121,6 +123,29 @@ let modelsCache:
   | undefined;
 let modelsRequest: Promise<ModelsResponse> | undefined;
 let modelsGeneration = 0;
+let modelsPollTimer: ReturnType<typeof setTimeout> | undefined;
+let modelsPollAttempts = 0;
+
+function followCatalogRefresh(value: ModelsResponse): void {
+  if (!value.catalogRefreshing) {
+    clearTimeout(modelsPollTimer);
+    modelsPollTimer = undefined;
+    modelsPollAttempts = 0;
+    return;
+  }
+  if (modelsPollTimer || modelsPollAttempts >= 25) return;
+  modelsPollTimer = setTimeout(async () => {
+    modelsPollTimer = undefined;
+    modelsPollAttempts += 1;
+    try {
+      const next = await fetchModels(true);
+      // Cache is populated before subscribers read it; no extra catalog fetch.
+      if (!next.catalogRefreshing) notifyModelCatalogChanged();
+    } catch {
+      followCatalogRefresh(value);
+    }
+  }, 1000);
+}
 
 /** Deduplicate Composer/Settings model discovery across rapid view changes. */
 export async function fetchModels(force = false): Promise<ModelsResponse> {
@@ -136,11 +161,13 @@ export async function fetchModels(force = false): Promise<ModelsResponse> {
     return modelsCache.value;
   if (modelsRequest) return modelsRequest;
   const generation = modelsGeneration;
-  const loading = fetch("/api/models").then(async (res) => {
+  const loading = fetch("/api/models", { signal: AbortSignal.timeout(10_000) }).then(async (res) => {
     if (!res.ok) throw new Error(`models: ${res.status}`);
     const value = (await res.json()) as ModelsResponse;
-    if (generation === modelsGeneration)
+    if (generation === modelsGeneration) {
       modelsCache = { value, loadedAt: Date.now() };
+      followCatalogRefresh(value);
+    }
     return value;
   });
   const tracked = loading.finally(() => {
@@ -852,6 +879,8 @@ export class Conversation {
       messages: this.messages,
       historyFrom: this.historyFrom,
     };
+    this.compaction = snap.compactionState?.status === 'running'
+      ? { reason: snap.compactionState.reason } : undefined;
     this.totalMessages = staleSnapshot
       ? previousTotalMessages
       : (snap.totalMessages ?? snap.messages.length);
@@ -928,6 +957,10 @@ export class Conversation {
   ): void {
     const type = event.type as string;
     switch (type) {
+      case "provider_request":
+        if (this.snapshot) this.snapshot = { ...this.snapshot,
+          providerRequest: (event.state ?? undefined) as SessionSnapshot['providerRequest'] };
+        break;
       case "auto_retry_start":
         this.retry = {
           attempt: Number(event.attempt ?? 1),
@@ -942,9 +975,12 @@ export class Conversation {
         break;
       case "compaction_start":
         this.compaction = { reason: String(event.reason ?? "manual") };
+        if (this.snapshot) this.snapshot = { ...this.snapshot, providerRequest: undefined,
+          compactionState: (event.compactionState ?? { status: 'running', reason: this.compaction.reason, startedAt: now }) as SessionSnapshot['compactionState'] };
         break;
       case "compaction_end":
         this.compaction = undefined;
+        if (this.snapshot) this.snapshot = { ...this.snapshot, compactionState: (event.compactionState ?? null) as SessionSnapshot['compactionState'] };
         break;
       case "queue_update": {
         this.queue = {
@@ -1132,6 +1168,8 @@ export class Conversation {
         }
         break;
       case "agent_settled":
+        if (this.snapshot) this.snapshot = { ...this.snapshot, providerRequest: undefined };
+        this.retry = undefined;
         this.runStats.agentStartedAt = undefined;
         this.deltaSamples = [];
         break;

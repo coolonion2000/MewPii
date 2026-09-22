@@ -16,8 +16,13 @@ import MessageItem from './MessageItem';
 import ToolCard from './ToolCard';
 import Composer from './Composer';
 import StatsBar from './StatsBar';
+import ProviderActivity from './ProviderActivity';
+import { followChatTail } from '../chat-tail-follow';
+import { filePreviewState } from '../file-preview-state';
 import RunsChip, { type RunInfo } from './RunsChip';
 import SubagentPanel from './SubagentPanel';
+import ErrorBoundary from './ErrorBoundary';
+import { SubagentContext, useSubagentStore } from '../subagent-store';
 import { IconFolder, IconChevronDown } from '../icons';
 import ExtensionUI, { EditorWidgets, InlineQuestions, TranscriptNoticeView } from './ExtensionUI';
 import { IconTrash, IconPencil, IconX } from '../icons';
@@ -30,6 +35,7 @@ import {
 import {
   clampResizeWidth,
   collectToolCallIds,
+  hasConversationHistory,
   orphanRunningTools,
   validContentBlocks,
 } from '../ui-reliability';
@@ -42,6 +48,7 @@ import { t } from '../i18n';
 
 const Trajectory = lazy(() => import('./Trajectory'));
 const FilePreview = lazy(() => import('./FilePreview'));
+const SubagentRunDialog = lazy(() => import('./SubagentRunDialog'));
 
 interface Props {
   conv: Conversation;
@@ -110,21 +117,27 @@ function ChatView({ conv, onRefresh, onForked, projects, onSelectProject, dark, 
       document.removeEventListener('visibilitychange', onVisibility);
     };
   }, [conv.snapshot?.isStreaming]);
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const atBottomRef = useRef(true);
-  const userInteractingRef = useRef(false);
-  const interactionTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const tailFollowerRef = useRef<ReturnType<typeof followChatTail> | undefined>(undefined);
   const previewDragCleanup = useRef<(() => void) | undefined>(undefined);
   const [showJump, setShowJump] = useState(false);
 
-  const isNearBottom = () => {
-    const el = scrollRef.current;
-    if (!el) return true;
-    return el.scrollHeight - el.scrollTop - el.clientHeight < 80;
-  };
+  const bindScroll = useCallback((node: HTMLDivElement | null) => {
+    tailFollowerRef.current?.dispose();
+    tailFollowerRef.current = undefined;
+    const content = node?.querySelector<HTMLElement>('.chat-column');
+    if (node && content) tailFollowerRef.current = followChatTail(node, content, following => setShowJump(!following));
+  }, [conv, conv.snapshot?.sessionId]);
   const [showTraj, setShowTraj] = useState(false);
   const [draft, setDraft] = useState<string>();
   const [previewPath, setPreviewPath] = useState<string>();
+  const previewState = useMemo(() => filePreviewState(conv.snapshot?.cwd ?? conv.cwd, previewPath, conv.tools,
+    conv.messages, conv.streaming),
+  [previewPath, conv.tools, conv.messages, conv.streaming, conv.cwd, conv.snapshot?.cwd]);
+  const subagents = useSubagentStore(conv.snapshot?.sessionFile);
+  const subagentContext = useMemo(() => ({ ...subagents, open: (id: string) => {
+    setPreviewPath(undefined);
+    subagents.open(id);
+  } }), [subagents]);
   const [projMenuOpen, setProjMenuOpen] = useState(false);
   useEffect(() => {
     if (!projMenuOpen) return;
@@ -169,7 +182,7 @@ function ChatView({ conv, onRefresh, onForked, projects, onSelectProject, dark, 
       handle.removeEventListener('lostpointercapture', onCancel);
       if (handle.hasPointerCapture?.(pointerId)) handle.releasePointerCapture(pointerId);
       document.body.classList.remove('is-resizing');
-      userInteractingRef.current = false;
+      tailFollowerRef.current?.resume();
       previewDragCleanup.current = undefined;
     };
     const finish = (event?: PointerEvent) => {
@@ -193,7 +206,7 @@ function ChatView({ conv, onRefresh, onForked, projects, onSelectProject, dark, 
       if (frame) cancelAnimationFrame(frame);
       removeListeners();
     };
-    userInteractingRef.current = true;
+    tailFollowerRef.current?.pause();
     document.body.classList.add('is-resizing');
     handle.setPointerCapture?.(pointerId);
     window.addEventListener('pointermove', onMove, { passive: true });
@@ -205,7 +218,6 @@ function ChatView({ conv, onRefresh, onForked, projects, onSelectProject, dark, 
 
   useEffect(() => () => {
     previewDragCleanup.current?.();
-    clearTimeout(interactionTimerRef.current);
   }, []);
   const snap = conv.snapshot;
   const newSessionDisabled = Boolean(snap?.isStreaming || conv.compaction);
@@ -280,44 +292,6 @@ function ChatView({ conv, onRefresh, onForked, projects, onSelectProject, dark, 
     return results;
   }, [conv.messages]);
 
-  const beginScrollInteraction = useCallback(() => {
-    clearTimeout(interactionTimerRef.current);
-    userInteractingRef.current = true;
-  }, []);
-  const endScrollInteraction = useCallback(() => {
-    clearTimeout(interactionTimerRef.current);
-    interactionTimerRef.current = setTimeout(() => {
-      userInteractingRef.current = false;
-    }, 80);
-  }, []);
-  const noteWheelInteraction = useCallback(() => {
-    beginScrollInteraction();
-    interactionTimerRef.current = setTimeout(() => {
-      userInteractingRef.current = false;
-    }, 180);
-  }, [beginScrollInteraction]);
-  useEffect(() => {
-    window.addEventListener('pointerup', endScrollInteraction);
-    window.addEventListener('pointercancel', endScrollInteraction);
-    return () => {
-      window.removeEventListener('pointerup', endScrollInteraction);
-      window.removeEventListener('pointercancel', endScrollInteraction);
-    };
-  }, [endScrollInteraction]);
-
-  // auto-scroll while streaming — ONLY when the user is already at the bottom;
-  // scrolling up to read history must never yank them back down
-  const lastMsg = streamingMessage ?? baseMessages[baseMessages.length - 1];
-  useEffect(() => {
-    const frame = requestAnimationFrame(() => {
-      const el = scrollRef.current;
-      if (el && atBottomRef.current && !userInteractingRef.current)
-        el.scrollTop = el.scrollHeight;
-      setShowJump(!atBottomRef.current);
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [lastMsg, conv.streaming, conv.tools, conv.snapshot?.isStreaming, conv.transcriptNoticeRevision]);
-
   const title = useMemo(
     () => snap?.name || firstUserText(baseMessages) || '新会话',
     [baseMessages, snap?.name],
@@ -343,17 +317,13 @@ function ChatView({ conv, onRefresh, onForked, projects, onSelectProject, dark, 
         const text = data?.editorText as string | undefined;
         if (text) setDraft(text);
         else conv.toast(t('branchedHere'));
-        atBottomRef.current = true;
-        requestAnimationFrame(() => {
-          const el = scrollRef.current;
-          if (el) el.scrollTop = el.scrollHeight;
-        });
+        tailFollowerRef.current?.jumpToBottom();
       })
       .catch((cause) =>
         conv.reportError(cause instanceof Error ? cause.message : String(cause)),
       );
   }, [conv]);
-  const handleOpenFile = useCallback((path: string) => setPreviewPath(path), []);
+  const handleOpenFile = useCallback((path: string) => { subagents.close(); setPreviewPath(path); }, [subagents.close]);
   const handleClosePreview = useCallback(() => setPreviewPath(undefined), []);
   const handleExport = useCallback(() => {
     void import('../export')
@@ -375,11 +345,11 @@ function ChatView({ conv, onRefresh, onForked, projects, onSelectProject, dark, 
   // This is deliberately a plain derived value rather than a hook: existing
   // sessions return a loading placeholder until their first snapshot, and all
   // hooks must run in the same order before and after that snapshot arrives.
-  const hasUserMessage = baseMessages.some((message) => message.role === 'user');
+  const hasHistory = hasConversationHistory(baseMessages, conv.historyFrom, conv.totalMessages);
 
   // Existing sessions should show a loading state until their first snapshot;
   // rendering the new-session hero here makes a successful refresh look empty.
-  if (!snap && conv.sessionPath) {
+  if (!snap && (conv.sessionPath || conv.requestedSessionId)) {
     return (
       <div className="session-loading" role={conv.error ? 'alert' : 'status'}>
         {!conv.error && <span className="working-dot" aria-hidden="true" />}
@@ -393,7 +363,7 @@ function ChatView({ conv, onRefresh, onForked, projects, onSelectProject, dark, 
   }
 
   // custom/system injections (e.g. ADHD ruleset) don't count as conversation
-  if (!hasUserMessage && !conv.snapshot?.isStreaming) {
+  if (!hasHistory && !conv.snapshot?.isStreaming && !conv.compaction) {
     return (
       <>
         <StatsBar conv={conv} />
@@ -459,7 +429,7 @@ function ChatView({ conv, onRefresh, onForked, projects, onSelectProject, dark, 
   }
 
   return (
-    <>
+    <SubagentContext.Provider value={subagentContext}>
       <div className="chat-header">
         <div className="chat-session-title" title={title}>{title}</div>
         <div className="spacer" />
@@ -526,7 +496,7 @@ function ChatView({ conv, onRefresh, onForked, projects, onSelectProject, dark, 
 
       <StatsBar conv={conv} />
 
-      <div className="chat-body">
+      <div className={`chat-body ${subagents.selected ? 'has-subagent-detail' : ''}`}>
       <div className="chat-main">
       {showTraj ? (
         <div className="chat-scroll">
@@ -537,15 +507,8 @@ function ChatView({ conv, onRefresh, onForked, projects, onSelectProject, dark, 
       ) : (
       <div
         className="chat-scroll"
-        ref={scrollRef}
-        onPointerDown={beginScrollInteraction}
-        onPointerUp={endScrollInteraction}
-        onPointerCancel={endScrollInteraction}
-        onWheel={noteWheelInteraction}
-        onScroll={() => {
-          atBottomRef.current = isNearBottom();
-          setShowJump(!atBottomRef.current);
-        }}
+        ref={bindScroll}
+        tabIndex={0}
       >
         <div className="chat-column">
           {conv.historyFrom > 0 && (
@@ -565,6 +528,7 @@ function ChatView({ conv, onRefresh, onForked, projects, onSelectProject, dark, 
             <TranscriptNoticeView key={notice.id} notice={notice} />
           ))}
           <FinalizedTimeline
+            cwd={snap?.cwd ?? conv.cwd}
             messages={baseMessages}
             messageKeys={messageKeys}
             renderKeys={renderKeys}
@@ -579,6 +543,7 @@ function ChatView({ conv, onRefresh, onForked, projects, onSelectProject, dark, 
           {streamingMessage && streamingRenderKey && (
             <Fragment key={streamingRenderKey}>
               <MessageItem
+                cwd={snap?.cwd ?? conv.cwd}
                 message={streamingMessage}
                 streaming
                 live={(() => {
@@ -631,7 +596,13 @@ function ChatView({ conv, onRefresh, onForked, projects, onSelectProject, dark, 
               </div>
             </div>
           )}
-          {conv.snapshot?.isStreaming && (() => {
+          {conv.connected && conv.snapshot?.providerRequest && !conv.compaction &&
+            (conv.snapshot.providerRequest.phase !== 'streaming' ||
+              (!validContentBlocks(streamingMessage?.content).some(block =>
+                (block.type === 'text' && String(block.text ?? '').trim()) ||
+                (block.type === 'thinking' && String(block.thinking ?? '').trim()) || block.type === 'toolCall') && !orphanTools.length)) &&
+            <ProviderActivity state={conv.snapshot.providerRequest} language={language} />}
+          {conv.connected && conv.snapshot?.isStreaming && !conv.snapshot.providerRequest && !conv.retry && !conv.compaction && (() => {
             const hasContent = validContentBlocks(streamingMessage?.content).some(
               (block) =>
                 (block.type === 'text' && String(block.text ?? '').trim()) ||
@@ -650,7 +621,7 @@ function ChatView({ conv, onRefresh, onForked, projects, onSelectProject, dark, 
               </div>
             );
           })()}
-          {conv.retry && (
+          {conv.connected && conv.retry && !conv.snapshot?.providerRequest && (
             <div className="retry-banner">
               <span className="working-dot" style={{ background: 'var(--dsw-alias-state-warn-primary)' }} />
               <span>
@@ -660,7 +631,7 @@ function ChatView({ conv, onRefresh, onForked, projects, onSelectProject, dark, 
               </span>
             </div>
           )}
-          {conv.compaction && (
+          {conv.connected && conv.compaction && (
             <div className="compaction-banner">
               <span className="composer-spinner" style={{ width: 13, height: 13 }} />
               <span>
@@ -671,9 +642,22 @@ function ChatView({ conv, onRefresh, onForked, projects, onSelectProject, dark, 
                     ? t('compactReasonManual')
                     : conv.compaction.reason === 'threshold'
                       ? t('compactReasonThreshold')
-                      : t('compactReasonOverflow')}
+                      : conv.compaction.reason === 'overflow' ? t('compactReasonOverflow') : ''}
                 </span>
               </span>
+            </div>
+          )}
+          {conv.connected && snap?.compactionState && snap.compactionState.status !== 'running' && (
+            <div className="compaction-banner" role="status">
+              {language.startsWith('zh')
+                ? `最近一次压缩${snap.compactionState.status === 'completed' ? '已完成' : snap.compactionState.status === 'cancelled' ? '已取消' : '失败'}`
+                : `Last compaction: ${snap.compactionState.status}`}
+              {snap.compactionState.status === 'completed' && snap.compactionState.tokensBefore !== undefined && (
+                <span className="dim"> · {snap.compactionState.tokensBefore.toLocaleString()} tok
+                  {snap.compactionState.estimatedTokensAfter !== undefined && ` → ≈${snap.compactionState.estimatedTokensAfter.toLocaleString()} tok`}
+                </span>
+              )}
+              {snap.compactionState.errorMessage && <span className="dim"> · {snap.compactionState.errorMessage}</span>}
             </div>
           )}
           {conv.lastError && (
@@ -736,9 +720,7 @@ function ChatView({ conv, onRefresh, onForked, projects, onSelectProject, dark, 
         <button
           className="jump-bottom"
           onClick={() => {
-            const el = scrollRef.current;
-            if (el) el.scrollTop = el.scrollHeight;
-            atBottomRef.current = true;
+            tailFollowerRef.current?.jumpToBottom();
             setShowJump(false);
           }}
         >
@@ -747,23 +729,29 @@ function ChatView({ conv, onRefresh, onForked, projects, onSelectProject, dark, 
       )}
       <EditorWidgets conv={conv} placement="aboveEditor" />
       <div className="composer-wrap">
+        <SubagentPanel key={snap?.sessionFile} />
         <InlineQuestions conv={conv} />
         <Composer conv={conv} draft={draft} onDraft={setDraft} />
       </div>
       <EditorWidgets conv={conv} placement="belowEditor" />
-      <SubagentPanel
-        sessionFile={snap?.sessionFile}
-        cwd={snap?.cwd ?? conv.cwd}
-        onOpenParent={onForked}
-      />
       </div>
-      {previewPath && (
+      {subagents.selected && <>
+        <div className="preview-resize" onPointerDown={startPreviewDrag} />
+        <ErrorBoundary key={`${snap?.sessionFile}:${subagents.selected}`} inline onDismiss={subagents.close}>
+          <Suspense fallback={<div className="subagent-detail-loading"><button className="btn" onClick={subagents.close}>{t('close')}</button>{t('subagentLoading')}</div>}>
+            <SubagentRunDialog width={previewWidth} />
+          </Suspense>
+        </ErrorBoundary>
+      </>}
+      {previewPath && !subagents.selected && (
         <>
           <div className="preview-resize" onPointerDown={startPreviewDrag} />
           <Suspense fallback={null}>
             <FilePreview
               cwd={snap?.cwd ?? conv.cwd}
               path={previewPath}
+              pending={previewState.pending}
+              revision={previewState.revision}
               onNavigate={handleOpenFile}
               width={previewWidth}
               agent={conv.agent}
@@ -777,11 +765,12 @@ function ChatView({ conv, onRefresh, onForked, projects, onSelectProject, dark, 
       </div>
 
       <ExtensionUI conv={conv} />
-    </>
+    </SubagentContext.Provider>
   );
 }
 
 interface FinalizedTimelineProps {
+  cwd: string;
   messages: PiiMessage[];
   messageKeys: string[];
   renderKeys: string[];
@@ -796,6 +785,7 @@ interface FinalizedTimelineProps {
 
 /** A streaming text delta must not rebuild or rescan the finalized transcript. */
 const FinalizedTimeline = memo(function FinalizedTimeline({
+  cwd,
   messages,
   messageKeys,
   renderKeys,
@@ -810,6 +800,7 @@ const FinalizedTimeline = memo(function FinalizedTimeline({
   return messages.map((message, index) => (
     <Fragment key={renderKeys[index]}>
       <MessageItem
+        cwd={cwd}
         message={message}
         streaming={false}
         toolResults={toolResults}

@@ -3,6 +3,16 @@ export interface SidebarResizeResult {
   width: number;
 }
 
+/** A paged transcript can contain only assistant/tool turns; that is not a new session. */
+export function hasConversationHistory(
+  messages: readonly { role: string }[],
+  historyFrom: number,
+  totalMessages: number,
+): boolean {
+  return historyFrom > 0 || totalMessages > messages.length || messages.some(message =>
+    message.role === 'user' || message.role === 'assistant' || message.role === 'toolResult');
+}
+
 export type SidebarDragPhase =
   | 'may-collapse'
   | 'collapsed'

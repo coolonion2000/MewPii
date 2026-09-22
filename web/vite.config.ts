@@ -12,5 +12,7 @@ export default defineConfig({
       '/ws': { target: 'ws://127.0.0.1:31041', ws: true },
     },
   },
-  build: { outDir: 'dist' },
+  // Open tabs still import fingerprinted chunks from the version they loaded.
+  // Keep those immutable assets available when rebuilding a running instance.
+  build: { outDir: 'dist', emptyOutDir: false },
 });
