@@ -3,6 +3,8 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { createServer } from 'node:http';
+import { ModelRuntime } from '@earendil-works/pi-coding-agent';
 import {
   ModelServicesCache,
   validateModelConfigFile,
@@ -23,11 +25,125 @@ function fakeServices(id, error) {
   };
 }
 
+const tick = () => new Promise(resolve => setImmediate(resolve));
+
+test('Pi catalog persists new models and an already open session can reload them without network', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'mewpii-catalog-store-'));
+  const server = createServer();
+  let requests = 0;
+  try {
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    const options = {
+      modelsPath: join(root, 'models.json'), authPath: join(root, 'auth.json'),
+      modelsStorePath: join(root, 'models-store.json'), allowModelNetwork: false,
+      catalogBaseUrl: `http://127.0.0.1:${server.address().port}`,
+    };
+    await writeFile(options.authPath, JSON.stringify({ deepseek: { type: 'api_key', key: 'test-only-placeholder' } }));
+    const session = await ModelRuntime.create(options);
+    const baseline = session.getModel('deepseek', 'deepseek-v4-flash');
+    assert.ok(baseline);
+    server.on('request', (req, res) => {
+      requests++;
+      assert.equal(req.url, '/api/models/providers/deepseek');
+      assert.equal(req.headers.authorization, undefined, 'public catalog needs no user key');
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Last-Modified': new Date('2030-01-01').toUTCString() });
+      res.end(JSON.stringify([{ ...baseline, id: 'deepseek-flash', name: 'DeepSeek V4.1 Flash', input: ['text', 'image'] }]));
+    });
+    const candidate = await ModelRuntime.create(options);
+    const result = await candidate.refresh({ providers: ['deepseek'], allowNetwork: true });
+    assert.equal(result.errors.size, 0);
+    assert.equal(candidate.getModel('deepseek', 'deepseek-flash').name, 'DeepSeek V4.1 Flash');
+    assert.equal(session.getModel('deepseek', 'deepseek-flash'), undefined);
+    await session.refresh({ allowNetwork: false });
+    assert.deepEqual(session.getModel('deepseek', 'deepseek-flash').input, ['text', 'image']);
+    assert.equal(requests, 1);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('background catalog is nonblocking, single-flight and throttled after success', async () => {
+  const gate = deferred();
+  const local = fakeServices('local'), remote = fakeServices('remote');
+  let calls = 0;
+  const cache = new ModelServicesCache({
+    readRevision: async () => ({ models: 'm', auth: 'a' }),
+    create: async () => local,
+    refreshCatalog: async () => { calls++; await gate.promise; return remote; },
+  });
+  assert.equal(await cache.get(), local);
+  assert.equal(cache.catalogRefreshing, true);
+  assert.equal(await cache.get(), local);
+  assert.equal(calls, 1);
+  gate.resolve(); await tick();
+  assert.equal(cache.catalogRefreshing, false);
+  assert.equal(await cache.get(), remote);
+  assert.equal(calls, 1);
+});
+
+test('partial catalog publishes available updates and retries unavailable providers sooner', async () => {
+  let now = 100, calls = 0;
+  const local = fakeServices('local'), updated = fakeServices('updated');
+  const cache = new ModelServicesCache({
+    readRevision: async () => ({ models: 'm', auth: 'a' }), create: async () => local,
+    now: () => now,
+    refreshCatalog: async () => { calls++; return { services: updated, retrySoon: true }; },
+  });
+  await cache.get(); await tick();
+  assert.equal(await cache.get(), updated); assert.equal(calls, 1);
+  now += 60_001;
+  await cache.get(); await tick(); assert.equal(calls, 2);
+});
+
+test('catalog failure preserves local models and has retry backoff', async () => {
+  let now = 100, calls = 0;
+  const local = fakeServices('local');
+  const cache = new ModelServicesCache({
+    readRevision: async () => ({ models: 'm', auth: 'a' }), create: async () => local,
+    now: () => now,
+    refreshCatalog: async () => { calls++; throw new Error('offline'); },
+  });
+  assert.equal(await cache.get(), local); await tick();
+  assert.equal(await cache.get(), local); assert.equal(calls, 1);
+  now += 60_001;
+  assert.equal(await cache.get(), local); await tick(); assert.equal(calls, 2);
+});
+
+test('timed out catalog cannot publish its late result', async () => {
+  const gate = deferred(), local = fakeServices('local');
+  let signal;
+  const cache = new ModelServicesCache({
+    readRevision: async () => ({ models: 'm', auth: 'a' }), create: async () => local,
+    catalogTimeoutMs: 10,
+    refreshCatalog: async (_, s) => { signal = s; await gate.promise; return fakeServices('late'); },
+  });
+  await cache.get();
+  await new Promise(resolve => setTimeout(resolve, 25));
+  assert.equal(signal.aborted, true); assert.equal(cache.catalogRefreshing, false);
+  gate.resolve(); await tick();
+  assert.equal(await cache.get(), local);
+});
+
+test('catalog candidate cannot overwrite a newer credential or config revision', async () => {
+  const gate = deferred(), local = fakeServices('local');
+  let revision = { models: 'm1', auth: 'a1' }, calls = 0;
+  const cache = new ModelServicesCache({
+    readRevision: async () => ({ ...revision }), create: async () => local,
+    refreshAuth: async () => {},
+    refreshCatalog: async () => { calls++; if (calls === 1) await gate.promise; return local; },
+  });
+  await cache.get(); revision.auth = 'a2'; await cache.get();
+  gate.resolve(); await tick();
+  assert.equal(await cache.get(), local); await tick();
+  assert.equal(calls, 2, 'stale candidate must permit a fresh background check');
+});
+
 test("model services cold initialization is single-flight", async () => {
   const gate = deferred();
   let creates = 0;
   const expected = fakeServices("cold");
-  const cache = new ModelServicesCache({
+  const cache = new ModelServicesCache({ refreshCatalog: false,
     readRevision: async () => ({ models: "m1", auth: "a1" }),
     create: async () => {
       creates += 1;
@@ -48,7 +164,7 @@ test("auth changes refresh the warm runtime once and model changes recreate it",
   let revision = { models: "m1", auth: "a1" };
   let creates = 0;
   let authRefreshes = 0;
-  const cache = new ModelServicesCache({
+  const cache = new ModelServicesCache({ refreshCatalog: false,
     readRevision: async () => ({ ...revision }),
     create: async () => fakeServices(`runtime-${++creates}`),
     refreshAuth: async () => {
@@ -76,7 +192,7 @@ test("a failed warm refresh keeps the last complete model list and retries", asy
   let fail = true;
   let refreshes = 0;
   const errors = [];
-  const cache = new ModelServicesCache({
+  const cache = new ModelServicesCache({ refreshCatalog: false,
     readRevision: async () => ({ ...revision }),
     create: async () => fakeServices("stable"),
     refreshAuth: async () => {
@@ -98,7 +214,7 @@ test("a failed warm refresh keeps the last complete model list and retries", asy
 
 test("explicit invalidation recreates services even when file stamps collide", async () => {
   let creates = 0;
-  const cache = new ModelServicesCache({
+  const cache = new ModelServicesCache({ refreshCatalog: false,
     readRevision: async () => ({ models: "same", auth: "same" }),
     create: async () => fakeServices(`runtime-${++creates}`),
   });
@@ -115,7 +231,7 @@ test("callers converge when model files change during initialization", async () 
   const firstCreate = deferred();
   const createStarted = deferred();
   let creates = 0;
-  const cache = new ModelServicesCache({
+  const cache = new ModelServicesCache({ refreshCatalog: false,
     readRevision: async () => ({ ...revision }),
     create: async () => {
       creates += 1;
@@ -162,7 +278,7 @@ test("default cache observes credentials written by another process", async () =
   process.env.PI_CODING_AGENT_DIR = agentDir;
 
   try {
-    const cache = new ModelServicesCache();
+    const cache = new ModelServicesCache({ refreshCatalog: false });
     const before = await cache.get();
     const model = before.registry.find("cache-probe", "probe-model");
     assert.ok(model);
@@ -206,7 +322,7 @@ test("a malformed models.json cannot replace a warm healthy model list", async (
 
   try {
     const errors = [];
-    const cache = new ModelServicesCache({
+    const cache = new ModelServicesCache({ refreshCatalog: false,
       onError: (reason, error) => errors.push([reason, error.message]),
     });
     const healthy = await cache.get();
@@ -258,7 +374,7 @@ test("a malformed models.json fails cold initialization with its parse error", a
   process.env.PI_CODING_AGENT_DIR = agentDir;
 
   try {
-    const cache = new ModelServicesCache({ onError: () => undefined });
+    const cache = new ModelServicesCache({ refreshCatalog: false, onError: () => undefined });
     await assert.rejects(
       cache.get(),
       /model registry refresh failed: Failed to parse models\.json/,

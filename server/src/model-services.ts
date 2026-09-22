@@ -21,14 +21,40 @@ interface RefreshOutcome {
   applied: boolean;
 }
 
+interface CatalogOutcome {
+  services: ModelServices;
+  retrySoon?: boolean;
+}
+
 interface ModelServicesCacheOptions {
   readRevision?: () => Promise<ModelFilesRevision>;
   create?: () => Promise<ModelServices>;
   refreshAuth?: (services: ModelServices) => Promise<void>;
+  refreshCatalog?: false | ((services: ModelServices, signal: AbortSignal) => Promise<ModelServices | CatalogOutcome>);
+  catalogTimeoutMs?: number;
+  now?: () => number;
   onError?: (reason: "models" | "auth", error: unknown) => void;
 }
 
 const MODEL_REFRESH_TIMEOUT_MS = 10_000;
+const CATALOG_REFRESH_INTERVAL_MS = 4 * 60 * 60 * 1000;
+const CATALOG_RETRY_INTERVAL_MS = 60_000;
+
+/** Refresh a separate runtime, retaining cached catalogs for unavailable providers. */
+async function refreshModelCatalog(current: ModelServices, signal: AbortSignal): Promise<ModelServices | CatalogOutcome> {
+  if (process.env.PI_OFFLINE !== undefined) return current;
+  const providers = current.runtime.getProviders()
+    .filter(p => p.id !== 'radius' && current.runtime.hasConfiguredAuth(p.id))
+    .map(p => p.id);
+  if (!providers.length) return current;
+  const candidate = await createModelServices();
+  signal.throwIfAborted();
+  const result = await candidate.runtime.refresh({ allowNetwork: true, providers, signal });
+  signal.throwIfAborted();
+  if (result.aborted || result.errors.size >= providers.length) throw new Error('catalog refresh incomplete');
+  assertHealthyModelServices(candidate);
+  return { services: candidate, retrySoon: result.errors.size > 0 };
+}
 
 async function fileRevision(path: string): Promise<string> {
   try {
@@ -106,6 +132,12 @@ export async function validateModelConfigFile(path: string): Promise<void> {
  * model configuration and credentials written by another pi/Codex process.
  */
 export class ModelServicesCache {
+  private catalogTask?: Promise<void>;
+  private catalogBase?: ModelServices;
+  private nextCatalogAt = 0;
+  private readonly refreshCatalog: ModelServicesCacheOptions['refreshCatalog'];
+  private readonly catalogTimeoutMs: number;
+  private readonly now: () => number;
   private services: ModelServices | undefined;
   private revision: ModelFilesRevision | undefined;
   private inFlight: Promise<RefreshOutcome> | undefined;
@@ -120,6 +152,9 @@ export class ModelServicesCache {
   ) => void;
 
   constructor(options: ModelServicesCacheOptions = {}) {
+    this.refreshCatalog = options.refreshCatalog ?? refreshModelCatalog;
+    this.catalogTimeoutMs = options.catalogTimeoutMs ?? 20_000;
+    this.now = options.now ?? Date.now;
     this.readRevision = options.readRevision ?? readModelFilesRevision;
     this.create = options.create ?? createModelServices;
     this.refreshAuth = options.refreshAuth ?? refreshModelAuth;
@@ -139,6 +174,60 @@ export class ModelServicesCache {
   }
 
   async get(): Promise<ModelServices> {
+    const services = await this.getLocal();
+    this.scheduleCatalogRefresh(services);
+    return services;
+  }
+
+  get catalogRefreshing(): boolean { return this.catalogTask !== undefined; }
+
+  private scheduleCatalogRefresh(services: ModelServices): void {
+    if (!this.refreshCatalog) return;
+    if (this.catalogBase !== services) {
+      this.catalogBase = services;
+      this.nextCatalogAt = 0;
+    }
+    if (this.catalogTask || this.now() < this.nextCatalogAt) return;
+    const revision = this.revision;
+    const invalidation = this.invalidation;
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout>;
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        reject(new Error('catalog refresh timeout'));
+      }, this.catalogTimeoutMs);
+    });
+    const refreshCatalog = this.refreshCatalog;
+    const task = (async () => {
+      try {
+        const result = await Promise.race([
+          Promise.resolve().then(() => refreshCatalog(services, controller.signal)), deadline,
+        ]);
+        const { services: candidate, retrySoon } = 'services' in result ? result : { services: result, retrySoon: false };
+        const latest = await this.readRevision();
+        if (this.services !== services || this.invalidation !== invalidation || !sameRevision(revision, latest)) {
+          this.nextCatalogAt = 0;
+          console.info('[models] catalog_refresh status=discarded reason=local_state_changed');
+          return;
+        }
+        assertHealthyModelServices(candidate);
+        this.services = candidate;
+        this.catalogBase = candidate;
+        this.nextCatalogAt = this.now() + (retrySoon ? CATALOG_RETRY_INTERVAL_MS : CATALOG_REFRESH_INTERVAL_MS);
+        console.info(`[models] catalog_refresh status=${retrySoon ? 'partial' : 'ok'} source=pi_catalog retry_soon=${!!retrySoon}`);
+      } catch {
+        this.nextCatalogAt = this.now() + CATALOG_RETRY_INTERVAL_MS;
+        console.warn(`[models] catalog_refresh status=failed reason=${controller.signal.aborted ? 'timeout' : 'refresh_error'} fallback=local retry_ms=${CATALOG_RETRY_INTERVAL_MS}`);
+      } finally {
+        clearTimeout(timer!);
+        this.catalogTask = undefined;
+      }
+    })();
+    this.catalogTask = task;
+  }
+
+  private async getLocal(): Promise<ModelServices> {
     // A file can change while an earlier refresh is running. Re-check after
     // joining the single-flight so all callers converge on the newest state.
     for (let attempt = 0; attempt < 3; attempt++) {
@@ -193,6 +282,7 @@ export class ModelServicesCache {
         this.services = next;
         this.revision = requested;
         this.appliedInvalidation = requestedInvalidation;
+        this.nextCatalogAt = 0;
         return { services: next!, applied: true };
       } catch (error) {
         this.onError(reason, error);
