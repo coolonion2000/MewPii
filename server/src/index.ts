@@ -39,12 +39,15 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { ClientCommand, ProjectGroup, ServerMessage } from "./protocol.js";
 import { SessionHost } from "./session-host.js";
+import { initializeProviderNetwork } from './provider-network.js';
 import { SessionCatalog } from "./session-catalog.js";
 import {
   isPathInside,
   selectStaticRepresentation,
 } from "./static-assets.js";
 import { hasRunningSubagentRuns } from "./subagent-activity.js";
+import { readSessionPreview, readSessionUsage, readTextTail } from "./subagent-run-details.js";
+import { presentRun, type RunRecord } from "./subagent-presentation.js";
 import { resolveToolAuthorizedPreviewPath } from "./file-preview-access.js";
 import { handleWorkspaceFiles, FileRequestError } from "./workspace-files.js";
 import { PendingHostCreations, type HostPreviewListener } from "./pending-host-creations.js";
@@ -126,6 +129,7 @@ Always set a password, and prefer an HTTPS tunnel or reverse proxy
 }
 
 const options = parseOptions(process.argv.slice(2));
+if (!options.uiOnly) initializeProviderNetwork();
 options.agent = options.agent ?? process.env.PII_AGENT_SERVER;
 options.agentName = options.agentName ?? process.env.PII_AGENT_NAME;
 options.agentToken =
@@ -487,10 +491,12 @@ function bumpSessionsVersion(): void {
 }
 
 /** Synthesize sidebar entries for in-flight pi-subagents runs (files land lazily). */
-function listVirtualSubagentRuns(
+async function listVirtualSubagentRuns(
   realNested: Set<string>,
-): import("./protocol").SessionSummary[] {
-  const out: import("./protocol").SessionSummary[] = [];
+  parent?: string,
+): Promise<(import("./protocol").SessionSummary & { presentation: Awaited<ReturnType<typeof presentRun>> })[]> {
+  const out: (import("./protocol").SessionSummary & { presentation: Awaited<ReturnType<typeof presentRun>> })[] = [];
+  const nativeViews = Array.from(hosts.values()).flatMap(host => host.nativeSubagentViews());
   const tmp = tmpdir();
   let scopeDirs: string[] = [];
   try {
@@ -522,6 +528,7 @@ function listVirtualSubagentRuns(
           mode?: string;
           chainStepCount?: number;
         };
+        if (parent && status.sessionId !== parent) continue;
         // running runs always show; finished runs stay visible for a day so the
         // user can still open the run view (transcripts live outside listAll)
         const isRunning = status.state === "running";
@@ -530,13 +537,7 @@ function listVirtualSubagentRuns(
           if (age > 24 * 3600_000) continue;
         }
         // dead pid on a running-state entry = stale entry from a crashed process
-        if (isRunning && typeof status.pid === "number") {
-          try {
-            process.kill(status.pid, 0);
-          } catch {
-            continue;
-          }
-        }
+        // Keep interrupted runs visible so their details remain inspectable.
         // agent name comes from the artifacts meta file
         let agent = "subagent";
         const artifactsDir = status.artifactsDir;
@@ -569,6 +570,7 @@ function listVirtualSubagentRuns(
         if (!isRunning && realNested.has(`${parentFile}|${displayName}`))
           continue;
         out.push({
+          presentation: await presentRun(status as RunRecord, join(root, runId), Array.from(hosts.values(), host => host.runView()), nativeViews),
           path: `pi-subagents-run://${runId}`,
           id: runId,
           cwd: status.cwd ?? "",
@@ -1204,9 +1206,7 @@ async function handleApi(
 
   if (path === "/api/subagent-runs" && req.method === "GET") {
     const parent = url.searchParams.get("parent") ?? "";
-    const runs = listVirtualSubagentRuns(new Set()).filter(
-      (v) => !parent || v.parentSessionPath === parent,
-    );
+    const runs = await listVirtualSubagentRuns(new Set(), parent);
     sendJson(res, 200, { runs });
     return true;
   }
@@ -1215,6 +1215,11 @@ async function handleApi(
     const runId = url.searchParams.get("runId") ?? "";
     if (!/^[a-z0-9_\-|]+$/i.test(runId)) {
       sendJson(res, 400, { error: "bad runId" });
+      return true;
+    }
+    const stepQuery = url.searchParams.get("step");
+    if (stepQuery !== null && !/^\d{1,4}$/.test(stepQuery)) {
+      sendJson(res, 400, { error: "bad step index" });
       return true;
     }
     const tmp = tmpdir();
@@ -1239,6 +1244,11 @@ async function handleApi(
       sendJson(res, 404, { error: "run not found" });
       return true;
     }
+    const parent = url.searchParams.get("parent");
+    if (parent && found.status.sessionId !== parent) {
+      sendJson(res, 404, { error: "run not found in parent session" });
+      return true;
+    }
     const status = found.status as {
       state?: string;
       cwd?: string;
@@ -1247,6 +1257,8 @@ async function handleApi(
       lastUpdate?: number;
       artifactsDir?: string;
       pid?: number;
+      activityState?: string;
+      endedAt?: number;
     };
     let alive = false;
     if (typeof status.pid === "number") {
@@ -1283,7 +1295,7 @@ async function handleApi(
     ];
     for (const p of logCandidates) {
       try {
-        const content = readFileSync(p, "utf8");
+        const { text: content } = await readTextTail(p);
         const lines = content.split("\n");
         log = lines.slice(-200).join("\n");
         if (log.trim()) break;
@@ -1291,33 +1303,6 @@ async function handleApi(
         /* next */
       }
     }
-    // read usage (tokens/cost) from a real subagent session file
-    const readUsage = (sessionFile?: string) => {
-      if (!sessionFile || !existsSync(sessionFile))
-        return { tokens: 0, cost: 0 };
-      let tokens = 0;
-      let cost = 0;
-      try {
-        for (const line of readFileSync(sessionFile, "utf8").split("\n")) {
-          if (!line.trim()) continue;
-          const e = JSON.parse(line) as {
-            type?: string;
-            message?: {
-              usage?: { totalTokens?: number; cost?: { total?: number } };
-            };
-          };
-          const u = e.type === "message" ? e.message?.usage : undefined;
-          if (u) {
-            tokens += u.totalTokens ?? 0;
-            cost += u.cost?.total ?? 0;
-          }
-        }
-      } catch {
-        /* ignore */
-      }
-      return { tokens, cost };
-    };
-
     // per-step state from the workflow event stream (latest event per key)
     const steps: {
       key: string;
@@ -1327,6 +1312,13 @@ async function handleApi(
       tokens?: number;
       cost?: number;
       sessionFile?: string;
+      runId?: string;
+      activityState?: string;
+      lastActivityAt?: number;
+      currentTool?: string;
+      model?: string;
+      recentOutput?: string[];
+      error?: string;
     }[] = [];
     try {
       const eventsRaw = readFileSync(join(found.dir, "events.jsonl"), "utf8");
@@ -1369,12 +1361,20 @@ async function handleApi(
           lastActivityAt?: number;
           durationMs?: number;
           sessionFile?: string;
+          runId?: string;
+          activityState?: string;
+          currentTool?: string;
+          model?: string;
+          recentOutput?: string[];
+          error?: string;
         }[];
       }
     ).steps;
     if (Array.isArray(statusSteps) && statusSteps.length > 0) {
-      const agg = statusSteps.map((st) => {
-        const u = readUsage(st.sessionFile);
+      const agg = await Promise.all(statusSteps.map(async (st) => {
+        // Full transcript usage aggregation is only needed when the user opens
+        // run metadata. Normal activity polling reads bounded cached tails.
+        const u = url.searchParams.get("usage") === "1" ? await readSessionUsage(st.sessionFile) : undefined;
         const dur =
           st.durationMs ??
           (st.lastActivityAt ?? status.lastUpdate ?? 0) -
@@ -1384,23 +1384,56 @@ async function handleApi(
           state: st.status ?? "unknown",
           agent: st.agent,
           durationMs: dur,
-          tokens: u.tokens,
-          cost: u.cost,
+          tokens: u?.tokens,
+          cost: u?.cost,
           sessionFile: st.sessionFile,
+          runId: st.runId,
+          activityState: st.activityState,
+          lastActivityAt: st.lastActivityAt,
+          currentTool: st.currentTool,
+          model: st.model,
+          recentOutput: st.recentOutput?.filter((line) => typeof line === "string").slice(-10).map((line) => line.slice(-8000)),
+          error: st.error?.slice(0, 8000),
         };
-      });
+      }));
       if (agg.length > 0) {
         steps.length = 0;
         steps.push(...agg);
       }
     }
 
+    if (!steps.length && typeof found.status.sessionFile === "string") {
+      const usage = url.searchParams.get("usage") === "1" ? await readSessionUsage(found.status.sessionFile) : undefined;
+      steps.push({ key: agent, agent, runId, state: status.state ?? "unknown", sessionFile: found.status.sessionFile,
+        tokens: usage?.tokens, cost: usage?.cost });
+    }
+    const selectedStep = stepQuery === null ? undefined : Number(stepQuery);
+    if (selectedStep !== undefined && selectedStep >= steps.length) {
+      sendJson(res, 404, { error: "step not found" });
+      return true;
+    }
+    // The request selects only an index from this run, never an arbitrary file.
+    const previewStep = selectedStep ?? Math.max(0, steps.findIndex((step) => step.state === "running"));
+    const step = steps[previewStep];
+    const preview = await readSessionPreview(step?.sessionFile);
+    const statusUpdatedAt = step?.lastActivityAt ?? status.lastUpdate ?? 0;
+    const statusStale = Boolean(preview.updatedAt && preview.updatedAt > statusUpdatedAt + 1000);
+    if (agent === "subagent") agent = step?.agent ?? agent;
+    if (!log) log = preview.messages.map((message) => `[${message.role}]\n${message.text}`).join("\n\n");
+    if (!log && step?.recentOutput?.length) log = step.recentOutput.join("\n");
+
     sendJson(res, 200, {
       runId,
+      presentation: await presentRun(found.status as RunRecord, found.dir, Array.from(hosts.values(), host => host.runView()), Array.from(hosts.values()).flatMap(host => host.nativeSubagentViews())),
       agent,
       task,
-      state: status.state ?? (alive ? "running" : "unknown"),
+      state: status.state ?? "unknown",
       alive,
+      activityState: status.activityState,
+      endedAt: status.endedAt,
+      statusStale,
+      previewStep,
+      preview,
       cwd: status.cwd,
       parentSessionPath: status.sessionId,
       startedAt: status.startedAt,
@@ -1703,7 +1736,7 @@ async function handleApi(
       contextWindow: m.contextWindow,
       hasAuth: registry.hasConfiguredAuth(m),
     }));
-    sendJson(res, 200, { providers, models });
+    sendJson(res, 200, { providers, models, catalogRefreshing: modelServices.catalogRefreshing });
     return true;
   }
 

@@ -13,6 +13,7 @@ import {
   createAgentSessionFromServices,
   createAgentSessionRuntime,
   createAgentSessionServices,
+  createEventBus,
   getAgentDir,
   ModelRegistry,
   SessionManager,
@@ -23,6 +24,10 @@ import {
   type Extension,
   type ExtensionUIContext,
 } from "@earendil-works/pi-coding-agent";
+import { configureSubagentCli } from './pi-runtime.js';
+import { installCodexTransport } from './codex-transport.js';
+import { updateCompactionState } from './compaction-state.js';
+import { bindSubagentRuntime, readSubagentRuntime } from './subagent-runtime.js';
 import {
   AuthUiComponent,
   type WebAuthEvent,
@@ -39,6 +44,8 @@ import type {
   PiiMessage,
   ServerMessage,
   SessionSnapshot,
+  ProviderRequestState,
+  CompactionState,
   UiRequest,
   WidgetState,
 } from "./protocol.js";
@@ -898,6 +905,8 @@ export class SessionHost {
   private nextStreamCheckpointChars = STREAM_CHECKPOINT_INITIAL_CHARS;
   /** Current agent run start time (undefined when fully settled). */
   runStartedAt?: number;
+  private providerRequest?: ProviderRequestState;
+  private compactionState?: CompactionState;
   private settledMtime = 0;
   /** File state observed immediately after the initial synchronous restore. */
   private pendingWatchBaseline?: WatchedFileStamp;
@@ -936,9 +945,12 @@ export class SessionHost {
       let extensionCount = 0;
       let extensionErrors = 0;
       try {
+        configureSubagentCli();
+        const subagentEvents = createEventBus();
         const services = await createAgentSessionServices({
           cwd,
           resourceLoaderOptions: {
+            eventBus: subagentEvents,
             extensionsOverride(base) {
               extensionsFinishedAt = performance.now();
               extensionCount = base.extensions.length;
@@ -953,6 +965,7 @@ export class SessionHost {
             },
           },
         });
+        bindSubagentRuntime(services.resourceLoader, subagentEvents);
         logStage(key, "resources", extensionsFinishedAt ?? servicesStartedAt, {
           cwd,
           skills: services.resourceLoader.getSkills().skills.length,
@@ -1778,7 +1791,28 @@ export class SessionHost {
     this.nextStreamCheckpointChars = STREAM_CHECKPOINT_INITIAL_CHARS;
     this.runStartedAt = undefined;
     const session = this.runtime.session;
+    this.providerRequest = undefined;
+    this.compactionState = undefined;
+    installCodexTransport(session, (state) => {
+      if (this.runtime.session !== session) return;
+      this.providerRequest = state;
+      this.broadcast({ type: 'event', event: { type: 'provider_request', state: state ?? null } });
+    });
     this.unsubscribe = session.subscribe((event) => {
+      if (event.type === 'compaction_start' || event.type === 'compaction_end') {
+        this.compactionState = updateCompactionState(this.compactionState, event);
+        if (event.type === 'compaction_start') this.providerRequest = undefined;
+        console.info(`[session] compaction_state session_id=${session.sessionId} status=${this.compactionState?.status} reason=${this.compactionState?.reason} tokens_before=${this.compactionState?.tokensBefore ?? 'unknown'} tokens_after_estimate=${this.compactionState?.estimatedTokensAfter ?? 'unknown'}`);
+      }
+      if (event.type === 'auto_retry_start' && session.model?.provider === 'openai-codex') {
+        const now = Date.now();
+        this.providerRequest = { phase: 'retrying', transport: 'auto', startedAt: now, since: now,
+          attempt: event.attempt, maxAttempts: event.maxAttempts, retryAt: now + event.delayMs };
+        this.broadcast({ type: 'event', event: { type: 'provider_request', state: this.providerRequest } });
+      } else if (event.type === 'auto_retry_end' || event.type === 'agent_settled') {
+        this.providerRequest = undefined;
+        this.broadcast({ type: 'event', event: { type: 'provider_request', state: null } });
+      }
       if (
         event.type === "entry_appended" ||
         event.type === "agent_settled" ||
@@ -1830,6 +1864,8 @@ export class SessionHost {
         event,
         includeStreamingCheckpoint,
       );
+      if (event.type === 'compaction_start' || event.type === 'compaction_end')
+        serializedEvent.compactionState = this.compactionState;
       if (event.type === "queue_update") {
         const queue = this.queueAdapter.view();
         serializedEvent.steering = queue.steering;
@@ -1921,6 +1957,10 @@ export class SessionHost {
 
   get session(): AgentSession {
     return this.runtime.session;
+  }
+
+  nativeSubagentViews() {
+    return readSubagentRuntime(this.session.resourceLoader, this.session.sessionFile);
   }
 
   /** Import a JSONL session into this host's runtime. */
@@ -2296,6 +2336,8 @@ export class SessionHost {
       initializing: !this.isReady,
       pagingProvisional: false,
       isStreaming: s.isStreaming,
+      providerRequest: this.providerRequest,
+      compactionState: this.compactionState ?? (s.isCompacting ? { status: 'running', reason: 'unknown' } : null),
       thinkingLevel: s.thinkingLevel,
       availableThinkingLevels: (() => {
         try {
@@ -2969,13 +3011,22 @@ export class SessionHost {
       }
       clearQueue(currentSession, "after");
 
-      // Tool end events normally remove these. Clear only leftovers so the run
-      // list cannot remain permanently busy after a successful stop.
-      const staleTools = [...this.activeToolCalls.values()];
-      this.activeToolCalls.clear();
-      for (const tool of staleTools)
-        this.onToolExecution?.(tool.toolName, "end");
-      this.runStartedAt = undefined;
+      // A timeout is NOT a tool-end event. Preserve the tool and elapsed time
+      // until the SDK actually settles; otherwise a hung tool looks like an
+      // idle model and the run loses the information needed to diagnose it.
+      const staleTools = failures.length === 0
+        ? [...this.activeToolCalls.values()]
+        : [];
+      if (failures.length === 0) {
+        this.activeToolCalls.clear();
+        for (const tool of staleTools)
+          this.onToolExecution?.(tool.toolName, "end");
+        this.runStartedAt = undefined;
+      } else {
+        console.warn(
+          `[session] stop_pending key=${JSON.stringify(this.key)} epoch=${epoch} active_tools=${JSON.stringify([...this.activeToolCalls.values()].map(tool => tool.toolName))} streaming=${currentSession.isStreaming} compacting=${currentSession.isCompacting}`,
+        );
+      }
       this.broadcastSnapshot();
 
       const duration = elapsedMs(startedAt);
@@ -3085,11 +3136,13 @@ export class SessionHost {
       );
     clearQueue("after");
 
-    const staleTools = [...this.activeToolCalls.values()];
-    this.activeToolCalls.clear();
-    for (const tool of staleTools)
-      this.onToolExecution?.(tool.toolName, "end");
-    this.runStartedAt = undefined;
+    const staleTools = failures.length === 0 ? [...this.activeToolCalls.values()] : [];
+    if (failures.length === 0) {
+      this.activeToolCalls.clear();
+      for (const tool of staleTools)
+        this.onToolExecution?.(tool.toolName, "end");
+      this.runStartedAt = undefined;
+    }
     this.broadcastSnapshot();
     process.stdout.write(
       `[session] stale_mutation_quiesced key=${JSON.stringify(this.key)} admitted_epoch=${admittedEpoch} current_epoch=${this.stopEpoch} stale_tools=${staleTools.length} status=${failures.length === 0 ? "ok" : "partial"}${failures.length > 0 ? ` failures=${JSON.stringify(failures)}` : ""}\n`,

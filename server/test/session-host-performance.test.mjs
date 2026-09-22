@@ -118,6 +118,8 @@ test("snapshot caches stable branch metadata and bounds both snapshot and histor
   }));
   const session = {
     sessionId: "bounded",
+    agent: { streamFunction() {} },
+    settingsManager: { getRetrySettings: () => ({ enabled: true, maxRetries: 3 }) },
     sessionFile: undefined,
     sessionName: undefined,
     isStreaming: false,
@@ -254,6 +256,17 @@ test("snapshot caches stable branch metadata and bounds both snapshot and histor
     `e${changed.historyFrom - 1}`,
     "bounded pagination skipped or duplicated the branch boundary",
   );
+  subscriber({ type: 'compaction_start', reason: 'overflow' });
+  assert.equal(host.snapshot().compactionState.status, 'running');
+  assert.equal(host.snapshot().providerRequest, undefined);
+  session.isCompacting = true; // Pi clears its controller after emitting compaction_end.
+  subscriber({ type: 'compaction_end', reason: 'overflow', result: { tokensBefore: 900000, estimatedTokensAfter: 80000 }, aborted: false, willRetry: true });
+  assert.equal(host.snapshot().compactionState.status, 'completed', 'controller cleanup must not overwrite the completed event');
+  assert.equal(host.snapshot().compactionState.estimatedTokensAfter, 80000);
+  host.bindSession();
+  assert.equal(host.snapshot().compactionState.status, 'running', 'a mid-compaction rebind uses the SDK active flag');
+  session.isCompacting = false;
+  assert.equal(host.snapshot().compactionState, null);
   await host.dispose();
 });
 

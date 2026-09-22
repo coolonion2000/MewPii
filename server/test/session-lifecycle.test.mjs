@@ -1125,6 +1125,8 @@ test("rebind clears delayed snapshot timer", async () => {
   let subscriber;
   let toolEndCalls = 0;
   const session = {
+    agent: { streamFunction() {} },
+    settingsManager: { getRetrySettings: () => ({ enabled: true, maxRetries: 3 }) },
     subscribe: (callback) => {
       subscriber = callback;
       return () => undefined;

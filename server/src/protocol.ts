@@ -192,6 +192,27 @@ export interface ActiveToolSnapshot {
   liveOutput?: string;
 }
 
+export interface ProviderRequestState {
+  phase: 'preparing' | 'connecting' | 'waiting_headers' | 'streaming' | 'retrying' | 'failed';
+  transport: 'auto' | 'websocket' | 'sse';
+  startedAt: number;
+  since: number;
+  attempt?: number;
+  maxAttempts?: number;
+  retryAt?: number;
+}
+
+export interface CompactionState {
+  status: 'running' | 'completed' | 'cancelled' | 'failed';
+  reason: string;
+  startedAt?: number;
+  endedAt?: number;
+  tokensBefore?: number;
+  estimatedTokensAfter?: number;
+  willRetry?: boolean;
+  errorMessage?: string;
+}
+
 export interface SessionSnapshot {
   sessionId: string;
   sessionFile?: string;
@@ -204,6 +225,10 @@ export interface SessionSnapshot {
   name?: string;
   cwd: string;
   isStreaming: boolean;
+  /** Current provider request, independent of tool execution; replayed on reconnect. */
+  providerRequest?: ProviderRequestState;
+  /** Latest compaction lifecycle, replayed even when the viewer missed start/end events. */
+  compactionState?: CompactionState | null;
   thinkingLevel: string;
   /** Thinking levels the current model actually supports (pi thinkingLevelMap). */
   availableThinkingLevels?: string[];
