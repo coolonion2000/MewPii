@@ -9,3 +9,12 @@ pii-web-0.1.0-docker.tar.gz
 .tgz
 .pi-subagents/
 
+# Local deploy/monitor/rollout artifacts (not source)
+.epoch-*.json
+.rollout-*.json
+.monitor-*.json
+.whitelist-*.json
+.pi-*-log-check.json
+.launch-rollout-latest.md
+.boost-*.sql
+
