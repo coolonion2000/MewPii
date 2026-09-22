@@ -2,6 +2,24 @@ import type { Conversation } from '../api';
 import { stripAnsi } from '../api';
 import { t } from '../i18n';
 
+/** True for the LSP status item, which is rendered below the composer instead of on the stats bar. */
+export function isLspStatus(key: string, value: string): boolean {
+  return /lsp/i.test(key) || /\bLSP\b/.test(stripAnsi(value));
+}
+
+/** LSP status line, rendered under the composer. Empty when no LSP status is published. */
+export function LspStatusLine({ conv }: { conv: Conversation }) {
+  const items = Object.entries(conv.statuses).filter(([key, value]) => isLspStatus(key, value));
+  if (items.length === 0) return null;
+  return (
+    <div className="lsp-status-line">
+      {items.map(([key, value]) => (
+        <span key={key} className="stats-seg status-seg" title={key}>{stripAnsi(value)}</span>
+      ))}
+    </div>
+  );
+}
+
 function fmtNum(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1000) return `${(n / 1000).toFixed(1)}K`;
@@ -61,10 +79,12 @@ export default function StatsBar({ conv }: { conv: Conversation }) {
 
   if (stats?.contextPercent != null) parts.push(`${t('context')} ${Math.round(stats.contextPercent)}%`);
 
-  // extension-published statuses (MCP, ADHD, LSP, ...) join the same line
-  const statusItems = Object.entries(conv.statuses).map(([key, value]) => (
-    <span key={key} className="stats-seg status-seg" title={key}>{stripAnsi(value)}</span>
-  ));
+  // extension-published statuses (MCP, ADHD, ...) join the same line; LSP moves below the composer
+  const statusItems = Object.entries(conv.statuses)
+    .filter(([key, value]) => !isLspStatus(key, value))
+    .map(([key, value]) => (
+      <span key={key} className="stats-seg status-seg" title={key}>{stripAnsi(value)}</span>
+    ));
 
   return (
     <div className="stats-bar">

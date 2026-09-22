@@ -15,7 +15,7 @@ import type { Conversation, ToolActivity } from '../api';
 import MessageItem from './MessageItem';
 import ToolCard from './ToolCard';
 import Composer from './Composer';
-import StatsBar from './StatsBar';
+import StatsBar, { LspStatusLine } from './StatsBar';
 import ProviderActivity from './ProviderActivity';
 import { followChatTail } from '../chat-tail-follow';
 import { filePreviewState } from '../file-preview-state';
@@ -119,7 +119,79 @@ function ChatView({ conv, onRefresh, onForked, projects, onSelectProject, dark, 
   }, [conv.snapshot?.isStreaming]);
   const tailFollowerRef = useRef<ReturnType<typeof followChatTail> | undefined>(undefined);
   const previewDragCleanup = useRef<(() => void) | undefined>(undefined);
+  const widthDragCleanup = useRef<(() => void) | undefined>(undefined);
   const [showJump, setShowJump] = useState(false);
+  const [contentWidth, setContentWidth] = useState(() => Number(localStorage.getItem('pii-chat-w')) || 800);
+
+  const startWidthDrag = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    widthDragCleanup.current?.();
+    const handle = e.currentTarget;
+    const pointerId = e.pointerId;
+    const startX = e.clientX;
+    const startW = contentWidth;
+    let clientX = startX;
+    let frame = 0;
+    let done = false;
+    // Left-edge handle: dragging left widens the centered column (grows on both sides).
+    const widthForPointer = () => clampResizeWidth(
+      startW + (startX - clientX) * 2,
+      480,
+      Math.max(480, window.innerWidth - 96),
+    );
+    const renderWidth = () => {
+      frame = 0;
+      document.documentElement.style.setProperty('--chat-content-width', `${widthForPointer()}px`);
+    };
+    const onMove = (event: PointerEvent) => {
+      if (event.pointerId !== pointerId) return;
+      clientX = event.clientX;
+      if (!frame) frame = requestAnimationFrame(renderWidth);
+    };
+    const removeListeners = () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', finish);
+      window.removeEventListener('pointercancel', onCancel);
+      window.removeEventListener('blur', onBlur);
+      handle.removeEventListener('lostpointercapture', onCancel);
+      if (handle.hasPointerCapture?.(pointerId)) handle.releasePointerCapture(pointerId);
+      document.body.classList.remove('is-resizing');
+      widthDragCleanup.current = undefined;
+    };
+    const finish = (event?: PointerEvent) => {
+      if (done || (event && event.pointerId !== pointerId)) return;
+      done = true;
+      if (event) clientX = event.clientX;
+      if (frame) cancelAnimationFrame(frame);
+      const width = widthForPointer();
+      document.documentElement.style.setProperty('--chat-content-width', `${width}px`);
+      localStorage.setItem('pii-chat-w', String(Math.round(width)));
+      removeListeners();
+      setContentWidth(width);
+    };
+    const onBlur = () => finish();
+    const onCancel = (event: PointerEvent) => {
+      if (event.pointerId === pointerId) finish();
+    };
+    widthDragCleanup.current = () => {
+      if (done) return;
+      done = true;
+      if (frame) cancelAnimationFrame(frame);
+      removeListeners();
+    };
+    document.body.classList.add('is-resizing');
+    handle.setPointerCapture?.(pointerId);
+    window.addEventListener('pointermove', onMove, { passive: true });
+    window.addEventListener('pointerup', finish);
+    window.addEventListener('pointercancel', onCancel);
+    window.addEventListener('blur', onBlur);
+    handle.addEventListener('lostpointercapture', onCancel);
+  }, [contentWidth]);
+
+  useEffect(() => {
+    document.documentElement.style.setProperty('--chat-content-width', `${contentWidth}px`);
+  }, [contentWidth]);
 
   const bindScroll = useCallback((node: HTMLDivElement | null) => {
     tailFollowerRef.current?.dispose();
@@ -218,6 +290,7 @@ function ChatView({ conv, onRefresh, onForked, projects, onSelectProject, dark, 
 
   useEffect(() => () => {
     previewDragCleanup.current?.();
+    widthDragCleanup.current?.();
   }, []);
   const snap = conv.snapshot;
   const newSessionDisabled = Boolean(snap?.isStreaming || conv.compaction);
@@ -421,6 +494,7 @@ function ChatView({ conv, onRefresh, onForked, projects, onSelectProject, dark, 
           <div className="hero-composer">
             <Composer conv={conv} draft={draft} onDraft={setDraft} />
           </div>
+          <LspStatusLine conv={conv} />
           <EditorWidgets conv={conv} placement="belowEditor" />
         </div>
         <ExtensionUI conv={conv} />
@@ -498,6 +572,9 @@ function ChatView({ conv, onRefresh, onForked, projects, onSelectProject, dark, 
 
       <div className={`chat-body ${subagents.selected ? 'has-subagent-detail' : ''}`}>
       <div className="chat-main">
+      {!showTraj && !subagents.selected && (
+        <div className="chat-width-resize" title={t('resizeWidth')} onPointerDown={startWidthDrag} />
+      )}
       {showTraj ? (
         <div className="chat-scroll">
           <Suspense fallback={<div className="session-loading" role="status">…</div>}>
@@ -733,6 +810,7 @@ function ChatView({ conv, onRefresh, onForked, projects, onSelectProject, dark, 
         <InlineQuestions conv={conv} />
         <Composer conv={conv} draft={draft} onDraft={setDraft} />
       </div>
+      <LspStatusLine conv={conv} />
       <EditorWidgets conv={conv} placement="belowEditor" />
       </div>
       {subagents.selected && <>
