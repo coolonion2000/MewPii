@@ -6,6 +6,7 @@ import { evaluateProviderLogout } from '../model-utils';
 import {
   checkedJsonResponse,
   notifyModelCatalogChanged,
+  MODEL_CATALOG_CHANGED_EVENT,
 } from '../ui-reliability';
 
 export default function ModelsPanel() {
@@ -63,11 +64,14 @@ export default function ModelsPanel() {
       if (!document.hidden) onFocus();
     };
     window.addEventListener('focus', onFocus);
+    const onCatalogChanged = () => refresh();
+    window.addEventListener(MODEL_CATALOG_CHANGED_EVENT, onCatalogChanged);
     document.addEventListener('visibilitychange', onVisible);
     return () => {
       refreshGeneration.current += 1;
       clearTimeout(focusRefreshTimer.current);
       window.removeEventListener('focus', onFocus);
+      window.removeEventListener(MODEL_CATALOG_CHANGED_EVENT, onCatalogChanged);
       document.removeEventListener('visibilitychange', onVisible);
     };
   }, [refresh]);

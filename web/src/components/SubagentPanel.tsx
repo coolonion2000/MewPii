@@ -1,143 +1,34 @@
-import { lazy, Suspense, useEffect, useRef, useState } from 'react';
-import { IconChevronDown, IconBot } from '../icons';
+/** In-flow summary above the composer. @author coolonion */
+import { useEffect, useRef, useState } from 'react';
+import { IconBot } from '../icons';
 import { t } from '../i18n';
+import { useSubagents } from '../subagent-store';
+import SubagentStatus from './SubagentStatus';
 
-const SubagentRunDialog = lazy(() => import('./SubagentRunDialog'));
-
-interface RunEntry {
-  path: string;
-  name?: string;
-  running?: boolean;
-  runState?: string;
-  parentSessionPath?: string;
-  cwd: string;
-}
-
-/** Floating subagent indicator at the left of the composer; click to expand a popover. */
-export default function SubagentPanel({ sessionFile, cwd, onOpenParent }: {
-  sessionFile?: string;
-  cwd: string;
-  onOpenParent?: (cwd: string, sessionPath: string) => void;
-}) {
-  const [runs, setRuns] = useState<RunEntry[]>([]);
-  const [dialogId, setDialogId] = useState<string>();
+export default function SubagentPanel() {
+  const { runs, open: openRun, error } = useSubagents();
   const [open, setOpen] = useState(false);
-  const anchorRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!sessionFile) {
-      setRuns([]);
-      return;
-    }
-    let alive = true;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let controller: AbortController | undefined;
-    let generation = 0;
-    const schedule = (delayMs: number) => {
-      clearTimeout(timer);
-      if (alive && !document.hidden)
-        timer = setTimeout(() => void load(), delayMs);
-    };
-    const load = async () => {
-      if (!alive || document.hidden) return;
-      controller?.abort();
-      const request = new AbortController();
-      const currentGeneration = ++generation;
-      controller = request;
-      let nextDelay = 12_000;
-      try {
-        const response = await fetch(
-          `/api/subagent-runs?parent=${encodeURIComponent(sessionFile)}`,
-          { signal: request.signal },
-        );
-        const data = (await response.json()) as { runs?: RunEntry[] };
-        if (!alive || currentGeneration !== generation) return;
-        const list = data.runs ?? [];
-        list.sort(
-          (a, b) => Number(b.running ?? false) - Number(a.running ?? false),
-        );
-        setRuns(list);
-        if (list.some((run) => run.running)) nextDelay = 4_000;
-      } catch {
-        // A hidden tab aborts its request; visibility restoration reloads it.
-      } finally {
-        if (currentGeneration === generation) schedule(nextDelay);
-      }
-    };
-    const onVisibility = () => {
-      clearTimeout(timer);
-      if (document.hidden) {
-        generation++;
-        controller?.abort();
-      }
-      else void load();
-    };
-    void load();
-    document.addEventListener('visibilitychange', onVisibility);
-    return () => {
-      alive = false;
-      generation++;
-      clearTimeout(timer);
-      controller?.abort();
-      document.removeEventListener('visibilitychange', onVisibility);
-    };
-  }, [sessionFile]);
-
+  const anchor = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!open) return;
-    const close = (e: MouseEvent) => {
-      if (anchorRef.current && !anchorRef.current.contains(e.target as Node)) setOpen(false);
-    };
-    window.addEventListener('mousedown', close);
-    return () => window.removeEventListener('mousedown', close);
+    const close = (event: MouseEvent) => { if (!anchor.current?.contains(event.target as Node)) setOpen(false); };
+    const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') setOpen(false); };
+    document.addEventListener('mousedown', close);
+    document.addEventListener('keydown', escape);
+    return () => { document.removeEventListener('mousedown', close); document.removeEventListener('keydown', escape); };
   }, [open]);
-
-  const runningCount = runs.filter((r) => r.running).length;
-  if (runs.length === 0) return null;
-
-  return (
-    <div className="subagent-fab-anchor" ref={anchorRef}>
-      <button
-        className={`subagent-fab ${runningCount > 0 ? 'running' : ''}`}
-        title={runningCount > 0 ? t('subagentsRunning', { n: String(runningCount) }) : t('subagentsRecent', { n: String(runs.length) })}
-        onClick={() => setOpen((o) => !o)}
-      >
-        <IconChevronDown size={13} style={{ transform: 'rotate(180deg)' }} />
-        {runningCount > 0 && <span className="subagent-fab-badge">{runningCount}</span>}
-      </button>
-      {open && (
-        <div className="subagent-pop">
-          <div className="subagent-pop-head">
-            <IconBot size={13} />
-            <span>{runningCount > 0 ? t('subagentsRunning', { n: String(runningCount) }) : t('subagentsRecent', { n: String(runs.length) })}</span>
-          </div>
-          <div className="subagent-panel-list">
-            {runs.map((r) => (
-              <button
-                key={r.path}
-                className="subagent-panel-row"
-                onClick={() => {
-                  setOpen(false);
-                  setDialogId(r.path.replace('pi-subagents-run://', ''));
-                }}
-              >
-                <span className={`subagent-dot ${r.running ? 'run' : 'done'}`} />
-                <span className="subagent-panel-name">{r.name}</span>
-                <span className={`subagent-panel-state ${r.running ? 'run' : ''}`}>{r.running ? t('running') : (r.runState ?? 'done')}</span>
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-      {dialogId && (
-        <Suspense fallback={null}>
-          <SubagentRunDialog
-            runId={dialogId}
-            onClose={() => setDialogId(undefined)}
-            onOpenParent={onOpenParent}
-          />
-        </Suspense>
-      )}
-    </div>
-  );
+  if (!runs.length) return null;
+  const running = error ? 0 : runs.filter(run => run.presentation.effectiveState === 'running').length;
+  return <div className="subagent-summary" ref={anchor}>
+    <button className="subagent-summary-toggle" onClick={() => setOpen(value => !value)} aria-expanded={open}>
+      <IconBot size={14} /><span>{t('subagentTask')} · {runs.length}</span><span className="dim">{error ? t('subagentUnknown') : running ? t('subagentsRunning', { n: String(running) }) : t('subagentViewDetails')}</span><span aria-hidden="true">⌃</span>
+    </button>
+    {open && <div className="subagent-summary-list">
+      {runs.map(run => <button key={run.id} onClick={() => { openRun(run.id); setOpen(false); }}>
+        <span className="subagent-run-label"><span>{run.presentation.title || run.name}</span>
+          {run.presentation.workflow?.startedAt && <time className="dim">{new Date(run.presentation.workflow.startedAt).toLocaleString()}</time>}
+        </span><SubagentStatus presentation={run.presentation} unavailable={error} />
+      </button>)}
+    </div>}
+  </div>;
 }
