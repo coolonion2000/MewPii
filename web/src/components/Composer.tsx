@@ -355,10 +355,12 @@ export default function Composer({ conv, draft, onDraft }: Props) {
             <div key={i} className="image-thumb">
               <img src={`data:${img.mimeType};base64,${img.data}`} alt={img.name} />
               <button
+                type="button"
+                aria-label={t('removeImage')}
                 className="image-remove"
                 onClick={() => setImages((prev) => prev.filter((_, j) => j !== i))}
               >
-                <IconX size={10} />
+                <IconX size={14} />
               </button>
             </div>
           ))}

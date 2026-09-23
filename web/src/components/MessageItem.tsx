@@ -1,6 +1,5 @@
 import { memo, useEffect, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
-import { IconX } from '../icons';
+import ImagePreview from './ImagePreview';
 import MarkdownBody from './MessageMarkdownBody';
 import type { PiiMessage } from '../types';
 import type { ToolActivity } from '../api';
@@ -128,19 +127,7 @@ function MessageItem({ message, streaming, toolResults, tools, language, onFork,
       <div className="msg-row user">
         {bubble}
         {!streaming && <MessageActions entryId={entryId} text={typeof content === 'string' ? content : ''} onFork={onFork} onBranch={onBranch} />}
-        {preview && createPortal(
-          <div className="lightbox" onClick={() => setPreview(undefined)}>
-            <button
-              type="button"
-              className="lightbox-close"
-              aria-label={t('close')}
-            >
-              <IconX size={18} />
-            </button>
-            <img src={preview} alt="preview" onClick={(e) => e.stopPropagation()} />
-          </div>,
-          document.body,
-        )}
+        {preview && <ImagePreview src={preview} onClose={() => setPreview(undefined)} />}
       </div>
     );
   }

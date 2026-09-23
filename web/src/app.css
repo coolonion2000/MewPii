@@ -1891,12 +1891,13 @@ body[data-ds-dark-theme] .composer:focus-within {
   position: absolute;
   top: -6px;
   right: -6px;
-  width: 18px;
-  height: 18px;
+  width: 24px;
+  height: 24px;
   border-radius: 50%;
-  border: none;
-  background: var(--dsw-alias-toast-bg);
-  color: var(--dsw-alias-label-primary);
+  border: 2px solid #fff;
+  background: #30343b;
+  color: #fff;
+  box-shadow: 0 2px 6px #0004;
   cursor: pointer;
   display: grid;
   place-items: center;
@@ -3379,12 +3380,52 @@ body[data-ds-dark-theme] .hero-composer .composer {
   position: fixed;
   inset: 0;
   z-index: 200;
-  background: var(--dsw-alias-bg-mask-1);
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 20px 20px 70px;
+  border: 0;
+  box-sizing: border-box;
+  background: transparent;
   display: grid;
   place-items: center;
   cursor: zoom-out;
   animation: lb-fade 0.12s ease-out;
 }
+.lightbox::backdrop { background: rgba(0, 0, 0, .65); }
+.lightbox-frame { position: relative; min-width: 0; cursor: default; }
+.lightbox-viewport {
+  max-width: calc(100vw - 40px);
+  max-height: calc(100dvh - 140px);
+  overflow: auto;
+  border-radius: 10px;
+  box-shadow: 0 12px 48px #0007;
+}
+.lightbox-controls {
+  position: absolute;
+  top: calc(100% + 12px);
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  padding: 4px;
+  border-radius: 24px;
+  background: #30343b;
+  color: #fff;
+  box-shadow: 0 2px 12px #0005;
+}
+.lightbox-controls button {
+  min-width: 40px;
+  height: 36px;
+  border: 0;
+  border-radius: 18px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.lightbox-controls button:hover { background: #ffffff25; }
+.lightbox-controls button:disabled { opacity: .4; cursor: default; }
 @keyframes lb-fade {
   from {
     opacity: 0;
@@ -3394,22 +3435,22 @@ body[data-ds-dark-theme] .hero-composer .composer {
   }
 }
 .lightbox img {
-  max-width: 92vw;
-  max-height: 88vh;
-  border-radius: 10px;
+  display: block;
+  max-width: none;
+  max-height: none;
   cursor: default;
   box-shadow: 0 12px 48px rgba(0, 0, 0, 0.45);
 }
 .lightbox-close {
   position: absolute;
-  top: 16px;
-  right: 20px;
+  top: -12px;
+  right: -12px;
   width: 34px;
   height: 34px;
   border-radius: 50%;
-  border: none;
-  background: var(--dsw-alias-toast-bg);
-  color: var(--dsw-alias-label-primary);
+  border: 2px solid #fff;
+  background: #30343b;
+  color: #fff;
   display: grid;
   place-items: center;
   cursor: pointer;

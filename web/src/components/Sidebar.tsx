@@ -679,7 +679,7 @@ export default function Sidebar(props: Props) {
           <button className={`btn btn-icon ${view !== 'chat' && view !== 'files' ? 'tab-active' : ''}`} title={t('navSettings')} onClick={() => onNavigate('settings')}>
             <IconSettings size={14} />
           </button>
-          <span className="build-tag">v0.1.18</span>
+          <span className="build-tag">v0.1.19</span>
           <span style={{ flex: 1 }} />
           <button className="btn btn-icon" title={t('refresh')} onClick={onRefresh}><IconRefresh size={13} /></button>
           <button className="btn btn-icon" title="Language" onClick={() => setLang(getLang() === 'zh' ? 'en' : 'zh')} style={{ fontSize: 11 }}>
