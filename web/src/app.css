@@ -4721,6 +4721,7 @@ body[data-ds-dark-theme] .hero-composer .composer {
     font-size: 16px; /* iOS Safari must not zoom the page on focus. */
   }
   .composer-bar {
+    flex-wrap: wrap;
     gap: 4px;
     padding: 6px 8px;
   }
