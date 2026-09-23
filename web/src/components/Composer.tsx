@@ -45,6 +45,19 @@ export default function Composer({ conv, draft, onDraft }: Props) {
   const [pendingSlash, setPendingSlash] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [stopError, setStopError] = useState<string>();
+  const [mobileExpanded, setMobileExpanded] = useState(false);
+  const composerRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!mobileExpanded) return;
+    const closeOutside = (event: PointerEvent) => {
+      if (!composerRef.current?.contains(event.target as Node)) {
+        setMobileExpanded(false);
+        setMenuOpen(undefined);
+      }
+    };
+    document.addEventListener('pointerdown', closeOutside);
+    return () => document.removeEventListener('pointerdown', closeOutside);
+  }, [mobileExpanded]);
   const submitPendingRef = useRef(false);
   const stoppingRef = useRef(false);
   const stopGeneration = useRef(0);
@@ -333,7 +346,9 @@ export default function Composer({ conv, draft, onDraft }: Props) {
   const configuredModels = models?.models.filter((m) => m.hasAuth) ?? [];
 
   return (
-    <div className="composer">
+    <div ref={composerRef} className={`composer ${mobileExpanded || images.length > 0 ? 'mobile-expanded' : 'mobile-compact'} ${hasPayload || streaming || submitPending ? 'mobile-has-action' : ''}`}>
+      <button type="button" className="mobile-composer-expand round-btn" aria-label={t('expandComposer')} aria-expanded={mobileExpanded}
+        onClick={() => { setMobileExpanded(true); taRef.current?.focus(); }}><IconPlus size={19} /></button>
       {images.length > 0 && (
         <div className="image-strip">
           {images.map((img, i) => (
@@ -370,6 +385,7 @@ export default function Composer({ conv, draft, onDraft }: Props) {
       )}
       <textarea
         ref={taRef}
+        onFocus={() => setMobileExpanded(true)}
         value={text}
         readOnly={submitPending}
         placeholder={

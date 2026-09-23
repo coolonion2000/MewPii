@@ -4505,6 +4505,8 @@ body[data-ds-dark-theme] .hero-composer .composer {
   min-height: 0;
 }
 .mobile-topbar,
+.mobile-composer-expand,
+.stats-label-mobile,
 .mobile-sidebar-backdrop {
   display: none;
 }
@@ -4717,6 +4719,46 @@ body[data-ds-dark-theme] .hero-composer .composer {
   .composer-wrap {
     padding: 6px 10px 8px;
   }
+  .composer.mobile-compact {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    border-radius: 24px;
+  }
+  .mobile-compact .mobile-composer-expand {
+    display: inline-flex;
+    justify-content: center;
+    align-items: center;
+    width: 36px;
+    height: 40px;
+  }
+  .composer.mobile-compact textarea {
+    flex: 1;
+    min-width: 0;
+    height: 44px !important;
+    min-height: 44px;
+    max-height: 44px;
+    padding: 9px 4px;
+    white-space: pre;
+    overflow: hidden;
+  }
+  .mobile-compact .composer-bar {
+    display: contents;
+  }
+  .mobile-compact .composer-bar > * {
+    display: none;
+  }
+  .mobile-compact.mobile-has-action .composer-bar > .send-circle {
+    display: flex;
+  }
+  .mobile-compact .composer-action-error {
+    width: 100%;
+  }
+  .mobile-compact .slash-menu {
+    display: none;
+  }
   .composer textarea {
     font-size: 16px; /* iOS Safari must not zoom the page on focus. */
   }
@@ -4764,6 +4806,27 @@ body[data-ds-dark-theme] .hero-composer .composer {
   .stats-footer {
     width: calc(100% - 20px);
     padding-bottom: max(8px, env(safe-area-inset-bottom));
+  }
+  .stats-chip-row {
+    flex-wrap: nowrap;
+    gap: 2px;
+    align-items: center;
+  }
+  .stats-chip {
+    min-width: 0;
+    padding: 5px 4px;
+    font-size: 10.5px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .stats-chip + .stats-chip {
+    margin-left: auto;
+  }
+  .stats-label-full {
+    display: none;
+  }
+  .stats-label-mobile {
+    display: inline;
   }
   .status-strip {
     padding-inline: 12px;

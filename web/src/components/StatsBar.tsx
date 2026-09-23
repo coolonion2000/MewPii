@@ -113,19 +113,22 @@ export default function StatsBar({ conv }: { conv: Conversation }) {
         {(stats || hasRun) && (
           <button type="button" className={`stats-chip ${open === 'session' ? 'active' : ''}`}
             aria-expanded={open === 'session'} aria-controls={panelId} onClick={() => toggle('session')}>
-            {t('sessionStats')} · {rounds} {t('rounds')} {steps} {t('steps')}{estimatedTps !== undefined ? ` · ~${estimatedTps} tok/s` : ''}
+            <span className="stats-label-full">{t('sessionStats')} · {rounds} {t('rounds')} {steps} {t('steps')}{estimatedTps !== undefined ? ` · ~${estimatedTps} tok/s` : ''}</span>
+            <span className="stats-label-mobile">{rounds}{t('rounds')} · {steps}{t('steps')}</span>
           </button>
         )}
         {stats && (
           <button type="button" className={`stats-chip ${open === 'tokens' ? 'active' : ''}`}
             aria-expanded={open === 'tokens'} aria-controls={panelId} onClick={() => toggle('tokens')}>
-            {t('tokenStats')} · {fmtNum(stats.tokens.total)} tok{cacheHit !== undefined ? ` · ${t('cacheHit')} ${cacheHit}%` : ''}
+            <span className="stats-label-full">{t('tokenStats')} · {fmtNum(stats.tokens.total)} tok{cacheHit !== undefined ? ` · ${t('cacheHit')} ${cacheHit}%` : ''}</span>
+            <span className="stats-label-mobile">{fmtNum(stats.tokens.total)} tok</span>
           </button>
         )}
         {statusItems.length > 0 && (
           <button type="button" className={`stats-chip ${open === 'environment' ? 'active' : ''}`}
             aria-expanded={open === 'environment'} aria-controls={panelId} onClick={() => toggle('environment')}>
-            {t('runtimeStatus')} · {statusItems.length}
+            <span className="stats-label-full">{t('runtimeStatus')} · {statusItems.length}</span>
+            <span className="stats-label-mobile">{t('runtimeStatus')} · {statusItems.length}</span>
           </button>
         )}
       </div>
