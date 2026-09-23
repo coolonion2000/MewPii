@@ -47,6 +47,7 @@ interface Props {
   loading?: boolean;
   terminalVisible?: boolean;
   onToggleTerminal?: () => void;
+  mobileHidden?: boolean;
 }
 
 function basename(cwd: string): string {
@@ -407,7 +408,7 @@ export default function Sidebar(props: Props) {
 
   if (collapsed) {
     return (
-      <div className="sidebar sidebar-collapsed">
+      <div className="sidebar sidebar-collapsed" inert={props.mobileHidden}>
         <div className="sidebar-resize" onPointerDown={onStartDrag} />
         <img className="brand-logo" src="/favicon.png" alt="MewPii" style={{ margin: '2px auto 8px' }} />
         <button className="btn btn-icon" title={t('expandSidebar')} onClick={onToggleCollapse}>
@@ -432,7 +433,7 @@ export default function Sidebar(props: Props) {
   }
 
   return (
-    <div className="sidebar" style={{ width }}>
+    <div className="sidebar" style={{ width }} inert={props.mobileHidden}>
       <div className="sidebar-resize" onPointerDown={onStartDrag} />
       <div className="brand-row">
         <img
@@ -678,7 +679,7 @@ export default function Sidebar(props: Props) {
           <button className={`btn btn-icon ${view !== 'chat' && view !== 'files' ? 'tab-active' : ''}`} title={t('navSettings')} onClick={() => onNavigate('settings')}>
             <IconSettings size={14} />
           </button>
-          <span className="build-tag">v0.1.16</span>
+          <span className="build-tag">v0.1.17</span>
           <span style={{ flex: 1 }} />
           <button className="btn btn-icon" title={t('refresh')} onClick={onRefresh}><IconRefresh size={13} /></button>
           <button className="btn btn-icon" title="Language" onClick={() => setLang(getLang() === 'zh' ? 'en' : 'zh')} style={{ fontSize: 11 }}>

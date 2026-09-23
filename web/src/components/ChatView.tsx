@@ -772,7 +772,7 @@ function ChatView({
       </div>
 
       <div
-        className={`chat-body ${subagents.selected ? "has-subagent-detail" : ""}`}
+        className={`chat-body ${subagents.selected ? "has-subagent-detail" : ""} ${previewPath && !subagents.selected ? "has-file-preview" : ""}`}
       >
         <div className="chat-main">
           {!showTraj && !subagents.selected && (

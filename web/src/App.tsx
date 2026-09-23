@@ -42,6 +42,7 @@ import {
   sidebarResizeStep,
   type SidebarDragPhase,
 } from "./ui-reliability";
+import { IconMenu, IconPlus } from "./icons";
 
 const ModelsPanel = lazy(() => import("./components/ModelsPanel"));
 const FilesPanel = lazy(() => import("./components/FilesPanel"));
@@ -56,6 +57,7 @@ type Route = AppRoute;
 
 const LAST_CWD_KEY = "pii-last-cwd";
 const LAST_SESSION_KEY = "pii-last-session";
+const MOBILE_LAYOUT_QUERY = "(max-width: 700px)";
 
 function normalizeSelection(selection: Selection | undefined): Selection | undefined {
   if (!selection?.sessionPath || selection.sessionId) return selection;
@@ -121,10 +123,33 @@ export default function App() {
   const [sidebarWidth, setSidebarWidth] = useState(
     () => Number(localStorage.getItem("pii-sidebar-w")) || 240,
   );
+  const [mobileLayout, setMobileLayout] = useState(
+    () => window.matchMedia(MOBILE_LAYOUT_QUERY).matches,
+  );
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [, force] = useReducer((x: number) => x + 1, 0);
   const lang = getLang();
 
   useEffect(() => onLangChange(force), []);
+
+  useEffect(() => {
+    const media = window.matchMedia(MOBILE_LAYOUT_QUERY);
+    const update = () => {
+      setMobileLayout(media.matches);
+      setMobileSidebarOpen(false);
+    };
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
+
+  useEffect(() => {
+    if (!mobileSidebarOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setMobileSidebarOpen(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [mobileSidebarOpen]);
 
   useEffect(() => {
     document.body.toggleAttribute("data-ds-dark-theme", dark);
@@ -152,6 +177,7 @@ export default function App() {
 
   const setSelection = useCallback(
     (s: Selection | undefined) => {
+      setMobileSidebarOpen(false);
       if (s && (s.sessionPath || s.sessionId)) {
         const summary = projects.find((project) => project.cwd === s.cwd)?.sessions.find(
           (session) => session.path === s.sessionPath || session.id === s.sessionId,
@@ -685,7 +711,10 @@ export default function App() {
   useEffect(() => () => sidebarDragCleanup.current?.(), []);
 
   const handleNavigate = useCallback(
-    (view: View) => setRoute({ view, selection }),
+    (view: View) => {
+      setMobileSidebarOpen(false);
+      setRoute({ view, selection });
+    },
     [selection, setRoute],
   );
   const handleToggleTheme = useCallback(() => setDark((value) => !value), []);
@@ -714,16 +743,25 @@ export default function App() {
     route.view === "extensions";
 
   return (
-    <div className="app">
+    <div className={`app ${mobileLayout ? "mobile-layout" : ""} ${mobileSidebarOpen ? "mobile-sidebar-open" : ""}`}>
+      {mobileLayout && mobileSidebarOpen && (
+        <button
+          type="button"
+          className="mobile-sidebar-backdrop"
+          aria-label={t("collapseSidebar")}
+          onClick={() => setMobileSidebarOpen(false)}
+        />
+      )}
       <Sidebar
         projects={projects}
         archivedSessions={archivedSessions}
         selection={route.view === "chat" ? selection : undefined}
         view={route.view}
-        collapsed={sidebarCollapsed}
+        collapsed={mobileLayout ? false : sidebarCollapsed}
+        mobileHidden={mobileLayout && !mobileSidebarOpen}
         width={sidebarWidth}
-        onStartDrag={startSidebarDrag}
-        onToggleCollapse={toggleCollapse}
+        onStartDrag={mobileLayout ? () => undefined : startSidebarDrag}
+        onToggleCollapse={mobileLayout ? () => setMobileSidebarOpen(false) : toggleCollapse}
         // Keep the chat selection intact when visiting settings/files so
         // coming back to chat restores the same conversation.
         onNavigate={handleNavigate}
@@ -745,7 +783,27 @@ export default function App() {
           setTerminalVisible(value => !value);
         }}
       />
-      <div className="main-workspace">
+      <div className="main-workspace" inert={mobileLayout && mobileSidebarOpen}>
+      {mobileLayout && (
+        <div className="mobile-topbar">
+          <button
+            type="button"
+            className="btn btn-icon mobile-topbar-action"
+            title={t("expandSidebar")}
+            aria-label={t("expandSidebar")}
+            aria-expanded={mobileSidebarOpen}
+            onClick={() => setMobileSidebarOpen(true)}
+          ><IconMenu size={20} /></button>
+          <span className="mobile-topbar-title">MewPii</span>
+          <button
+            type="button"
+            className="btn btn-icon mobile-topbar-action"
+            title={t("newSession")}
+            aria-label={t("newSession")}
+            onClick={() => setSelection({ cwd: defaultCwd })}
+          ><IconPlus size={20} /></button>
+        </div>
+      )}
       <div className="main">
         {isSettingsish && (
           <div className="unified-settings">

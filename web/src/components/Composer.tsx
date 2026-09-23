@@ -409,7 +409,9 @@ export default function Composer({ conv, draft, onDraft }: Props) {
               return;
             }
           }
-          if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+          // On phone keyboards Enter is the newline key; the send button is
+          // the explicit submit action. Desktop keeps Enter-to-send.
+          if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && !window.matchMedia('(max-width: 700px)').matches) {
             e.preventDefault();
             void submit();
           }
