@@ -1,7 +1,12 @@
 /** Current-work canonical title regressions. @author coolonion */
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { resolveUsedSessionTitle } from '../src/used-sessions.ts';
+import {
+  addUsedSession,
+  getUsedSessions,
+  removeUsedSession,
+  resolveUsedSessionTitle,
+} from '../src/used-sessions.ts';
 
 const used = {
   cwd: '/work',
@@ -48,4 +53,37 @@ test('current work keeps its local fallback until the workspace entry exists', (
     })),
     used.title,
   );
+});
+
+test('selection promotes a session immediately and path assignment reconciles its identity', () => {
+  const provisional = {
+    agent: 'agent-a', cwd: '/project-promotion', sessionId: 'promotion-1',
+    title: 'New session',
+  };
+  addUsedSession(provisional);
+  assert.equal(getUsedSessions()[0].sessionId, 'promotion-1');
+  addUsedSession({ ...provisional, sessionPath: '/sessions/promotion-1.jsonl', title: 'Real title' });
+  assert.equal(getUsedSessions().filter(s => s.sessionId === 'promotion-1').length, 1);
+  assert.equal(getUsedSessions()[0].sessionPath, '/sessions/promotion-1.jsonl');
+  assert.equal(getUsedSessions()[0].title, 'Real title');
+});
+
+test('closing current work removes only the matching agent shortcut', () => {
+  const local = { cwd: '/project-close', sessionId: 'close-1', title: 'Local' };
+  const remote = { ...local, agent: 'agent-b', title: 'Remote' };
+  addUsedSession(local);
+  addUsedSession(remote);
+  removeUsedSession({ ...local, at: 0 });
+  assert.equal(getUsedSessions().some(s => s.cwd === local.cwd && !s.agent), false);
+  assert.equal(getUsedSessions().some(s => s.cwd === remote.cwd && s.agent === 'agent-b'), true);
+  addUsedSession({ ...local, title: 'Background update' });
+  assert.equal(getUsedSessions().some(s => s.cwd === local.cwd && !s.agent), false);
+  addUsedSession(local, { reopen: true });
+  assert.equal(getUsedSessions()[0].title, 'Local');
+});
+
+test('blank projects do not create ambiguous current-work entries', () => {
+  const length = getUsedSessions().length;
+  addUsedSession({ cwd: '/project-blank', title: 'Blank' });
+  assert.equal(getUsedSessions().length, length);
 });

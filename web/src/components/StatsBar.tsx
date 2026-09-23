@@ -1,24 +1,7 @@
+import { useEffect, useId, useRef, useState } from 'react';
 import type { Conversation } from '../api';
 import { stripAnsi } from '../api';
 import { t } from '../i18n';
-
-/** True for the LSP status item, which is rendered below the composer instead of on the stats bar. */
-export function isLspStatus(key: string, value: string): boolean {
-  return /lsp/i.test(key) || /\bLSP\b/.test(stripAnsi(value));
-}
-
-/** LSP status line, rendered under the composer. Empty when no LSP status is published. */
-export function LspStatusLine({ conv }: { conv: Conversation }) {
-  const items = Object.entries(conv.statuses).filter(([key, value]) => isLspStatus(key, value));
-  if (items.length === 0) return null;
-  return (
-    <div className="lsp-status-line">
-      {items.map(([key, value]) => (
-        <span key={key} className="stats-seg status-seg" title={key}>{stripAnsi(value)}</span>
-      ))}
-    </div>
-  );
-}
 
 function fmtNum(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
@@ -34,62 +17,118 @@ function fmtDur(ms: number): string {
   return `${Math.floor(m / 60)}h${m % 60}m`;
 }
 
-/** dsh-style trajectory stats bar: rounds · steps | LLM · tool time | TTFT · tok/s | cache hit | tokens | cost | context */
+function StatRow({ label, value }: { label: string; value: string }) {
+  return <div className="stats-detail-row"><span>{label}</span><strong>{value}</strong></div>;
+}
+
+/** Compact footer with separate session, lifetime-token and environment details. */
 export default function StatsBar({ conv }: { conv: Conversation }) {
-  const streaming = Boolean(conv.snapshot?.isStreaming);
+  const [open, setOpen] = useState<'session' | 'tokens' | 'environment' | null>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const panelId = useId();
+  useEffect(() => setOpen(null), [conv]);
+  useEffect(() => {
+    if (!open) return;
+    const closeOutside = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(null);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpen(null);
+    };
+    document.addEventListener('pointerdown', closeOutside, true);
+    document.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.removeEventListener('pointerdown', closeOutside, true);
+      document.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [open]);
 
   const stats = conv.snapshot?.stats;
   const run = conv.runStats;
-  const hasRun = run.agentStartedAt !== undefined;
-  if (!stats && !hasRun && Object.keys(conv.statuses).length === 0) return null;
-
   const now = Date.now();
-  const parts: string[] = [];
+  const runEnd = run.endedAt ?? (run.agentStartedAt ? now : undefined);
+  const hasRun = Boolean(run.agentStartedAt && runEnd);
+  const statusItems = Object.entries(conv.statuses).map(([key, value]) => ({ key, value: stripAnsi(value) }));
+  if (!stats && !hasRun && statusItems.length === 0) return null;
 
-  // rounds & steps
   const rounds = stats?.userMessages ?? 0;
-  const steps = (stats?.toolCalls ?? 0) || run.steps;
-  if (rounds || steps) parts.push(`${rounds} ${t('rounds')} · ${steps} ${t('steps')}`);
+  const steps = stats?.toolCalls ?? run.steps;
+  const totalMs = hasRun ? Math.max(0, runEnd! - run.agentStartedAt!) : 0;
+  const nonToolMs = Math.max(0, totalMs - run.toolMs);
+  const ttft = run.firstDeltaAt && run.agentStartedAt
+    ? Math.max(0, run.firstDeltaAt - run.agentStartedAt)
+    : undefined;
+  // Pi streams characters, not token timestamps. This is an estimate, not provider TPS.
+  const estimatedTokens = Math.round(run.outputChars / 3.5);
+  const generationMs = run.firstDeltaAt && runEnd ? Math.max(500, runEnd - run.firstDeltaAt) : 0;
+  const estimatedTps = generationMs > 0 ? Math.round(estimatedTokens / (generationMs / 1000)) : undefined;
 
-  // timing (live or last run)
-  if (hasRun) {
-    const totalMs = (streaming ? now : now) - (run.agentStartedAt ?? now);
-    const llmMs = streaming ? Math.max(0, totalMs - run.toolMs) : run.llmMs;
-    const seg = [`LLM ${fmtDur(llmMs)}`];
-    if (run.toolMs > 0) seg.push(`${t('toolTime')} ${fmtDur(run.toolMs)}`);
-    parts.push(seg.join(' · '));
+  const inputTotal = stats
+    ? stats.tokens.input + stats.tokens.cacheRead + stats.tokens.cacheWrite
+    : 0;
+  const cacheHit = inputTotal > 0 && stats
+    ? Math.round(stats.tokens.cacheRead / inputTotal * 100)
+    : undefined;
 
-    const ttft = run.firstDeltaAt && run.agentStartedAt ? run.firstDeltaAt - run.agentStartedAt : undefined;
-    if (ttft !== undefined) {
-      const estTokens = Math.round(run.outputChars / 3.5);
-      const genSec = Math.max(0.5, ((streaming ? now : (run.agentStartedAt ?? now) + run.llmMs) - (run.firstDeltaAt ?? now)) / 1000);
-      const tps = Math.round(estTokens / genSec);
-      parts.push(`${t('ttft')} ${(ttft / 1000).toFixed(1)}s · ${tps} tok/s`);
-    }
-  }
-
-  // tokens & cache & cost
-  if (stats && stats.tokens.total > 0) {
-    const inputTotal = stats.tokens.input + stats.tokens.cacheRead + stats.tokens.cacheWrite;
-    const hit = inputTotal > 0 ? Math.round((stats.tokens.cacheRead / inputTotal) * 100) : 0;
-    if (inputTotal > 0) parts.push(`${t('cacheHit')} ${hit}%`);
-    parts.push(`${t('inputTok')} ${fmtNum(inputTotal)} tok · ${t('outputTok')} ${fmtNum(stats.tokens.output)} tok`);
-    if (stats.cost > 0) parts.push(`$${stats.cost.toFixed(4)}`);
-  }
-
-  if (stats?.contextPercent != null) parts.push(`${t('context')} ${Math.round(stats.contextPercent)}%`);
-
-  // extension-published statuses (MCP, ADHD, ...) join the same line; LSP moves below the composer
-  const statusItems = Object.entries(conv.statuses)
-    .filter(([key, value]) => !isLspStatus(key, value))
-    .map(([key, value]) => (
-      <span key={key} className="stats-seg status-seg" title={key}>{stripAnsi(value)}</span>
-    ));
+  const toggle = (panel: 'session' | 'tokens' | 'environment') =>
+    setOpen((current) => current === panel ? null : panel);
 
   return (
-    <div className="stats-bar">
-      {parts.map((p, i) => <span key={i} className="stats-seg">{p}</span>)}
-      {statusItems}
+    <div className="stats-footer" ref={rootRef}>
+      {open && (
+        <div className="stats-popover" id={panelId} role="region" aria-label={
+          open === 'session' ? t('sessionStats') : open === 'tokens' ? t('tokenStats') : t('runtimeStatus')
+        }>
+          {open === 'session' && (stats || hasRun) && <>
+            <div className="stats-popover-title">{t('sessionStats')}</div>
+            <StatRow label={t('rounds')} value={String(rounds)} />
+            <StatRow label={t('steps')} value={String(steps)} />
+            {hasRun && <>
+              <div className="stats-popover-subtitle">{run.endedAt ? t('lastRun') : t('currentRun')}</div>
+              <StatRow label={t('elapsedTime')} value={fmtDur(totalMs)} />
+              <StatRow label={t('nonToolTime')} value={fmtDur(nonToolMs)} />
+              <StatRow label={t('toolTime')} value={fmtDur(run.toolMs)} />
+              {ttft !== undefined && <StatRow label={t('ttft')} value={`${(ttft / 1000).toFixed(1)}s`} />}
+              {estimatedTps !== undefined && <StatRow label={t('estimatedTps')} value={`~${estimatedTps} tok/s`} />}
+            </>}
+          </>}
+          {open === 'tokens' && stats && <>
+            <div className="stats-popover-title">{t('tokenStats')} <small>{t('sessionCumulative')}</small></div>
+            <StatRow label={t('inputTok')} value={fmtNum(stats.tokens.input)} />
+            <StatRow label={t('outputTok')} value={fmtNum(stats.tokens.output)} />
+            <StatRow label={t('cacheRead')} value={fmtNum(stats.tokens.cacheRead)} />
+            <StatRow label={t('cacheWrite')} value={fmtNum(stats.tokens.cacheWrite)} />
+            {cacheHit !== undefined && <StatRow label={t('cacheHit')} value={`${cacheHit}%`} />}
+            <StatRow label={t('totalTokens')} value={fmtNum(stats.tokens.total)} />
+            {stats.cost > 0 && <StatRow label={t('cost')} value={`$${stats.cost.toFixed(4)}`} />}
+            {stats.contextPercent != null && <StatRow label={t('context')} value={`${Math.round(stats.contextPercent)}%`} />}
+          </>}
+          {open === 'environment' && statusItems.length > 0 && <>
+            <div className="stats-popover-title">{t('runtimeStatus')}</div>
+            {statusItems.map(({ key, value }) => <StatRow key={key} label={key} value={value} />)}
+          </>}
+        </div>
+      )}
+      <div className="stats-chip-row">
+        {(stats || hasRun) && (
+          <button type="button" className={`stats-chip ${open === 'session' ? 'active' : ''}`}
+            aria-expanded={open === 'session'} aria-controls={panelId} onClick={() => toggle('session')}>
+            {t('sessionStats')} · {rounds} {t('rounds')} {steps} {t('steps')}{estimatedTps !== undefined ? ` · ~${estimatedTps} tok/s` : ''}
+          </button>
+        )}
+        {stats && (
+          <button type="button" className={`stats-chip ${open === 'tokens' ? 'active' : ''}`}
+            aria-expanded={open === 'tokens'} aria-controls={panelId} onClick={() => toggle('tokens')}>
+            {t('tokenStats')} · {fmtNum(stats.tokens.total)} tok{cacheHit !== undefined ? ` · ${t('cacheHit')} ${cacheHit}%` : ''}
+          </button>
+        )}
+        {statusItems.length > 0 && (
+          <button type="button" className={`stats-chip ${open === 'environment' ? 'active' : ''}`}
+            aria-expanded={open === 'environment'} aria-controls={panelId} onClick={() => toggle('environment')}>
+            {t('runtimeStatus')} · {statusItems.length}
+          </button>
+        )}
+      </div>
     </div>
   );
 }

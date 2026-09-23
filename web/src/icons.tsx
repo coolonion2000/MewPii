@@ -44,6 +44,7 @@ export const IconArchive = (p: IconProps) => base(p, <><rect x="3" y="4" width="
 export const IconUnarchive = (p: IconProps) => base(p, <><rect x="3" y="4" width="18" height="4" rx="1" /><path d="M5 8v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8" /><path d="m12 12v6M9 15l3-3 3 3" /></>);
 export const IconPencil = (p: IconProps) => base(p, <path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5z" />);
 export const IconFolder = (p: IconProps) => base(p, <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" />);
+export const IconFolderPlus = (p: IconProps) => base(p, <><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" /><path d="M12 11v6M9 14h6" /></>);
 export const IconChevronRight = (p: IconProps) => base(p, <path d="m9 6 6 6-6 6" />);
 export const IconChevronLeft = (p: IconProps) => base(p, <path d="m15 6-6 6 6 6" />);
 export const IconChevronDown = (p: IconProps) => base(p, <path d="m6 9 6 6 6-6" />);

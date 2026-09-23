@@ -196,6 +196,7 @@ export interface ToolActivity {
 /** Live-measured timing for the current/last run (not persisted by pi). */
 export interface RunStats {
   agentStartedAt?: number;
+  endedAt?: number;
   firstDeltaAt?: number;
   llmMs: number;
   toolMs: number;
@@ -895,12 +896,13 @@ export class Conversation {
     const resumedStreaming = normalizeStreamingMessage(snap.streamingMessage);
     if (previousSessionId && previousSessionId !== snap.sessionId) {
       this.streaming = snap.isStreaming ? resumedStreaming : undefined;
-      this.runStats.agentStartedAt = undefined;
+      this.runStats = { llmMs: 0, toolMs: 0, turns: 0, steps: 0, outputChars: 0 };
       this.deltaSamples = [];
       this.tools = new Map();
     } else if (!snap.isStreaming) {
       this.streaming = undefined;
-      this.runStats.agentStartedAt = undefined;
+      if (this.runStats.agentStartedAt && !this.runStats.endedAt)
+        this.runStats.endedAt = Date.now();
       this.deltaSamples = [];
       this.tools = new Map(
         [...this.tools].map(([id, activity]) => [
@@ -1161,6 +1163,7 @@ export class Conversation {
       }
       case "agent_end":
         if (this.runStats.agentStartedAt) {
+          this.runStats.endedAt = now;
           this.runStats.llmMs = Math.max(
             0,
             now - this.runStats.agentStartedAt - this.runStats.toolMs,
@@ -1170,7 +1173,8 @@ export class Conversation {
       case "agent_settled":
         if (this.snapshot) this.snapshot = { ...this.snapshot, providerRequest: undefined };
         this.retry = undefined;
-        this.runStats.agentStartedAt = undefined;
+        if (this.runStats.agentStartedAt && !this.runStats.endedAt)
+          this.runStats.endedAt = now;
         this.deltaSamples = [];
         break;
     }

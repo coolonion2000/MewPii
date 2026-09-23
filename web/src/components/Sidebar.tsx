@@ -10,6 +10,7 @@ import {
 } from '../state-utils';
 import {
   getUsedSessions,
+  removeUsedSession,
   resolveUsedSessionTitle,
   subscribeUsedSessions,
 } from '../used-sessions';
@@ -17,7 +18,7 @@ import DirectoryPicker from './DirectoryPicker';
 import SessionActions from './SessionActions';
 import {
   IconPlus, IconSearch, IconSettings, IconTrash, IconStar, IconStarFilled,
-  IconArchive, IconUnarchive, IconFolder, IconChevronLeft,
+  IconArchive, IconUnarchive, IconFolder, IconFolderPlus, IconChevronLeft,
   IconChevronRight, IconRefresh, IconSun, IconMoon, IconExport, IconChat, IconLogout,
   IconCheck, IconX, IconTerminal,
 } from '../icons';
@@ -239,7 +240,7 @@ export default function Sidebar(props: Props) {
     subscribeUsedSessions,
     getUsedSessions,
     getUsedSessions,
-  );
+  ).filter((session) => session.agent === currentAgent);
   const runningSessionPaths = useMemo(
     () =>
       new Set(
@@ -473,34 +474,46 @@ export default function Sidebar(props: Props) {
           <div className="current-work-header">{t('currentWork')}</div>
           <div className="current-work-list">
             {usedSessions.slice(0, 5).map((session) => {
-              const active = selection?.sessionPath === session.sessionPath;
+              const active = selection?.cwd === session.cwd && (
+                Boolean(session.sessionId && selection.sessionId === session.sessionId) ||
+                Boolean(session.sessionPath && selection.sessionPath === session.sessionPath)
+              );
               const running = Boolean(
                 session.sessionPath && runningSessionPaths.has(session.sessionPath),
               );
               return (
-                <button
-                  type="button"
-                  key={`${session.cwd}|${session.sessionPath ?? ''}`}
+                <div
+                  key={`${session.agent ?? 'local'}|${session.cwd}|${session.sessionId ?? session.sessionPath ?? ''}`}
                   className={`current-work-item ${active ? 'active' : ''}`}
-                  onClick={() =>
-                    onSelect({
+                >
+                  <button
+                    type="button"
+                    className="current-work-select"
+                    onClick={() => onSelect({
                       cwd: session.cwd,
                       sessionPath: session.sessionPath,
                       sessionId: session.sessionId,
-                    })
-                  }
-                >
-                  <span
-                    className={`current-work-dot ${running ? 'running' : active ? 'active' : ''}`}
-                    aria-hidden="true"
-                  />
-                  <span className="current-work-copy">
-                    <span className="current-work-title">
-                      {resolveUsedSessionTitle(session, projects)}
+                    })}
+                  >
+                    <span
+                      className={`current-work-dot ${running ? 'running' : active ? 'active' : ''}`}
+                      aria-hidden="true"
+                    />
+                    <span className="current-work-copy">
+                      <span className="current-work-title">
+                        {resolveUsedSessionTitle(session, projects)}
+                      </span>
+                      <span className="current-work-project">{basename(session.cwd)}</span>
                     </span>
-                    <span className="current-work-project">{basename(session.cwd)}</span>
-                  </span>
-                </button>
+                  </button>
+                  <button
+                    type="button"
+                    className="current-work-remove"
+                    title={t('removeFromCurrentWork')}
+                    aria-label={`${t('removeFromCurrentWork')}: ${resolveUsedSessionTitle(session, projects)}`}
+                    onClick={() => removeUsedSession(session)}
+                  ><IconX size={12} /></button>
+                </div>
               );
             })}
           </div>
@@ -516,7 +529,7 @@ export default function Sidebar(props: Props) {
           <IconExport size={14} style={{ transform: 'rotate(180deg)' }} />
         </button>
         <button className="btn btn-icon" title={t('pickFolder')} onClick={() => setPickerOpen(true)}>
-          <IconPlus />
+          <IconFolderPlus size={17} />
         </button>
       </div>
       {pickerOpen && (
@@ -665,7 +678,7 @@ export default function Sidebar(props: Props) {
           <button className={`btn btn-icon ${view !== 'chat' && view !== 'files' ? 'tab-active' : ''}`} title={t('navSettings')} onClick={() => onNavigate('settings')}>
             <IconSettings size={14} />
           </button>
-          <span className="build-tag">v0.1.15</span>
+          <span className="build-tag">v0.1.16</span>
           <span style={{ flex: 1 }} />
           <button className="btn btn-icon" title={t('refresh')} onClick={onRefresh}><IconRefresh size={13} /></button>
           <button className="btn btn-icon" title="Language" onClick={() => setLang(getLang() === 'zh' ? 'en' : 'zh')} style={{ fontSize: 11 }}>

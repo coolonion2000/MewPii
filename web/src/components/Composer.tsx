@@ -3,6 +3,7 @@ import type { Conversation } from '../api';
 import { fetchModels, type ModelsResponse } from '../api';
 import { t } from '../i18n';
 import { commandNoticeFallback, restoreFailedImages, restoreFailedText } from '../state-utils';
+import { searchSlashCommands } from '../slash-search';
 import { IconPlus, IconArrowUp, IconStop, IconChevronDown, IconX, IconWrench } from '../icons';
 import {
   clearComposerDraft,
@@ -305,10 +306,11 @@ export default function Composer({ conv, draft, onDraft }: Props) {
     return m ? m[1].toLowerCase() : undefined;
   })();
   const slashMatches = slashQuery !== undefined
-    ? slashItems.filter((it) => it.cmd.slice(1).toLowerCase().startsWith(slashQuery))
+    ? searchSlashCommands(slashItems, slashQuery)
     : [];
   const [slashIndex, setSlashIndex] = useState(0);
   const slashMenuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => setSlashIndex(0), [slashQuery]);
   useEffect(() => {
     slashMenuRef.current?.querySelector('.active')?.scrollIntoView({ block: 'nearest' });
   }, [slashIndex, slashQuery]);

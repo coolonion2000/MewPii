@@ -151,8 +151,22 @@ export default function App() {
   }, []);
 
   const setSelection = useCallback(
-    (s: Selection | undefined) => setRoute({ view: "chat", selection: s }),
-    [setRoute],
+    (s: Selection | undefined) => {
+      if (s && (s.sessionPath || s.sessionId)) {
+        const summary = projects.find((project) => project.cwd === s.cwd)?.sessions.find(
+          (session) => session.path === s.sessionPath || session.id === s.sessionId,
+        );
+        addUsedSession({
+          agent: appAgent,
+          cwd: s.cwd,
+          sessionPath: s.sessionPath,
+          sessionId: s.sessionId,
+          title: summary?.name || summary?.firstMessage || '(新会话)',
+        }, { reopen: true });
+      }
+      setRoute({ view: "chat", selection: s });
+    },
+    [setRoute, projects, appAgent],
   );
 
   useEffect(() => {
@@ -420,6 +434,7 @@ export default function App() {
       if (signature === recordedSignature) return;
       recordedSignature = signature;
       addUsedSession({
+        agent: conv.agent,
         cwd: conv.snapshot?.cwd ?? conv.cwd,
         sessionPath: file,
         sessionId: conv.snapshot?.sessionId,
@@ -432,8 +447,8 @@ export default function App() {
       const count = conv.snapshot?.messages.length ?? conv.messages.length;
       const file = conv.snapshot?.sessionFile;
       const name = conv.snapshot?.name;
-      // record "used in this tab" when a user message lands (title from the
-      // session itself: name or first user text, never the latest message)
+      // Enrich the shortcut when the session gains a message, path or name.
+      // Explicit sidebar selection adds it immediately, before hydration.
       if ((prevCount === 0 && count > 0) || file !== prevFile || name !== prevName)
         recordUsedSession();
       if (

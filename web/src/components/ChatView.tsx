@@ -15,7 +15,7 @@ import type { Conversation, ToolActivity } from "../api";
 import MessageItem from "./MessageItem";
 import ToolCard from "./ToolCard";
 import Composer from "./Composer";
-import StatsBar, { LspStatusLine } from "./StatsBar";
+import StatsBar from "./StatsBar";
 import ProviderActivity from "./ProviderActivity";
 import { followChatTail } from "../chat-tail-follow";
 import { filePreviewState } from "../file-preview-state";
@@ -23,7 +23,7 @@ import RunsChip, { type RunInfo } from "./RunsChip";
 import SubagentPanel from "./SubagentPanel";
 import ErrorBoundary from "./ErrorBoundary";
 import { SubagentContext, useSubagentStore } from "../subagent-store";
-import { IconFolder, IconChevronDown } from "../icons";
+import { IconFolder, IconChevronDown, IconMore, IconLs, IconGitFork, IconCompress, IconExport } from "../icons";
 import ExtensionUI, {
   EditorWidgets,
   InlineQuestions,
@@ -250,6 +250,24 @@ function ChatView({
     [conv, conv.snapshot?.sessionId],
   );
   const [showTraj, setShowTraj] = useState(false);
+  const [actionsOpen, setActionsOpen] = useState(false);
+  const actionsRef = useRef<HTMLDivElement>(null);
+  useEffect(() => setActionsOpen(false), [conv]);
+  useEffect(() => {
+    if (!actionsOpen) return;
+    const closeOutside = (event: PointerEvent) => {
+      if (!actionsRef.current?.contains(event.target as Node)) setActionsOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setActionsOpen(false);
+    };
+    document.addEventListener("pointerdown", closeOutside, true);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOutside, true);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [actionsOpen]);
   const [draft, setDraft] = useState<string>();
   const [previewPath, setPreviewPath] = useState<string>();
   const previewState = useMemo(
@@ -375,7 +393,6 @@ function ChatView({
     [],
   );
   const snap = conv.snapshot;
-  const newSessionDisabled = Boolean(snap?.isStreaming || conv.compaction);
 
   const baseMessages = useMemo<PiiMessage[]>(
     () => [
@@ -544,7 +561,6 @@ function ChatView({
   if (!hasHistory && !conv.snapshot?.isStreaming && !conv.compaction) {
     return (
       <>
-        <StatsBar conv={conv} />
         <div className="hero">
           <img
             className="hero-logo-wide"
@@ -629,8 +645,8 @@ function ChatView({
           <div className="hero-composer">
             <Composer conv={conv} draft={draft} onDraft={setDraft} />
           </div>
-          <LspStatusLine conv={conv} />
           <EditorWidgets conv={conv} placement="belowEditor" />
+          <StatsBar conv={conv} />
         </div>
         <ExtensionUI conv={conv} />
       </>
@@ -640,6 +656,87 @@ function ChatView({
   return (
     <SubagentContext.Provider value={subagentContext}>
       <div className="chat-header">
+        <div className="menu-anchor chat-actions" ref={actionsRef}>
+          <button
+            type="button"
+            className="btn btn-icon chat-actions-trigger"
+            title={t("sessionActions")}
+            aria-label={t("sessionActions")}
+            aria-haspopup="menu"
+            aria-expanded={actionsOpen}
+            onClick={() => setActionsOpen((open) => !open)}
+          >
+            <IconMore size={16} />
+          </button>
+          {actionsOpen && (
+            <div className="menu menu-down chat-actions-menu" role="menu" aria-label={t("sessionActions")}>
+              <button
+                type="button"
+                className={`menu-item ${showTraj ? "active" : ""}`}
+                role="menuitemcheckbox"
+                aria-checked={showTraj}
+                onClick={() => {
+                  setShowTraj((value) => !value);
+                  setActionsOpen(false);
+                }}
+              >
+                <IconLs size={15} /> {t("trajectory")}
+              </button>
+              <button
+                type="button"
+                className="menu-item"
+                role="menuitem"
+                disabled={!baseMessages.some((message) => message._entryId)}
+                onClick={() => {
+                  setActionsOpen(false);
+                  let last: PiiMessage | undefined;
+                  for (let index = baseMessages.length - 1; index >= 0; index--) {
+                    if (baseMessages[index]._entryId) {
+                      last = baseMessages[index];
+                      break;
+                    }
+                  }
+                  if (!last?._entryId) return;
+                  void conv
+                    .send({ type: "fork", entryId: last._entryId })
+                    .then((data) => {
+                      onRefresh();
+                      const file = data?.sessionFile as string | undefined;
+                      if (file && onForked)
+                        onForked(conv.snapshot?.cwd ?? conv.cwd, file);
+                    })
+                    .catch((cause) => reportConversationError(conv, cause));
+                }}
+              >
+                <IconGitFork size={15} /> {t("clone")}
+              </button>
+              <button
+                type="button"
+                className="menu-item"
+                role="menuitem"
+                onClick={() => {
+                  setActionsOpen(false);
+                  void conv
+                    .send({ type: "compact" })
+                    .catch((cause) => reportConversationError(conv, cause));
+                }}
+              >
+                <IconCompress size={15} /> {t("compact")}
+              </button>
+              <button
+                type="button"
+                className="menu-item"
+                role="menuitem"
+                onClick={() => {
+                  setActionsOpen(false);
+                  handleExport();
+                }}
+              >
+                <IconExport size={15} /> {t("export")}
+              </button>
+            </div>
+          )}
+        </div>
         <div className="chat-session-title" title={title}>
           {title}
         </div>
@@ -667,80 +764,12 @@ function ChatView({
             {t("running")}
           </span>
         )}
-        <button
-          className={`btn btn-sm ${showTraj ? "tab-active" : ""}`}
-          onClick={() => setShowTraj((v) => !v)}
-        >
-          {t("trajectory")}
-        </button>
-        <button
-          className="btn btn-sm"
-          title={t("clone")}
-          onClick={() => {
-            let last: PiiMessage | undefined;
-            for (let index = baseMessages.length - 1; index >= 0; index--) {
-              if (baseMessages[index]._entryId) {
-                last = baseMessages[index];
-                break;
-              }
-            }
-            if (!last?._entryId) return;
-            void conv
-              .send({ type: "fork", entryId: last._entryId })
-              .then((data) => {
-                onRefresh();
-                const file = data?.sessionFile as string | undefined;
-                if (file && onForked)
-                  onForked(conv.snapshot?.cwd ?? conv.cwd, file);
-              })
-              .catch((cause) => reportConversationError(conv, cause));
-          }}
-        >
-          {t("clone")}
-        </button>
-        <button
-          className="btn btn-sm"
-          title={t("compact")}
-          onClick={() =>
-            void conv
-              .send({ type: "compact" })
-              .catch((cause) => reportConversationError(conv, cause))
-          }
-        >
-          {t("compact")}
-        </button>
-        <button
-          className="btn btn-sm"
-          title={t("export")}
-          onClick={handleExport}
-        >
-          {t("export")}
-        </button>
-        <button
-          className="btn btn-sm"
-          disabled={newSessionDisabled}
-          aria-disabled={newSessionDisabled}
-          onClick={() => {
-            void conv
-              .send({ type: "newSession" })
-              .then(onRefresh)
-              .catch((cause) =>
-                conv.reportError(
-                  cause instanceof Error ? cause.message : String(cause),
-                ),
-              );
-          }}
-        >
-          {t("newSession")}
-        </button>
         <RunsChip
           onOpenRun={(run: RunInfo) => {
             if (run.sessionFile && onForked) onForked(run.cwd, run.sessionFile);
           }}
         />
       </div>
-
-      <StatsBar conv={conv} />
 
       <div
         className={`chat-body ${subagents.selected ? "has-subagent-detail" : ""}`}
@@ -774,6 +803,7 @@ function ChatView({
               />
             </>
           )}
+          <div className="chat-scroll-frame">
           {showTraj ? (
             <div className="chat-scroll">
               <Suspense
@@ -1033,6 +1063,18 @@ function ChatView({
               </div>
             </div>
           )}
+          {showJump && !showTraj && (
+            <button
+              className="jump-bottom"
+              onClick={() => {
+                tailFollowerRef.current?.jumpToBottom();
+                setShowJump(false);
+              }}
+            >
+              ↓ {t("jumpToBottom")}
+            </button>
+          )}
+          </div>
           {(conv.queue.steering.length > 0 ||
             conv.queue.followUp.length > 0) && (
             <div className="queue-strip">
@@ -1074,25 +1116,14 @@ function ChatView({
             </div>
           )}
 
-          {showJump && (
-            <button
-              className="jump-bottom"
-              onClick={() => {
-                tailFollowerRef.current?.jumpToBottom();
-                setShowJump(false);
-              }}
-            >
-              ↓ {t("jumpToBottom")}
-            </button>
-          )}
           <EditorWidgets conv={conv} placement="aboveEditor" />
           <div className="composer-wrap">
             <SubagentPanel key={snap?.sessionFile} />
             <InlineQuestions conv={conv} />
             <Composer conv={conv} draft={draft} onDraft={setDraft} />
           </div>
-          <LspStatusLine conv={conv} />
           <EditorWidgets conv={conv} placement="belowEditor" />
+          <StatsBar conv={conv} />
         </div>
         {subagents.selected && (
           <>
