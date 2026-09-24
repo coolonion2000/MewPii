@@ -43,6 +43,7 @@ import {
   type SidebarDragPhase,
 } from "./ui-reliability";
 import { IconMenu, IconPlus } from "./icons";
+import { trackMobileViewport } from "./mobile-viewport";
 
 const ModelsPanel = lazy(() => import("./components/ModelsPanel"));
 const FilesPanel = lazy(() => import("./components/FilesPanel"));
@@ -131,6 +132,7 @@ export default function App() {
   const lang = getLang();
 
   useEffect(() => onLangChange(force), []);
+  useEffect(() => trackMobileViewport(), []);
 
   useEffect(() => {
     const media = window.matchMedia(MOBILE_LAYOUT_QUERY);

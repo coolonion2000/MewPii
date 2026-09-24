@@ -1,5 +1,6 @@
 import { memo, useEffect, useRef, useState } from 'react';
 import ImagePreview from './ImagePreview';
+import { imageDataUrl } from '../image-preview-utils';
 import MarkdownBody from './MessageMarkdownBody';
 import type { PiiMessage } from '../types';
 import type { ToolActivity } from '../api';
@@ -112,10 +113,16 @@ function MessageItem({ message, streaming, toolResults, tools, language, onFork,
           b.type === 'image' && typeof b.data === 'string' ? (
             <img
               key={i}
-              src={`data:${typeof b.mimeType === 'string' ? b.mimeType : 'image/png'};base64,${b.data}`}
+              src={imageDataUrl(b.data, b.mimeType)}
+              loading="lazy"
+              decoding="async"
+              tabIndex={0}
+              role="button"
+              aria-label={t('imagePreview')}
               alt="attachment"
               style={{ cursor: 'zoom-in' }}
-              onClick={() => setPreview(`data:${b.mimeType};base64,${b.data}`)}
+              onClick={() => setPreview(imageDataUrl(b.data as string, b.mimeType))}
+              onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setPreview(imageDataUrl(b.data as string, b.mimeType)); } }}
             />
           ) : (
             <span key={i}>{typeof b.text === 'string' ? b.text : ''}</span>

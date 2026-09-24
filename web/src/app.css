@@ -1907,6 +1907,7 @@ body[data-ds-dark-theme] .composer:focus-within {
 .image-remove svg {
   display: block;
 }
+.image-preview-trigger { display: block; padding: 0; border: 0; border-radius: 8px; background: transparent; cursor: zoom-in; }
 
 .section-title {
   font-size: 14px;
@@ -3397,6 +3398,10 @@ body[data-ds-dark-theme] .hero-composer .composer {
 .lightbox::backdrop { background: rgba(0, 0, 0, .65); }
 .lightbox-frame { position: relative; min-width: 0; cursor: default; }
 .lightbox-viewport {
+  position: relative;
+  touch-action: none;
+  overscroll-behavior: contain;
+  cursor: grab;
   max-width: calc(100vw - 40px);
   max-height: calc(100dvh - 140px);
   overflow: auto;
@@ -3409,6 +3414,8 @@ body[data-ds-dark-theme] .hero-composer .composer {
   left: 50%;
   transform: translateX(-50%);
   display: flex;
+  white-space: nowrap;
+  max-width: calc(100vw - 16px);
   padding: 4px;
   border-radius: 24px;
   background: #30343b;
@@ -3426,6 +3433,10 @@ body[data-ds-dark-theme] .hero-composer .composer {
 }
 .lightbox-controls button:hover { background: #ffffff25; }
 .lightbox-controls button:disabled { opacity: .4; cursor: default; }
+.lightbox-scale { display: grid; place-items: center; min-width: 44px; font-size: 12px; font-variant-numeric: tabular-nums; }
+.lightbox-status { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; background: #30343b; color: white; }
+.lightbox-status button { color: white; background: #555; border: 1px solid #888; border-radius: 6px; padding: 6px 16px; cursor: pointer; }
+.lightbox-viewport:active { cursor: grabbing; }
 @keyframes lb-fade {
   from {
     opacity: 0;
@@ -3438,7 +3449,7 @@ body[data-ds-dark-theme] .hero-composer .composer {
   display: block;
   max-width: none;
   max-height: none;
-  cursor: default;
+  cursor: inherit;
   box-shadow: 0 12px 48px rgba(0, 0, 0, 0.45);
 }
 .lightbox-close {
@@ -4678,7 +4689,10 @@ body[data-ds-dark-theme] .hero-composer .composer {
 /* Phone layout: keep the conversation full-width and move navigation into a drawer. */
 @media (max-width: 700px) {
   .app {
-    height: 100dvh;
+    position: fixed;
+    top: var(--mobile-viewport-top, 0px);
+    left: 0;
+    height: var(--mobile-viewport-height, 100dvh);
     width: 100%;
   }
   .main-workspace {
@@ -4711,7 +4725,8 @@ body[data-ds-dark-theme] .hero-composer .composer {
     inset: 0 auto 0 0;
     z-index: 111;
     width: min(86vw, 340px) !important;
-    height: 100dvh;
+    top: var(--mobile-viewport-top, 0px);
+    height: var(--mobile-viewport-height, 100dvh);
     padding-top: env(safe-area-inset-top);
     padding-bottom: env(safe-area-inset-bottom);
     transform: translateX(-101%);
@@ -4829,11 +4844,11 @@ body[data-ds-dark-theme] .hero-composer .composer {
     position: fixed;
     left: 10px;
     right: 10px;
-    bottom: calc(130px + env(safe-area-inset-bottom));
+    bottom: calc(100dvh - var(--mobile-viewport-height, 100dvh) - var(--mobile-viewport-top, 0px) + 130px + env(safe-area-inset-bottom));
     width: auto;
     min-width: 0;
     max-width: none;
-    max-height: 54dvh;
+    max-height: max(80px, calc(var(--mobile-viewport-height, 100dvh) - 190px));
     flex-direction: column;
   }
   .combined-menu .menu-section {

@@ -49,6 +49,7 @@ import {
   shouldPlayCompletionSound,
 } from "../completion-sound";
 import { t } from "../i18n";
+import { transcriptStart, TRANSCRIPT_PAGE_SIZE } from "../transcript-window";
 
 const Trajectory = lazy(() => import("./Trajectory"));
 const FilePreview = lazy(() => import("./FilePreview"));
@@ -420,6 +421,27 @@ function ChatView({
     }
     return { messageKeys: anchors, renderKeys: unique, occurrences: counts };
   }, [baseMessages]);
+  const [historyAnchor, setHistoryAnchor] = useState<{ owner: Conversation; key: string | null }>();
+  const visibleStart = transcriptStart(renderKeys, historyAnchor?.owner === conv ? historyAnchor.key : undefined);
+  useEffect(() => {
+    if (!renderKeys.length) return;
+    if (historyAnchor?.owner !== conv || (historyAnchor.key !== null && !renderKeys.includes(historyAnchor.key))) {
+      setHistoryAnchor({ owner: conv, key: visibleStart > 0 ? renderKeys[visibleStart] : null });
+    }
+  }, [conv, renderKeys, visibleStart, historyAnchor]);
+  const visibleMessages = useMemo(() => baseMessages.slice(visibleStart), [baseMessages, visibleStart]);
+  const visibleMessageKeys = useMemo(() => messageKeys.slice(visibleStart), [messageKeys, visibleStart]);
+  const visibleRenderKeys = useMemo(() => renderKeys.slice(visibleStart), [renderKeys, visibleStart]);
+  const revealOlder = () => {
+    tailFollowerRef.current?.stopFollowing();
+    if (visibleStart > 0) {
+      const start = Math.max(0, visibleStart - TRANSCRIPT_PAGE_SIZE);
+      setHistoryAnchor({ owner: conv, key: start > 0 ? renderKeys[start] : null });
+    } else {
+      setHistoryAnchor({ owner: conv, key: null });
+      conv.loadOlder();
+    }
+  };
   const streamingMessage =
     conv.streaming && typeof conv.streaming === "object"
       ? conv.streaming
@@ -819,15 +841,15 @@ function ChatView({
           ) : (
             <div className="chat-scroll" ref={bindScroll} tabIndex={0}>
               <div className="chat-column">
-                {conv.historyFrom > 0 && (
+                {(conv.historyFrom > 0 || visibleStart > 0) && (
                   <div style={{ display: "flex", justifyContent: "center" }}>
                     <button
                       className="btn btn-sm"
                       disabled={conv.historyInFlight}
-                      onClick={() => conv.loadOlder()}
+                      onClick={revealOlder}
                     >
                       {conv.historyInFlight ? "…" : t("loadOlder")} (
-                      {conv.historyFrom})
+                      {conv.historyFrom + visibleStart})
                     </button>
                   </div>
                 )}
@@ -839,14 +861,14 @@ function ChatView({
                     </div>
                   </div>
                 )}
-                {noticesBeforeMessages.map((notice) => (
+                {visibleStart === 0 && noticesBeforeMessages.map((notice) => (
                   <TranscriptNoticeView key={notice.id} notice={notice} />
                 ))}
                 <FinalizedTimeline
                   cwd={snap?.cwd ?? conv.cwd}
-                  messages={baseMessages}
-                  messageKeys={messageKeys}
-                  renderKeys={renderKeys}
+                  messages={visibleMessages}
+                  messageKeys={visibleMessageKeys}
+                  renderKeys={visibleRenderKeys}
                   noticesByMessage={noticesByMessage}
                   toolResults={toolResults}
                   tools={conv.tools}

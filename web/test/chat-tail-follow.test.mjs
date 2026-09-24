@@ -42,3 +42,13 @@ test('session replacement cancels old layout work and starts following the new c
   const second = fixture(); second.flush(); assert.equal(second.viewport.scrollTop, 700);
   second.controller.dispose();
 });
+test('explicit history reveal cancels follow until the user jumps to the newest message', () => {
+  const f = fixture(); f.flush();
+  f.controller.stopFollowing();
+  f.grow(2000); f.flush();
+  assert.equal(f.viewport.scrollTop, 700);
+  assert.equal(f.states.at(-1), false);
+  f.controller.jumpToBottom(); f.flush();
+  assert.equal(f.viewport.scrollTop, 1700);
+  f.controller.dispose();
+});

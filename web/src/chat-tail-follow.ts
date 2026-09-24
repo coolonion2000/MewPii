@@ -57,6 +57,7 @@ export function followChatTail(viewport: HTMLElement, content: HTMLElement, onFo
   onFollowing(true);
   schedule();
   return {
+    stopFollowing() { setFollowing(false); },
     pause: begin,
     resume: release,
     jumpToBottom() { clearTimeout(releaseTimer); interacting = false; setFollowing(true); schedule(); },

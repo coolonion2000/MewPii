@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Conversation } from '../api';
 import { fetchModels, type ModelsResponse } from '../api';
 import { t } from '../i18n';
+import ImagePreview from './ImagePreview';
+import { imageDataUrl } from '../image-preview-utils';
 import { commandNoticeFallback, restoreFailedImages, restoreFailedText } from '../state-utils';
 import { searchSlashCommands } from '../slash-search';
 import { IconPlus, IconArrowUp, IconStop, IconChevronDown, IconX, IconWrench } from '../icons';
@@ -46,10 +48,12 @@ export default function Composer({ conv, draft, onDraft }: Props) {
   const [stopping, setStopping] = useState(false);
   const [stopError, setStopError] = useState<string>();
   const [mobileExpanded, setMobileExpanded] = useState(false);
+  const [imagePreview, setImagePreview] = useState<string>();
   const composerRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!mobileExpanded) return;
     const closeOutside = (event: PointerEvent) => {
+      if (imagePreview) return;
       if (!composerRef.current?.contains(event.target as Node)) {
         setMobileExpanded(false);
         setMenuOpen(undefined);
@@ -57,7 +61,7 @@ export default function Composer({ conv, draft, onDraft }: Props) {
     };
     document.addEventListener('pointerdown', closeOutside);
     return () => document.removeEventListener('pointerdown', closeOutside);
-  }, [mobileExpanded]);
+  }, [mobileExpanded, imagePreview]);
   const submitPendingRef = useRef(false);
   const stoppingRef = useRef(false);
   const stopGeneration = useRef(0);
@@ -353,7 +357,9 @@ export default function Composer({ conv, draft, onDraft }: Props) {
         <div className="image-strip">
           {images.map((img, i) => (
             <div key={i} className="image-thumb">
-              <img src={`data:${img.mimeType};base64,${img.data}`} alt={img.name} />
+              <button type="button" className="image-preview-trigger" aria-label={`${t('imagePreview')}: ${img.name}`} onClick={() => setImagePreview(imageDataUrl(img.data, img.mimeType))}>
+                <img src={imageDataUrl(img.data, img.mimeType)} alt={img.name} />
+              </button>
               <button
                 type="button"
                 aria-label={t('removeImage')}
@@ -366,6 +372,7 @@ export default function Composer({ conv, draft, onDraft }: Props) {
           ))}
         </div>
       )}
+      {imagePreview && <ImagePreview src={imagePreview} onClose={() => setImagePreview(undefined)} />}
       {slashMatches.length > 0 && (
         <div className="slash-menu" ref={slashMenuRef}>
           {slashMatches.map((it, i) => (
