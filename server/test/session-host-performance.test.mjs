@@ -5,6 +5,8 @@ import WebSocket from "ws";
 import {
   SESSION_HISTORY_MAX_BYTES,
   SESSION_HISTORY_MAX_MESSAGES,
+  SESSION_RECENT_MAX_BYTES,
+  SESSION_RECENT_VISIBLE_MESSAGES,
   SessionHost,
   serializeEvent,
 } from "../dist/session-host.js";
@@ -180,10 +182,10 @@ test("snapshot caches stable branch metadata and bounds both snapshot and histor
   assert.equal(statsReads, 1, "unchanged stats were recomputed twice");
   assert.equal(commandReads, 1, "unchanged slash commands were enumerated twice");
   assert.equal(first.totalMessages, 200);
-  assert.equal(first.messages.length < SESSION_HISTORY_MAX_MESSAGES, true);
+  assert.equal(first.messages.length, SESSION_RECENT_VISIBLE_MESSAGES);
   assert.equal(
     Buffer.byteLength(JSON.stringify(first.messages)) <=
-      SESSION_HISTORY_MAX_BYTES,
+      SESSION_RECENT_MAX_BYTES,
     true,
   );
   assert.deepEqual(second.messages, first.messages);

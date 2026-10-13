@@ -100,9 +100,38 @@ async function stopChild(child) {
 test("heartbeat terminates an unresponsive websocket", async () => {
   const ws = new FakeWebSocket();
   const dispose = attachWebSocketHeartbeat(ws, 10);
-  await delay(35);
+  await delay(65);
   assert.equal(ws.terminated, true);
   dispose();
+  assert.equal(ws.listenerCount('pong'), 0);
+});
+
+test('heartbeat tolerates a missed pong and cleans up listeners', async () => {
+  const ws = new FakeWebSocket();
+  const dispose = attachWebSocketHeartbeat(ws, 20);
+  await delay(45);
+  assert.equal(ws.terminated, false);
+  ws.emit('pong');
+  await delay(22);
+  assert.equal(ws.terminated, false);
+  dispose();
+  assert.equal(ws.listenerCount('pong'), 0);
+  assert.equal(ws.listenerCount('close'), 0);
+});
+
+test('heartbeat gives delayed pong callbacks grace after event-loop blocking', async () => {
+  const ws = new FakeWebSocket();
+  const dispose = attachWebSocketHeartbeat(ws, 20);
+  try {
+    await delay(25);
+    const until = performance.now() + 80;
+    while (performance.now() < until) { /* simulate a synchronous plugin */ }
+    await delay(1);
+    assert.equal(ws.terminated, false);
+    ws.emit('pong');
+    await delay(25);
+    assert.equal(ws.terminated, false);
+  } finally { dispose(); }
 });
 
 test("live websocket flow pauses pausable sources and bounds multiplexed channels", async () => {

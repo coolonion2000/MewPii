@@ -476,6 +476,16 @@ function ownedOAuthFlow(
 }
 
 const oauthCleanupTimer = setInterval(cleanOAuthFlows, 30_000);
+let lastLoopTick = performance.now();
+const loopHealthTimer = setInterval(() => {
+  const now = performance.now();
+  const lagMs = Math.round(now - lastLoopTick - 5_000);
+  lastLoopTick = now;
+  if (lagMs < 1_000) return;
+  const memory = process.memoryUsage();
+  console.warn(`[runtime] event_loop_delayed lag_ms=${lagMs} rss_mb=${Math.round(memory.rss / 1048576)} heap_mb=${Math.round(memory.heapUsed / 1048576)}`);
+}, 5_000);
+loopHealthTimer.unref();
 oauthCleanupTimer.unref();
 function disposeOAuthFlows(): void {
   clearInterval(oauthCleanupTimer);
@@ -1193,6 +1203,23 @@ async function handleApi(
       return true;
     }
     sendJson(res, 200, { cwd: match.cwd, path: match.path, id: match.id });
+    return true;
+  }
+
+  if (path === "/api/sessions/stop" && req.method === "POST") {
+    const body = await readJsonBody(req, 4096) as { sessionId?: string };
+    if (typeof body.sessionId !== 'string' || !body.sessionId) {
+      sendJson(res, 400, { ok: false, error: 'missing sessionId' });
+      return true;
+    }
+    const host = hostForSessionId(body.sessionId);
+    if (!host) {
+      sendJson(res, 404, { ok: false, error: 'session is no longer loaded; reconnect to check its state' });
+      return true;
+    }
+    const result = await host.handleCommand({ type: 'abort' });
+    console.info(`[session] http_stop session_id=${JSON.stringify(body.sessionId)} status=${result.ok ? 'ok' : 'incomplete'}`);
+    sendJson(res, result.ok ? 200 : 409, result);
     return true;
   }
 
@@ -2717,6 +2744,8 @@ server.on("upgrade", (req, socket, head) => {
 
 wss.on("connection", (ws: WebSocket, _req: IncomingMessage, url: URL) => {
   attachWebSocketHeartbeat(ws);
+  const openedAt = Date.now();
+  ws.once('close', (code) => console.info(`[ws] connection_closed route=${JSON.stringify(url.pathname)} code=${code} duration_ms=${Date.now() - openedAt}`));
   if (url.pathname === "/ws/terminal") {
     void terminals.connect(ws, url, knownWorkspaceRoots);
     return;
@@ -2852,6 +2881,7 @@ wss.on("connection", (ws: WebSocket, _req: IncomingMessage, url: URL) => {
       return;
     }
     const mayBypassInitializationDrain =
+      cmd.type === "delivery_status" ||
       cmd.type === "abort" ||
       cmd.type === "editor_state" ||
       cmd.type === "ui_response" ||
@@ -2862,6 +2892,7 @@ wss.on("connection", (ws: WebSocket, _req: IncomingMessage, url: URL) => {
       cmd.type === "followUp" ||
       cmd.type === "queue_clear";
     const mayBypassReadiness =
+      cmd.type === "delivery_status" ||
       cmd.type === "abort" ||
       cmd.type === "history" ||
       cmd.type === "editor_state" ||

@@ -73,12 +73,14 @@ export interface ProviderInfoLite {
 export type ClientCommand =
   | {
       type: "prompt";
+      deliveryId?: string;
       message: string;
       images?: { data: string; mimeType: string }[];
       streamingBehavior?: "steer" | "followUp";
     }
-  | { type: "steer"; message: string }
-  | { type: "followUp"; message: string }
+  | { type: "steer"; message: string; deliveryId?: string }
+  | { type: "followUp"; message: string; deliveryId?: string }
+  | { type: "delivery_status"; deliveryId: string }
   | { type: "abort" }
   | { type: "newSession" }
   | { type: "fork"; entryId: string; position?: "before" | "at" }
@@ -110,7 +112,7 @@ export type ClientCommand =
   | { type: "custom_ui_input"; requestId: string; data: string }
   | { type: "custom_ui_resize"; requestId: string; width: number }
   | { type: "custom_ui_cancel"; requestId: string }
-  | { type: "slash"; raw: string };
+  | { type: "slash"; raw: string; deliveryId?: string };
 
 export interface WidgetState {
   key: string;
@@ -239,6 +241,8 @@ export interface SessionSnapshot {
   totalMessages: number;
   /** Index of the first message in `messages` within the full branch. */
   historyFrom: number;
+  /** Entry immediately preceding this page, for safe continuity across snapshots. */
+  historyBeforeEntryId?: string;
   queue: { steering: string[]; followUp: string[] };
   queueCapabilities: {
     revision: number;

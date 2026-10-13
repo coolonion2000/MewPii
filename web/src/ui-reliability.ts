@@ -3,6 +3,30 @@ export interface SidebarResizeResult {
   width: number;
 }
 
+/** Tool results and extension records do not exhaust the recent conversation budget. */
+export const RECENT_VISIBLE_MESSAGES = 50;
+
+export function hasRecentVisibleMessages(messages: readonly { role: string }[]): boolean {
+  let visible = 0;
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const role = messages[index].role;
+    if ((role === 'user' || role === 'assistant') && ++visible >= RECENT_VISIBLE_MESSAGES) return true;
+  }
+  return false;
+}
+
+export function visibleTranscriptStart(messages: readonly { role: string }[], start: number): number {
+  // ChatView memoizes this by finalized history/anchor, never by streaming delta.
+  // Keep a user-selected older anchor, but expand a tool-heavy tail to 50 rows.
+  let visible = 0;
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const role = messages[index].role;
+    if ((role === 'user' || role === 'assistant') && ++visible >= RECENT_VISIBLE_MESSAGES)
+      return Math.min(Math.max(0, start), index);
+  }
+  return 0;
+}
+
 /** A paged transcript can contain only assistant/tool turns; that is not a new session. */
 export function hasConversationHistory(
   messages: readonly { role: string }[],
@@ -20,6 +44,12 @@ export type SidebarDragPhase =
   | 'expanded';
 
 /** Keep resize math deterministic and reusable by pointer handlers and tests. */
+// Reserve 24px on each side for the chat handle, clear of the sidebar splitter.
+export function clampChatWidth(preferred: number, available: number): number {
+  const maximum = Math.max(0, available - 48);
+  return clampResizeWidth(preferred, Math.min(480, maximum), maximum);
+}
+
 export function clampResizeWidth(raw: number, minimum: number, maximum: number): number {
   if (!Number.isFinite(raw)) return minimum;
   return Math.min(maximum, Math.max(minimum, raw));
@@ -93,13 +123,15 @@ export function orphanRunningTools<T extends RunningToolLike>(
   finalizedToolCallIds: ReadonlySet<string>,
   streamingContent?: unknown,
 ): T[] {
-  const represented = new Set(finalizedToolCallIds);
+  // Only the streaming frame changes on a delta. Do not copy every historical
+  // tool ID just to test a handful of current activities.
+  const streamingIds = new Set<string>();
   for (const block of validContentBlocks(streamingContent)) {
     if (block.type === 'toolCall' && typeof block.id === 'string' && block.id)
-      represented.add(block.id);
+      streamingIds.add(block.id);
   }
   return [...tools.values()].filter(
-    (tool) => tool.running && !represented.has(tool.toolCallId),
+    (tool) => tool.running && !finalizedToolCallIds.has(tool.toolCallId) && !streamingIds.has(tool.toolCallId),
   );
 }
 

@@ -6,6 +6,8 @@ import {
   getUsedSessions,
   removeUsedSession,
   resolveUsedSessionTitle,
+  currentWorkEntry,
+  parseCurrentWork,
 } from '../src/used-sessions.ts';
 
 const used = {
@@ -86,4 +88,48 @@ test('blank projects do not create ambiguous current-work entries', () => {
   const length = getUsedSessions().length;
   addUsedSession({ cwd: '/project-blank', title: 'Blank' });
   assert.equal(getUsedSessions().length, length);
+});
+
+test('new session appears before first user message and custom messages do not block its title', () => {
+  const input = { cwd: '/new-regression', messages: [{role: 'custom', content: 'plugin initialized'}] };
+  assert.equal(currentWorkEntry(input), undefined);
+  input.sessionId = 'new-regression';
+  addUsedSession(currentWorkEntry(input));
+  assert.equal(getUsedSessions()[0].title, '(新会话)');
+  input.messages.push({role: 'user', content: [{type: 'text', text: 'First real request'}]});
+  addUsedSession(currentWorkEntry(input));
+  assert.equal(getUsedSessions()[0].title, 'First real request');
+  input.sessionPath = '/sessions/new-regression.jsonl';
+  addUsedSession(currentWorkEntry(input));
+  addUsedSession(currentWorkEntry({...input, sessionPath: undefined, messages: []}));
+  const rows = getUsedSessions().filter(s => s.sessionId === input.sessionId);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].sessionPath, input.sessionPath);
+  assert.equal(rows[0].title, 'First real request');
+});
+
+test('current work persists shortcuts and dismissals with safe malformed-storage fallback', () => {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'sessionStorage');
+  const storage = new Map();
+  Object.defineProperty(globalThis, 'sessionStorage', {configurable: true, value: {
+    setItem: (key, value) => storage.set(key, value),
+    getItem: key => storage.get(key) ?? null,
+  }});
+  try {
+    const entry = {cwd: '/persist', sessionId: 'persist', title: 'Persist'};
+    addUsedSession(entry);
+    assert.equal(parseCurrentWork(storage.get('mewpii.current-work.v1')).used[0].sessionId, 'persist');
+    removeUsedSession({...entry, at: 1});
+    const restored = parseCurrentWork(storage.get('mewpii.current-work.v1'));
+    assert.equal(restored.used.some(s => s.sessionId === 'persist'), false);
+    assert.equal(restored.dismissed[0].sessionId, 'persist');
+    for (const value of [null, 'null', '{broken', '[]']) {
+      assert.deepEqual(parseCurrentWork(value), {used: [], dismissed: []});
+    }
+    assert.equal(parseCurrentWork(JSON.stringify({used: [null, {}, {...entry, at: 1}]})).used.length, 1);
+    assert.equal(parseCurrentWork(JSON.stringify({used: Array(25).fill({...entry, at: 1})})).used.length, 20);
+  } finally {
+    if (previous) Object.defineProperty(globalThis, 'sessionStorage', previous);
+    else delete globalThis.sessionStorage;
+  }
 });

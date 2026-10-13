@@ -1,4 +1,7 @@
 /** In-memory per-conversation composer drafts. Cleared on page refresh. @author coolonion */
+import type { FileMention } from './file-mentions';
+const mergeMentions = (...groups: (FileMention[] | undefined)[]): FileMention[] =>
+  [...new Map(groups.flatMap(group => group ?? []).map(item => [item.path, { ...item }])).values()];
 
 export interface ComposerDraftImage {
   data: string;
@@ -9,6 +12,7 @@ export interface ComposerDraftImage {
 export interface ComposerDraft {
   text: string;
   images: ComposerDraftImage[];
+  mentions?: FileMention[];
 }
 
 const MAX_DRAFTS = 20;
@@ -25,11 +29,11 @@ export function conversationDraftKey(
 export function getComposerDraft(key: string): ComposerDraft | undefined {
   const draft = drafts.get(key);
   if (!draft) return undefined;
-  return { text: draft.text, images: draft.images.map((image) => ({ ...image })) };
+  return { text: draft.text, images: draft.images.map((image) => ({ ...image })), ...(draft.mentions?.length ? { mentions: mergeMentions(draft.mentions) } : {}) };
 }
 
 export function setComposerDraft(key: string, draft: ComposerDraft): void {
-  if (!draft.text && draft.images.length === 0) {
+  if (!draft.text && draft.images.length === 0 && !draft.mentions?.length) {
     drafts.delete(key);
     return;
   }
@@ -37,6 +41,7 @@ export function setComposerDraft(key: string, draft: ComposerDraft): void {
   drafts.set(key, {
     text: draft.text,
     images: draft.images.map((image) => ({ ...image })),
+    ...(draft.mentions?.length ? { mentions: mergeMentions(draft.mentions) } : {}),
   });
   while (drafts.size > MAX_DRAFTS) {
     const oldest = drafts.keys().next().value as string | undefined;
@@ -62,6 +67,7 @@ export function restoreFailedComposerDraft(
   const current = getComposerDraft(key);
   const seen = new Set<string>();
   const restored = {
+    ...(submitted.mentions?.length || current?.mentions?.length ? { mentions: mergeMentions(submitted.mentions, current?.mentions) } : {}),
     text: current?.text ? current.text : submitted.text,
     images: [...submitted.images, ...(current?.images ?? [])].filter((image) => {
       const imageKey = `${image.mimeType}:${image.data}`;

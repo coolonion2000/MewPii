@@ -29,6 +29,7 @@ export class PendingHostCreations<T> {
   }
 
   async join(entry: PendingHost<T>, listener?: HostPreviewListener, signal?: AbortSignal): Promise<T> {
+    const startedAt = performance.now();
     if (listener && !signal?.aborted && entry.listeners.size >= this.listenerCapacity)
       throw new Error("too many session initialization viewers");
     const remove = () => { if (listener) entry.listeners.delete(listener); };
@@ -43,6 +44,7 @@ export class PendingHostCreations<T> {
       }
       return await entry.promise;
     } finally {
+      process.stdout.write(`[session] creation_wait_complete session_id=${JSON.stringify(entry.latest?.sessionId ?? '')} duration_ms=${Math.round(performance.now() - startedAt)} viewer_aborted=${Boolean(signal?.aborted)}\n`);
       remove();
       signal?.removeEventListener("abort", remove);
     }
@@ -59,12 +61,14 @@ export class PendingHostCreations<T> {
     if (this.active.size >= this.capacity) throw new Error("too many initializing sessions");
     if (this.active.has(key) || (initialPath && this.get(initialPath)))
       throw new Error("session creation already pending");
+    const scheduledAt = performance.now();
     const entry: PendingHost<T> = {
       cwd,
       initialPath: initialPath ? resolve(initialPath) : undefined,
       listeners: new Set(),
       // Defer create until ownership and the shared promise are both installed.
       promise: Promise.resolve().then(async () => {
+        process.stdout.write(`[session] creation_started key=${JSON.stringify(key)} scheduling_wait_ms=${Math.round(performance.now() - scheduledAt)} pending=${this.size}\n`);
         let status = "failed";
         try {
           const host = await create(async (snapshot) => {
@@ -82,7 +86,7 @@ export class PendingHostCreations<T> {
               Promise.resolve().then(() => notify(snapshot)),
             ));
           });
-          status = "ready";
+          status = "created";
           return host;
         } finally {
           this.active.delete(key);
@@ -92,7 +96,7 @@ export class PendingHostCreations<T> {
           const viewers = entry.listeners.size;
           entry.listeners.clear();
           process.stdout.write(
-            `[session] creation_settled status=${status} session_id=${JSON.stringify(entry.latest?.sessionId ?? "")} viewers=${viewers} pending=${this.size}\n`,
+            `[session] creation_settled status=${status} session_id=${JSON.stringify(entry.latest?.sessionId ?? "")} duration_ms=${Math.round(performance.now() - scheduledAt)} viewers=${viewers} pending=${this.size}\n`,
           );
         }
       }),

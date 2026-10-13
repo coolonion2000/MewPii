@@ -15,7 +15,7 @@ import {
   getAgent,
   setAgent,
 } from "./api";
-import { addUsedSession } from "./used-sessions";
+import { addUsedSession, currentWorkEntry } from "./used-sessions";
 import { conversationDraftKey, getComposerDraft, setComposerDraft } from "./draft-store";
 import { reconcileConversationBinding } from "./conversation-identity";
 import type { ProjectGroup, SessionSummary } from "./types";
@@ -439,35 +439,23 @@ export default function App() {
     let prevCount = conv.snapshot?.messages.length ?? conv.messages.length;
     let prevFile = conv.snapshot?.sessionFile;
     let prevName = conv.snapshot?.name;
+    let prevId = conv.snapshot?.sessionId;
+    let prevMessages = conv.messages;
     let recordedSignature: string | undefined;
     const recordUsedSession = () => {
-      const firstUser = conv.messages.find((message) => message.role === "user");
-      if (!firstUser) return;
-      const firstText =
-        typeof firstUser.content === "string"
-          ? firstUser.content
-          : Array.isArray(firstUser.content)
-            ? ((firstUser.content as { type?: string; text?: string }[]).find(
-                (block) => block.type === "text",
-              )?.text ?? "")
-            : "";
-      const file = conv.snapshot?.sessionFile ?? conv.sessionPath;
-      const title = conv.snapshot?.name || firstText.slice(0, 40) || "(新会话)";
-      const signature = [
-        conv.snapshot?.cwd ?? conv.cwd,
-        file ?? "",
-        conv.snapshot?.sessionId ?? "",
-        title,
-      ].join("|");
-      if (signature === recordedSignature) return;
-      recordedSignature = signature;
-      addUsedSession({
+      const entry = currentWorkEntry({
         agent: conv.agent,
         cwd: conv.snapshot?.cwd ?? conv.cwd,
-        sessionPath: file,
+        sessionPath: conv.snapshot?.sessionFile ?? conv.sessionPath,
         sessionId: conv.snapshot?.sessionId,
-        title,
+        name: conv.snapshot?.name,
+        messages: conv.messages,
       });
+      if (!entry) return;
+      const signature = JSON.stringify(entry);
+      if (signature === recordedSignature) return;
+      recordedSignature = signature;
+      addUsedSession(entry);
     };
     recordUsedSession();
     return conv.subscribe(() => {
@@ -475,12 +463,14 @@ export default function App() {
       const count = conv.snapshot?.messages.length ?? conv.messages.length;
       const file = conv.snapshot?.sessionFile;
       const name = conv.snapshot?.name;
+      const id = conv.snapshot?.sessionId;
       // Enrich the shortcut when the session gains a message, path or name.
       // Explicit sidebar selection adds it immediately, before hydration.
-      if ((prevCount === 0 && count > 0) || file !== prevFile || name !== prevName)
+      if (conv.messages !== prevMessages || count !== prevCount || id !== prevId || file !== prevFile || name !== prevName)
         recordUsedSession();
       if (
         streaming !== prevStreaming ||
+        id !== prevId ||
         (prevCount === 0 && count > 0) ||
         file !== prevFile
       ) {
@@ -492,6 +482,8 @@ export default function App() {
         prevCount = count;
       }
       prevName = name;
+      prevId = id;
+      prevMessages = conv.messages;
     });
   }, [conv]);
 

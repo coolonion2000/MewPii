@@ -562,11 +562,12 @@ export function isStaleConversationSnapshot(
   return (snapshot.totalMessages ?? snapshot.messages.length) < previousTotalMessages;
 }
 
-/** Preserve loaded history only when the new snapshot overlaps the same session branch. */
+/** Preserve loaded history only with overlap or a position-verified branch predecessor. */
 export function mergeSnapshotMessages(
   current: PiiMessage[],
   previousSessionId: string | undefined,
   snapshot: SessionSnapshot,
+  previousHistoryFrom?: number,
 ): { messages: PiiMessage[]; historyFrom: number } {
   if (
     previousSessionId !== snapshot.sessionId ||
@@ -584,11 +585,26 @@ export function mergeSnapshotMessages(
       historyFrom: snapshot.historyFrom ?? 0,
     };
   const overlap = current.findIndex((message) => entryId(message) === firstId);
-  if (overlap < 0)
+  if (overlap < 0) {
+    // A size-limited snapshot may begin immediately after our loaded suffix.
+    // A durable predecessor PLUS its absolute index proves continuity; session
+    // identity alone would incorrectly retain a different branch's old tail.
+    const predecessor = snapshot.pagingProvisional !== true && snapshot.historyBeforeEntryId
+      ? current.findIndex((message) => entryId(message) === snapshot.historyBeforeEntryId)
+      : -1;
+    if (predecessor >= 0 && previousHistoryFrom !== undefined &&
+        previousHistoryFrom >= 0 &&
+        previousHistoryFrom + predecessor + 1 === snapshot.historyFrom) {
+      return {
+        messages: [...current.slice(0, predecessor + 1), ...snapshot.messages],
+        historyFrom: previousHistoryFrom,
+      };
+    }
     return {
       messages: snapshot.messages,
       historyFrom: snapshot.historyFrom ?? 0,
     };
+  }
   return {
     messages: mergeHistoryMessages(
       snapshot.messages,

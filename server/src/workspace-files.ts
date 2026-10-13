@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { resolveWorkspacePath } from './security.js';
+import { searchMentionFiles } from './file-mentions.js';
 
 const run = promisify(execFile);
 const MAX_PREVIEW = 2 * 1024 * 1024;
@@ -156,6 +157,11 @@ export async function handleWorkspaceFiles(req: IncomingMessage, res: ServerResp
     if (!cwd) throw new FileRequestError(400, 'missing cwd');
     const { base } = await resolveWorkspacePath(cwd, '.', { extraRoots: await dependencies.roots() });
     if (route === '/api/files') {
+      if (url.searchParams.get('mode') === 'mention') {
+        const result = await searchMentionFiles(base, url.searchParams.get('q') ?? '');
+        json(res, 200, { cwd: base, mentionSearch: true, ...result });
+        return true;
+      }
       // Preserve the existing directory picker contract unless explicitly hidden.
       const showHidden = url.searchParams.get('hidden') !== '0';
       const query = url.searchParams.get('q')?.trim();

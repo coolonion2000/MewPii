@@ -1,12 +1,16 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import type { Conversation } from '../api';
-import { fetchModels, type ModelsResponse } from '../api';
+import { DeliveryNotSentError, DeliveryUnknownError, fetchModels, getCachedModels, type ModelsResponse } from '../api';
 import { t } from '../i18n';
+import { conversationPhase, phaseTranslationKey } from '../conversation-phase';
 import ImagePreview from './ImagePreview';
 import { imageDataUrl } from '../image-preview-utils';
+import { mentionQuery, mentionMessage, parseMentionMessage, mergeMentions, type FileMention } from '../file-mentions';
+import { useFileMentionSearch, type MentionCandidate } from '../use-file-mention-search';
+import FileMentionChips from './FileMentionChips';
 import { commandNoticeFallback, restoreFailedImages, restoreFailedText } from '../state-utils';
 import { searchSlashCommands } from '../slash-search';
-import { IconPlus, IconArrowUp, IconStop, IconChevronDown, IconX, IconWrench } from '../icons';
+import { IconPlus, IconArrowUp, IconStop, IconChevronDown, IconX, IconWrench, IconCheck } from '../icons';
 import {
   clearComposerDraft,
   conversationDraftKey,
@@ -23,13 +27,14 @@ interface Props {
   conv: Conversation;
   draft?: string;
   onDraft?: (d: string | undefined) => void;
+  onOpenFile?: (path: string) => void;
 }
 
 const THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
 
 type PendingImage = ComposerDraftImage;
 
-export default function Composer({ conv, draft, onDraft }: Props) {
+export default function Composer({ conv, draft, onDraft, onOpenFile }: Props) {
   const initialDraftKey = conversationDraftKey(
     conv.agent,
     conv.snapshot?.cwd ?? conv.cwd,
@@ -38,15 +43,35 @@ export default function Composer({ conv, draft, onDraft }: Props) {
   const [initialDraft] = useState(() => getComposerDraft(initialDraftKey));
   const [text, setText] = useState(initialDraft?.text ?? '');
   const [images, setImages] = useState<PendingImage[]>(initialDraft?.images ?? []);
-  const [models, setModels] = useState<ModelsResponse | undefined>();
-  const [modelsLoading, setModelsLoading] = useState(true);
+  const [mentions, setMentions] = useState<FileMention[]>(initialDraft?.mentions ?? []);
+  const [cursor, setCursor] = useState(initialDraft?.text.length ?? 0);
+  const [inputFocused, setInputFocused] = useState(false);
+  const [mentionDismissed, setMentionDismissed] = useState(false);
+  const [mentionIndex, setMentionIndex] = useState(0);
+  const [composing, setComposing] = useState(false);
+  const mention = inputFocused && !mentionDismissed && !composing && mentions.length < 24 ? mentionQuery(text, cursor) : undefined;
+  const mentionSearch = useFileMentionSearch(mention?.query, conv.snapshot?.cwd ?? conv.cwd, conv.agent);
+  const mentionMenuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => setMentionIndex(0), [mention?.query]);
+  useEffect(() => { mentionMenuRef.current?.querySelector('.active')?.scrollIntoView({ block: 'nearest' }); }, [mentionIndex]);
+  const [models, setModels] = useState<ModelsResponse | undefined>(getCachedModels);
+  const [modelsLoading, setModelsLoading] = useState(() => !getCachedModels());
   const [modelsError, setModelsError] = useState<string>();
+  const [selectingModel, setSelectingModel] = useState(false);
   const [menuOpen, setMenuOpen] = useState<'model' | 'thinking' | 'tools' | undefined>();
   const [queueMode, setQueueMode] = useState<'steer' | 'followUp'>('steer');
   const [submitPending, setSubmitPending] = useState(false);
   const [pendingSlash, setPendingSlash] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [stopError, setStopError] = useState<string>();
+  const [checkingDelivery, setCheckingDelivery] = useState<string>();
+  const unconfirmedDrafts = useRef(new Map<string, {
+    text: string; images: PendingImage[]; mentions: FileMention[]; optimisticKey: number;
+    draftKey: string; sessionId?: string; recoveryNeeded?: boolean;
+  }>());
+  const [recoveryRevision, setRecoveryRevision] = useState(0);
+  const editorHasDraft = useRef(false);
+  editorHasDraft.current = Boolean(text.trim() || images.length || mentions.length);
   const [mobileExpanded, setMobileExpanded] = useState(false);
   const [imagePreview, setImagePreview] = useState<string>();
   const composerRef = useRef<HTMLDivElement>(null);
@@ -76,27 +101,29 @@ export default function Composer({ conv, draft, onDraft }: Props) {
   );
   const previousDraftKey = useRef(draftKey);
   useEffect(() => {
-    const timer = setTimeout(() => conv.syncEditorText(text), 150);
+    const timer = setTimeout(() => conv.syncEditorText(mentionMessage(text, mentions)), 150);
     return () => clearTimeout(timer);
-  }, [conv, conv.connected, text]);
+  }, [conv, conv.connected, text, mentions]);
   const appliedEditorRevision = useRef(0);
   useEffect(() => {
     const update = conv.editorUpdate;
     if (!update || update.revision <= appliedEditorRevision.current) return;
     appliedEditorRevision.current = update.revision;
-    setText(current => update.mode === 'append' ? current + update.text : update.text);
+    const parsed = parseMentionMessage(update.text);
+    setText(current => update.mode === 'append' ? current + parsed.text : parsed.text);
+    setMentions(current => update.mode === 'append' ? mergeMentions(current, parsed.mentions) : parsed.mentions);
   }, [conv, conv.editorUpdate?.revision]);
 
   useEffect(() => {
     if (previousDraftKey.current !== draftKey)
       clearComposerDraft(previousDraftKey.current);
-    setComposerDraft(draftKey, { text, images });
+    setComposerDraft(draftKey, { text, images, mentions });
     previousDraftKey.current = draftKey;
-  }, [draftKey, text, images]);
+  }, [draftKey, text, images, mentions]);
 
   const loadModels = useCallback(async (force = false) => {
     const generation = ++modelsGeneration.current;
-    setModelsLoading(true);
+    setModelsLoading(!getCachedModels());
     setModelsError(undefined);
     try {
       const next = await fetchModels(force);
@@ -141,7 +168,9 @@ export default function Composer({ conv, draft, onDraft }: Props) {
   // external draft injection (e.g. editing a queued message)
   useEffect(() => {
     if (draft !== undefined) {
-      setText(draft);
+      const parsed = parseMentionMessage(draft);
+      setText(parsed.text);
+      setMentions(parsed.mentions);
       onDraft?.(undefined);
       taRef.current?.focus();
       requestAnimationFrame(autoResize);
@@ -157,19 +186,83 @@ export default function Composer({ conv, draft, onDraft }: Props) {
   }, [menuOpen]);
 
   const snap = conv.snapshot;
+  const phase = conversationPhase(conv, stopping);
+  const restoreUnconfirmedDraft = (id: string, append = false) => {
+    const saved = unconfirmedDrafts.current.get(id);
+    if (!saved) return;
+    if (saved.optimisticKey >= 0) {
+      conv.removeOptimistic(saved.optimisticKey);
+      saved.optimisticKey = -1;
+    }
+    if (saved.sessionId !== conv.snapshot?.sessionId) {
+      const prior = getComposerDraft(saved.draftKey);
+      setComposerDraft(saved.draftKey, {
+        text: [prior?.text, saved.text].filter(Boolean).join('\n\n'),
+        images: restoreFailedImages(prior?.images ?? [], saved.images),
+        mentions: mergeMentions(prior?.mentions ?? [], saved.mentions),
+      });
+      unconfirmedDrafts.current.delete(id);
+      return;
+    }
+    if (editorHasDraft.current && !append) {
+      if (!saved.recoveryNeeded) {
+        saved.recoveryNeeded = true;
+        setRecoveryRevision(value => value + 1);
+      }
+      return;
+    }
+    // Reserve the editor synchronously when several failures settle together.
+    editorHasDraft.current = true;
+    setText(current => append ? [current, saved.text].filter(Boolean).join('\n\n') : restoreFailedText(current, saved.text));
+    setImages(current => restoreFailedImages(current, saved.images));
+    setMentions(current => mergeMentions(saved.mentions, current));
+    unconfirmedDrafts.current.delete(id);
+    setRecoveryRevision(value => value + 1);
+  };
+  const deliveryRevision = conv.getRevision();
+  useEffect(() => {
+    for (const id of unconfirmedDrafts.current.keys()) {
+      const delivery = conv.getDelivery(id);
+      if (delivery?.state === 'failed') restoreUnconfirmedDraft(id);
+      else if (delivery?.state === 'accepted') unconfirmedDrafts.current.delete(id);
+    }
+  }, [conv, deliveryRevision]);
+  const checkDelivery = async (id: string) => {
+    if (checkingDelivery) return;
+    setCheckingDelivery(id);
+    try {
+      const result = await conv.checkDelivery(id);
+      if (typeof result?.editorText === 'string') setText(result.editorText);
+    } catch (error) {
+      if (!(error instanceof DeliveryUnknownError)) restoreUnconfirmedDraft(id);
+    } finally { setCheckingDelivery(undefined); }
+  };
+  const unsettledDeliveries = conv.unsettledDeliveries;
+  const deliveries = [...unsettledDeliveries,
+    ...(conv.delivery && !unsettledDeliveries.some(item => item.id === conv.delivery?.id) ? [conv.delivery] : [])];
+  for (const [id, saved] of unconfirmedDrafts.current) {
+    if (saved.recoveryNeeded && !deliveries.some(item => item.id === id)) {
+      deliveries.push(conv.getDelivery(id) ?? {id, type: 'prompt', state: 'failed', updatedAt: 0});
+    }
+  }
+  const attentionDeliveries = deliveries.filter(delivery => delivery.state !== 'accepted');
+  // A quiet acknowledgement must never obscure another message still needing attention.
+  const acceptedDelivery = attentionDeliveries.length === 0 && conv.delivery?.state === 'accepted'
+    ? conv.delivery : undefined;
   const streaming = Boolean(snap?.isStreaming);
-  const hasPayload = text.trim().length > 0 || images.length > 0;
-  const connectionKnownFailed = !conv.connected && Boolean(conv.error);
-  const canSend = hasPayload && !submitPending && !connectionKnownFailed;
+  const activeOperation = streaming || Boolean(conv.compaction);
+  const hasPayload = text.trim().length > 0 || images.length > 0 || mentions.length > 0;
+  const connectionKnownFailed = conv.serviceUnresponsive || (!conv.connected && Boolean(conv.error));
+  const canSend = hasPayload && !submitPending && !selectingModel && !connectionKnownFailed && unconfirmedDrafts.current.size < 64;
 
   useEffect(() => {
-    if (!streaming) {
+    if (!activeOperation) {
       stopGeneration.current += 1;
       stoppingRef.current = false;
       setStopping(false);
       setStopError(undefined);
     }
-  }, [streaming]);
+  }, [activeOperation]);
 
   const stop = useCallback(async () => {
     if (stoppingRef.current) return;
@@ -185,12 +278,12 @@ export default function Composer({ conv, draft, onDraft }: Props) {
           15_000,
         );
       });
-      await Promise.race([conv.send({ type: 'abort' }), timeout]);
+      await Promise.race([conv.stop(), timeout]);
     } catch (cause) {
-      const message = cause instanceof Error ? cause.message : String(cause);
+      const message = cause instanceof Error && !['TimeoutError', 'AbortError', 'TypeError'].includes(cause.name) && cause.message !== 'timeout'
+        ? cause.message : t('stopUnavailable');
       if (generation === stopGeneration.current) {
         setStopError(message);
-        conv.reportError(`${t('stopFailed')}: ${message}`);
       }
     } finally {
       clearTimeout(timeoutId);
@@ -209,7 +302,9 @@ export default function Composer({ conv, draft, onDraft }: Props) {
   };
 
   const submit = async () => {
-    const value = text.trim();
+    const rawText = text.trim();
+    const refs = mentions;
+    const value = mentionMessage(rawText, refs);
     if (!canSend || submitPendingRef.current) return;
     const imgs = images;
     submitPendingRef.current = true;
@@ -217,12 +312,14 @@ export default function Composer({ conv, draft, onDraft }: Props) {
     let cleared = false;
     let optimisticKey = -1;
     let dispatched = false;
-    const slashMatch = value.match(/^\s*\/([^\s/]+)(\s+.*)?$/);
+    const slashMatch = refs.length ? null : value.match(/^\s*\/([^\s/]+)(\s+.*)?$/);
     setPendingSlash(Boolean(slashMatch));
     try {
       clearComposerDraft(draftKey);
       setText('');
       setImages([]);
+      setMentions([]);
+      setMentionDismissed(true);
       cleared = true;
       requestAnimationFrame(autoResize);
 
@@ -272,7 +369,7 @@ export default function Composer({ conv, draft, onDraft }: Props) {
         return;
       }
       dispatched = true;
-      await conv.send({
+      const result = await conv.send({
         type: 'prompt',
         message: value,
         images: imgs.length
@@ -280,7 +377,27 @@ export default function Composer({ conv, draft, onDraft }: Props) {
           : undefined,
         streamingBehavior: activeStreaming ? queueMode : undefined,
       });
+      if (result?.deliveryAlreadySubmitted && optimisticKey >= 0) conv.removeOptimistic(optimisticKey);
     } catch (err) {
+      if (err instanceof DeliveryNotSentError) {
+        if (optimisticKey >= 0) conv.removeOptimistic(optimisticKey);
+        // The editor may already belong to a different session. Restore only
+        // the captured source draft, never insert it into the new conversation.
+        restoreFailedComposerDraft(draftKey, {text: rawText, images: imgs, mentions: refs});
+        conv.reportError(t('sendPreparationInterrupted'));
+        return;
+      }
+      if (err instanceof DeliveryUnknownError) {
+        // A missing receipt is not a failed send: keep the bubble and do not
+        // restore a resendable draft until the server explicitly rejects it.
+        if (err.alreadySubmitted && optimisticKey >= 0) {
+          conv.removeOptimistic(optimisticKey);
+          optimisticKey = -1;
+        }
+        if (!unconfirmedDrafts.current.has(err.deliveryId))
+          unconfirmedDrafts.current.set(err.deliveryId, {text: rawText, images: imgs, mentions: refs, optimisticKey, draftKey, sessionId: snap?.sessionId});
+        return;
+      }
       // After dispatch, session navigation may only have disposed this browser
       // connection; keep the pending bubble until the server echo reconciles it.
       const disposed =
@@ -289,10 +406,11 @@ export default function Composer({ conv, draft, onDraft }: Props) {
       if (optimisticKey >= 0) conv.removeOptimistic(optimisticKey);
       if (cleared) {
         if (!dispatched && disposed) {
-          restoreFailedComposerDraft(draftKey, { text: value, images: imgs });
+          restoreFailedComposerDraft(draftKey, { text: rawText, images: imgs, mentions: refs });
         }
-        setText((current) => restoreFailedText(current, value));
+        setText((current) => restoreFailedText(current, rawText));
         setImages((current) => restoreFailedImages(current, imgs));
+        setMentions(current => mergeMentions(refs, current));
       }
       conv.reportError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -337,6 +455,14 @@ export default function Composer({ conv, draft, onDraft }: Props) {
     (m) => m.provider === currentModel?.provider && m.id === currentModel?.id,
   );
   const supportsImage = currentModelInfo?.input.includes('image') ?? true;
+  const selectMention = (item: MentionCandidate) => {
+    if (!mention || mentions.length >= 24) return;
+    const path = `${mentionSearch.cwd.replace(/\/$/, '')}/${item.path}`;
+    setMentions(current => mergeMentions(current, [{ path, isDir: item.isDir }]));
+    const next = text.slice(0, mention.start) + text.slice(mention.end);
+    setText(next); setCursor(mention.start); setMentionDismissed(true);
+    requestAnimationFrame(() => { taRef.current?.focus(); taRef.current?.setSelectionRange(mention.start, mention.start); autoResize(); });
+  };
   const isReasoning = currentModelInfo?.reasoning ?? false;
 
   // derive tool mode from active tool names
@@ -350,7 +476,17 @@ export default function Composer({ conv, draft, onDraft }: Props) {
   const configuredModels = models?.models.filter((m) => m.hasAuth) ?? [];
 
   return (
-    <div ref={composerRef} className={`composer ${mobileExpanded || images.length > 0 ? 'mobile-expanded' : 'mobile-compact'} ${hasPayload || streaming || submitPending ? 'mobile-has-action' : ''}`}>
+    <div ref={composerRef} className={`composer ${mobileExpanded || images.length > 0 || mentions.length > 0 ? 'mobile-expanded' : 'mobile-compact'} ${hasPayload || activeOperation || submitPending ? 'mobile-has-action' : ''}`}>
+      <FileMentionChips items={mentions} onRemove={path => setMentions(items => items.filter(item => item.path !== path))} disabled={submitPending} onOpenFile={onOpenFile} />
+      {mention && <div className="mention-menu" ref={mentionMenuRef} id="file-mention-list" role="listbox" aria-label={t('referenceFiles')}>
+        <div className="mention-menu-heading">{t('referenceFiles')}</div>
+        {mentionSearch.loading ? <div role="status">{t('mentionSearching')}</div> : mentionSearch.error ? <div role="alert">{mentionSearch.error}</div> : mentionSearch.items.length === 0 ? <div>{t('mentionEmpty')}</div> : mentionSearch.items.map((item, i) => <button
+          key={item.path} id={`file-mention-${i}`} role="option" aria-selected={i === mentionIndex} type="button" className={`mention-option ${i === mentionIndex ? 'active' : ''}`}
+          onMouseDown={e => e.preventDefault()} onClick={() => selectMention(item)}>
+          <span>{item.isDir ? '📁' : '📄'} {item.name}</span><small>{item.path}</small>
+        </button>)}
+        <div className="mention-menu-hint">{mentionSearch.truncated ? t('mentionTruncated') : t('mentionHint')}</div>
+      </div>}
       <button type="button" className="mobile-composer-expand round-btn" aria-label={t('expandComposer')} aria-expanded={mobileExpanded}
         onClick={() => { setMobileExpanded(true); taRef.current?.focus(); }}><IconPlus size={19} /></button>
       {images.length > 0 && (
@@ -373,7 +509,7 @@ export default function Composer({ conv, draft, onDraft }: Props) {
         </div>
       )}
       {imagePreview && <ImagePreview src={imagePreview} onClose={() => setImagePreview(undefined)} />}
-      {slashMatches.length > 0 && (
+      {!mention && slashMatches.length > 0 && (
         <div className="slash-menu" ref={slashMenuRef}>
           {slashMatches.map((it, i) => (
             <button
@@ -394,7 +530,14 @@ export default function Composer({ conv, draft, onDraft }: Props) {
       )}
       <textarea
         ref={taRef}
-        onFocus={() => setMobileExpanded(true)}
+        onFocus={() => { setMobileExpanded(true); setInputFocused(true); }}
+        onBlur={(event) => { if (!event.relatedTarget || !mentionMenuRef.current?.contains(event.relatedTarget as Node)) setInputFocused(false); }}
+        onSelect={event => setCursor(event.currentTarget.selectionStart)}
+        onCompositionStart={() => setComposing(true)}
+        onCompositionEnd={event => { setComposing(false); setCursor(event.currentTarget.selectionStart); }}
+        aria-autocomplete="list"
+        aria-controls={mention ? 'file-mention-list' : undefined}
+        aria-activedescendant={mention && mentionSearch.items.length ? `file-mention-${mentionIndex}` : undefined}
         value={text}
         readOnly={submitPending}
         placeholder={
@@ -408,9 +551,26 @@ export default function Composer({ conv, draft, onDraft }: Props) {
         }
         onChange={(e) => {
           setText(e.target.value);
+          setCursor(e.target.selectionStart);
+          setMentionDismissed(false);
           autoResize();
         }}
         onKeyDown={(e) => {
+          if (composing || e.nativeEvent.isComposing || e.keyCode === 229) return;
+          if (mention && !e.nativeEvent.isComposing) {
+            if (e.key === 'Escape') { e.preventDefault(); setMentionDismissed(true); return; }
+            const count = mentionSearch.items.length;
+            if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+              e.preventDefault();
+              if (count) setMentionIndex(i => (i + (e.key === 'ArrowDown' ? 1 : count - 1)) % count);
+              return;
+            }
+            if (count && (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey))) {
+              e.preventDefault(); selectMention(mentionSearch.items[Math.min(mentionIndex, count - 1)]); return;
+            }
+            // Do not submit while the user is waiting for the lookup to resolve.
+            if (mentionSearch.loading && e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); return; }
+          }
           if (slashMatches.length > 0 && !e.nativeEvent.isComposing) {
             if (e.key === 'ArrowDown') {
               e.preventDefault();
@@ -494,10 +654,10 @@ export default function Composer({ conv, draft, onDraft }: Props) {
           </div>
         )}
 
-        <span style={{ flex: 1 }} />
+        <span className="composer-spacer" style={{ flex: 1 }} />
 
         {/* model + thinking combined chip, pi-web style */}
-        <div className="menu-anchor">
+        <div className="menu-anchor composer-model">
           <button
             className="model-chip"
             onClick={(e) => {
@@ -543,15 +703,18 @@ export default function Composer({ conv, draft, onDraft }: Props) {
                       {g.items.map((m) => (
                         <button
                           key={`${m.provider}/${m.id}`}
+                          disabled={selectingModel}
                           className={`menu-item ${currentModel?.provider === m.provider && currentModel.id === m.id ? 'active' : ''}`}
                           onClick={() => {
                             // keep open: user usually picks the level right after
+                            setSelectingModel(true);
                             void conv
-                              .send({ type: 'setModel', provider: m.provider, modelId: m.id })
-                              .catch((err) => conv.reportError(err instanceof Error ? err.message : String(err)));
+                              .selectModel(m.provider, m.id)
+                              .catch((err) => conv.reportError(err instanceof Error ? err.message : String(err)))
+                              .finally(() => setSelectingModel(false));
                           }}
                         >
-                          <span>{m.name}</span>
+                          <span>{m.name}{selectingModel ? ' …' : ''}</span>
                         </button>
                       ))}
                     </div>
@@ -632,8 +795,9 @@ export default function Composer({ conv, draft, onDraft }: Props) {
 
         {streaming && <ContextRing conv={conv} />}
         {stopping && <span className="stopping-label" role="status">{t('stopping')}</span>}
+        {acceptedDelivery && <ReceiptIndicator key={acceptedDelivery.id} />}
 
-        {streaming ? (
+        {activeOperation ? (
           <button
             className={`send-circle stop send-sm ${stopping ? 'waiting' : ''}`}
             title={stopping ? t('stopping') : t('abort')}
@@ -660,12 +824,64 @@ export default function Composer({ conv, draft, onDraft }: Props) {
           </button>
         )}
       </div>
-      {stopError && streaming && (
+      {['connecting', 'initializing', 'reconnecting', 'unresponsive', 'failed'].includes(phase) && (
+        <div className={`composer-session-status${phase === 'unresponsive' || phase === 'failed' ? ' is-error' : ''}`} role="status" aria-live="polite" data-phase={phase}>
+          {t(phaseTranslationKey[phase])}
+          {activeOperation && !conv.connected && !conv.serviceUnresponsive && <span> {t('runStateUnknown')}</span>}
+        </div>
+      )}
+      {attentionDeliveries.length > 0 && <div className="composer-deliveries" data-recovery-revision={recoveryRevision}>
+        {attentionDeliveries.map(delivery => (
+          <div key={delivery.id} className={`composer-delivery-status${delivery.state === 'failed' ? ' is-error' : ''}`} role="status" aria-live="polite" data-delivery={delivery.state}>
+            <span>{attentionDeliveries.length > 1 && `${delivery.id.slice(0, 6)} · `}{t(({sending: 'deliverySending', accepted: 'deliveryAccepted', failed: 'deliveryFailed', unknown: 'deliveryUnknown'} as const)[delivery.state])}</span>
+            {(delivery.state === 'unknown' || (delivery.state === 'sending' && !submitPending)) &&
+              <button type="button" className="btn btn-sm" disabled={Boolean(checkingDelivery) || !conv.connected || conv.serviceUnresponsive} onClick={() => void checkDelivery(delivery.id)}>
+                {t(checkingDelivery === delivery.id ? 'deliveryChecking' : 'deliveryCheck')}
+              </button>}
+            {unconfirmedDrafts.current.get(delivery.id)?.recoveryNeeded &&
+              <button type="button" className="btn btn-sm" onClick={() => restoreUnconfirmedDraft(delivery.id, true)}>{t('restoreUnsentDraft')}</button>}
+          </div>
+        ))}
+      </div>}
+      {stopError && activeOperation && (
         <div className="composer-action-error" role="alert">
           <span>{t('stopFailed')}: {stopError}</span>
           <button className="btn btn-sm" disabled={stopping} onClick={() => void stop()}>{t('retry')}</button>
         </div>
       )}
+    </div>
+  );
+}
+
+/** An acknowledgement belongs beside send, not in a persistent full-width banner. */
+function ReceiptIndicator() {
+  const [open, setOpen] = useState(false);
+  const root = useRef<HTMLDivElement>(null);
+  const descriptionId = useId();
+  useEffect(() => {
+    if (!open) return;
+    const outside = (event: PointerEvent) => {
+      if (!root.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') setOpen(false); };
+    document.addEventListener('pointerdown', outside);
+    document.addEventListener('keydown', escape);
+    return () => {
+      document.removeEventListener('pointerdown', outside);
+      document.removeEventListener('keydown', escape);
+    };
+  }, [open]);
+  return (
+    <div ref={root} className="composer-receipt" data-delivery="accepted" role="status" aria-live="polite"
+      onPointerEnter={event => { if (event.pointerType === 'mouse') setOpen(true); }}
+      onPointerLeave={event => { if (event.pointerType === 'mouse') setOpen(false); }}>
+      <button type="button" className="composer-receipt-trigger" aria-label={t('deliveryAccepted')}
+        aria-expanded={open} aria-describedby={open ? descriptionId : undefined}
+        onBlur={() => setOpen(false)} onClick={() => setOpen(value => !value)}>
+        <IconCheck size={14} />
+        <span className="composer-receipt-label">{t('deliveryAcceptedShort')}</span>
+      </button>
+      {open && <div id={descriptionId} className="composer-receipt-tooltip" role="tooltip">{t('deliveryAccepted')}</div>}
     </div>
   );
 }

@@ -15,6 +15,8 @@ test('a second build preserves every immutable asset needed by an already open t
     await writeFile(join(root, 'src/main.js'), 'window.openDialog = () => import("./dialog.js");');
     await writeFile(join(root, 'src/dialog.js'), 'import "./dialog.css"; export default "version-one";');
     await writeFile(join(root, 'src/dialog.css'), '.dialog { color: red }');
+    await mkdir(join(root, 'public/assets'), { recursive: true });
+    await writeFile(join(root, 'public/assets/public-icon.svg'), '<svg/>');
     const options = {
       configFile: fileURLToPath(new URL('../vite.config.ts', import.meta.url)),
       root, logLevel: 'silent',
@@ -34,6 +36,12 @@ test('a second build preserves every immutable asset needed by an already open t
     assert.ok((await readdir(assets)).length > oldAssets.size);
     for (const [name, content] of oldAssets)
       assert.equal(await readFile(join(assets, name), 'utf8'), content, `${name} must remain unchanged`);
+    const inventory = JSON.parse(await readFile(join(root, 'dist/.vite/mewpii-current-assets.json'), 'utf8'));
+    assert.ok(inventory.assets.includes('assets/public-icon.svg'));
+    assert.ok(inventory.assets.some((name) => /dialog-.*\.js$/.test(name)));
+    assert.ok(inventory.assets.some((name) => name.endsWith('.css')));
+    const retention = JSON.parse(await readFile(join(root, 'dist/.vite/mewpii-asset-retention.json'), 'utf8'));
+    assert.equal(retention.builds.length, 2);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

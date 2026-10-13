@@ -6,7 +6,8 @@ export class ResourceWatch {
   private watchers: FSWatcher[] = [];
   private debounce?: NodeJS.Timeout;
   private closed = false;
-  constructor(private roots: string[], private files: string[], private changed: () => void) {
+  private changedPaths = new Set<string>();
+  constructor(private roots: string[], private files: string[], private changed: (paths: string[]) => void) {
     this.install();
   }
   private install(): void {
@@ -14,7 +15,7 @@ export class ResourceWatch {
     for (const watcher of this.watchers) watcher.close();
     this.watchers = [];
     const installed = new Map<string, Array<(name: string) => boolean>>();
-    const attach = (path: string, recursive: boolean, relevant: (name: string) => boolean) => {
+    const attach = (path: string, recursive: boolean, relevant: (name: string) => boolean, isFile = false) => {
       const key = `${path}:${recursive}`;
       const existing = installed.get(key);
       if (existing) { existing.push(relevant); return; }
@@ -22,11 +23,14 @@ export class ResourceWatch {
       try {
         const watcher = watch(path, { recursive, persistent: false }, (_event, name) => {
           if (name && !predicates.some(predicate => predicate(String(name)))) return;
+          if (this.changedPaths.size < 20) this.changedPaths.add(name && !isFile ? join(path, String(name)) : path);
           clearTimeout(this.debounce);
           this.debounce = setTimeout(() => {
             // Re-arm watches after atomic saves, new directories and package replacement.
             this.install();
-            this.changed();
+            const paths = [...this.changedPaths];
+            this.changedPaths.clear();
+            this.changed(paths);
           }, 500);
           this.debounce.unref();
         });
@@ -46,11 +50,12 @@ export class ResourceWatch {
     // Package entry points may live outside the conventional resource directories.
     for (const file of this.files) {
       attach(dirname(file), false, name => name === basename(file));
-      attach(file, false, () => true);
+      attach(file, false, () => true, true);
     }
   }
   close(): void {
     this.closed = true;
+    this.changedPaths.clear();
     clearTimeout(this.debounce);
     for (const watcher of this.watchers) watcher.close();
     this.watchers = [];

@@ -130,14 +130,25 @@ export function forwardWebSocketFrame(
 
 export function attachWebSocketHeartbeat(ws: WebSocket, intervalMs = 25_000): () => void {
   let alive = true;
+  let missed = 0;
+  let lastTick = performance.now();
   let disposed = false;
-  const onPong = () => { alive = true; };
+  const onPong = () => { alive = true; missed = 0; };
   ws.on("pong", onPong);
   const timer = setInterval(() => {
     if (disposed || ws.readyState === WebSocket.CLOSED) return;
-    if (!alive) {
-      disposed = true;
-      clearInterval(timer);
+    const now = performance.now();
+    const lag = now - lastTick - intervalMs;
+    lastTick = now;
+    // Give queued pong callbacks a chance after a blocked event loop wakes up.
+    if (lag > intervalMs / 2) {
+      missed = 0;
+      console.warn(`[ws] heartbeat_deferred reason=event_loop_lag lag_ms=${Math.round(lag)}`);
+      return;
+    }
+    if (!alive && ++missed >= 3) {
+      console.warn(`[ws] heartbeat_timeout missed=${missed} interval_ms=${intervalMs}`);
+      dispose();
       try { ws.terminate(); } catch { /* already closed */ }
       return;
     }
@@ -151,6 +162,7 @@ export function attachWebSocketHeartbeat(ws: WebSocket, intervalMs = 25_000): ()
     disposed = true;
     clearInterval(timer);
     ws.off("pong", onPong);
+    ws.off("close", dispose);
   };
   ws.once("close", dispose);
   return dispose;

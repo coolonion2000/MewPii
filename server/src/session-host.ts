@@ -1,4 +1,5 @@
 import { statSync, watch, type FSWatcher } from "node:fs";
+import { configureExtensionStartup } from './extension-startup-policy.js';
 import {
   open as openFile,
   stat as statFile,
@@ -26,6 +27,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { configureSubagentCli } from './pi-runtime.js';
 import { installCodexTransport } from './codex-transport.js';
+import { installModelTiming } from './model-timing.js';
 import { updateCompactionState } from './compaction-state.js';
 import { bindSubagentRuntime, readSubagentRuntime } from './subagent-runtime.js';
 import {
@@ -51,9 +53,16 @@ import type {
 } from "./protocol.js";
 import { WEB_BUILTIN_SLASH_COMMANDS, runNativeCommand, NATIVE_COMMANDS } from "./native-commands.js";
 import { SessionQueueAdapter } from "./queue-adapter.js";
+import { DeliveryReceipts } from './delivery-receipts.js';
 
 export const SESSION_HISTORY_MAX_MESSAGES = 50;
 export const SESSION_HISTORY_MAX_BYTES = 256 * 1024;
+// Visible transcript retention is independent of model context compaction.
+// Ordinary history requests stay small; a recent snapshot may include images
+// without letting a single screenshot hide all preceding conversation turns.
+export const SESSION_RECENT_VISIBLE_MESSAGES = 50;
+export const SESSION_RECENT_MAX_MESSAGES = 400;
+export const SESSION_RECENT_MAX_BYTES = 4 * 1024 * 1024;
 
 const SESSION_PREVIEW_READ_CHUNK_BYTES = 128 * 1024;
 const SESSION_PREVIEW_MAX_SCAN_BYTES = 4 * 1024 * 1024;
@@ -151,6 +160,12 @@ interface MessagePage {
   messages: Record<string, unknown>[];
   bytes: number;
   oversize: boolean;
+  visibleMessages: number;
+  beforeEntryId?: string;
+}
+
+function visibleTranscriptMessage(message: Record<string, unknown>): boolean {
+  return message.role === 'user' || message.role === 'assistant';
 }
 
 /** Select a backwards page without splitting a message or stalling pagination. */
@@ -158,12 +173,16 @@ function messagePage(
   messages: readonly Record<string, unknown>[],
   sizes: number[],
   beforeValue: number,
+  recent = false,
 ): MessagePage {
   const before = Math.max(0, Math.min(beforeValue, messages.length));
   let from = before;
   let bytes = 2; // JSON array brackets
   let count = 0;
-  while (from > 0 && count < SESSION_HISTORY_MAX_MESSAGES) {
+  let visibleMessages = 0;
+  const byteLimit = recent ? SESSION_RECENT_MAX_BYTES : SESSION_HISTORY_MAX_BYTES;
+  const messageLimit = recent ? SESSION_RECENT_MAX_MESSAGES : SESSION_HISTORY_MAX_MESSAGES;
+  while (from > 0 && count < messageLimit && (!recent || visibleMessages < SESSION_RECENT_VISIBLE_MESSAGES)) {
     let candidateBytes = sizes[from - 1];
     if (candidateBytes === undefined) {
       candidateBytes = messageBytes(messages[from - 1]);
@@ -172,21 +191,25 @@ function messagePage(
     const separatorBytes = count === 0 ? 0 : 1;
     if (
       count > 0 &&
-      bytes + separatorBytes + candidateBytes > SESSION_HISTORY_MAX_BYTES
+      bytes + separatorBytes + candidateBytes > byteLimit
     )
       break;
     from--;
     bytes += separatorBytes + candidateBytes;
     count++;
+    if (visibleTranscriptMessage(messages[from])) visibleMessages++;
   }
   // One over-budget message must still advance the cursor. Truncating it here
   // would make the durable history impossible to recover through pagination.
-  const oversize = count === 1 && bytes > SESSION_HISTORY_MAX_BYTES;
+  const oversize = count === 1 && bytes > byteLimit;
+  const beforeEntryId = from > 0 ? messages[from - 1]._entryId : undefined;
   return {
     from,
     messages: messages.slice(from, before),
     bytes,
     oversize,
+    visibleMessages,
+    beforeEntryId: typeof beforeEntryId === 'string' ? beforeEntryId : undefined,
   };
 }
 
@@ -573,6 +596,7 @@ export async function readRawSessionPreview(
     const reversedMessages: Record<string, unknown>[] = [];
     const reversedSizes: number[] = [];
     let pageBytes = 2;
+    let visibleMessages = 0;
     let branchHeadId: string | undefined;
     let wantedParentId: string | null | undefined;
     let leafSelected = false;
@@ -642,7 +666,7 @@ export async function readRawSessionPreview(
       const separatorBytes = reversedMessages.length === 0 ? 0 : 1;
       if (
         reversedMessages.length > 0 &&
-        pageBytes + separatorBytes + size > SESSION_HISTORY_MAX_BYTES
+        pageBytes + separatorBytes + size > SESSION_RECENT_MAX_BYTES
       ) {
         pageComplete = true;
         return;
@@ -650,7 +674,8 @@ export async function readRawSessionPreview(
       reversedMessages.push(message);
       reversedSizes.push(size);
       pageBytes += separatorBytes + size;
-      if (reversedMessages.length >= SESSION_HISTORY_MAX_MESSAGES)
+      if (visibleTranscriptMessage(message)) visibleMessages++;
+      if (visibleMessages >= SESSION_RECENT_VISIBLE_MESSAGES || reversedMessages.length >= SESSION_RECENT_MAX_MESSAGES)
         pageComplete = true;
     };
 
@@ -755,6 +780,7 @@ function sessionPreview(sessionManager: SessionManager): SessionPreviewData {
     normalized.messages,
     sizes,
     normalized.messages.length,
+    true,
   );
   let thinkingLevel = "off";
   let model: SessionSnapshot["model"];
@@ -799,6 +825,7 @@ function sessionPreview(sessionManager: SessionManager): SessionPreviewData {
       messages: page.messages as SessionSnapshot["messages"],
       totalMessages: normalized.messages.length,
       historyFrom: page.from,
+      historyBeforeEntryId: page.beforeEntryId,
       queue: { steering: [], followUp: [] },
       queueCapabilities: {
         revision: 0,
@@ -881,7 +908,6 @@ export class SessionHost {
   private statsCacheKey?: string;
   private statsCache?: SessionSnapshot["stats"];
   private resourceWatch?: ResourceWatch;
-  private resourceReloadTimer?: NodeJS.Timeout;
   private resourcesDirty = false;
   private editorText = "";
   private slashCommandCache?: SessionSnapshot["slashCommands"];
@@ -894,6 +920,7 @@ export class SessionHost {
   private readinessState: "binding" | "ready" = "ready";
   private readinessPromise: Promise<void> = Promise.resolve();
   private readinessGeneration = 0;
+  private creationStartedAt?: number;
   private fileWatcher?: FSWatcher;
   private watchedFile?: string;
   private watchDebounceTimer?: NodeJS.Timeout;
@@ -933,6 +960,7 @@ export class SessionHost {
     key: string,
     opts: SessionHostOptions,
   ): Promise<SessionHost> {
+    const creationStartedAt = performance.now();
     let initialSessionManager: SessionManager | undefined;
     let openedFileStamp: WatchedFileStamp | undefined;
     const createRuntime: CreateAgentSessionRuntimeFactory = async ({
@@ -940,12 +968,34 @@ export class SessionHost {
       sessionManager,
       sessionStartEvent,
     }) => {
+      const initialRestore = Boolean(opts.sessionPath && initialSessionManager === sessionManager);
+      // The SDK opens a replacement SessionManager before awaiting shutdown and
+      // service discovery. Apply the same disk-race check to /resume and the
+      // file watcher's switchSession(), not only to the host's first restore.
+      const restoreFile = initialRestore || sessionStartEvent?.reason === "resume"
+        ? sessionManager.getSessionFile()
+        : undefined;
+      let restoreStamp = initialRestore ? openedFileStamp : undefined;
+      if (restoreFile && !restoreStamp) {
+        try { restoreStamp = watchedFileStamp(restoreFile); } catch {
+          // A new/unpersisted session has no on-disk baseline to reconcile.
+        }
+      }
       const servicesStartedAt = performance.now();
+      let activeStage = 'services';
+      let activeStageStartedAt = servicesStartedAt;
+      const initWatch = setInterval(() => {
+        const memory = process.memoryUsage();
+        console.warn(`[session] initialization_pending key=${JSON.stringify(key)} elapsed_ms=${Math.round(performance.now() - servicesStartedAt)} rss_mb=${Math.round(memory.rss / 1048576)} heap_mb=${Math.round(memory.heapUsed / 1048576)}`);
+      }, 10_000);
+      initWatch.unref();
       let extensionsFinishedAt: number | undefined;
       let extensionCount = 0;
       let extensionErrors = 0;
+      let extensionsLogged = false;
       try {
         configureSubagentCli();
+        configureExtensionStartup();
         const subagentEvents = createEventBus();
         const services = await createAgentSessionServices({
           cwd,
@@ -955,16 +1005,18 @@ export class SessionHost {
               extensionsFinishedAt = performance.now();
               extensionCount = base.extensions.length;
               extensionErrors = base.errors.length;
-              logStage(key, "extensions", servicesStartedAt, {
+              // This callback survives reloads; do not reuse the original creation clock.
+              if (!extensionsLogged) logStage(key, "extensions", servicesStartedAt, {
                 cwd,
                 extensions: extensionCount,
                 errors: extensionErrors,
                 status: "ok",
               });
+              extensionsLogged = true;
               return base;
             },
           },
-        });
+        }).finally(() => clearInterval(initWatch));
         bindSubagentRuntime(services.resourceLoader, subagentEvents);
         logStage(key, "resources", extensionsFinishedAt ?? servicesStartedAt, {
           cwd,
@@ -979,39 +1031,44 @@ export class SessionHost {
           status: "ok",
         });
         let effectiveSessionManager = sessionManager;
-        if (
-          opts.sessionPath &&
-          initialSessionManager === sessionManager &&
-          openedFileStamp
-        ) {
+        if (restoreFile && restoreStamp) {
           try {
-            const currentStamp = watchedFileStamp(opts.sessionPath);
-            if (!sameWatchedFileStamp(openedFileStamp, currentStamp)) {
+            const currentStamp = watchedFileStamp(restoreFile);
+            const changedDuringServices = !sameWatchedFileStamp(restoreStamp, currentStamp);
+            // A write during the SDK's async teardown can predate this factory's
+            // baseline. The last persisted entry also has to match the manager.
+            const diskLeaf = changedDuringServices ? undefined : await lastEntryId(restoreFile);
+            if (changedDuringServices || (diskLeaf !== undefined && diskLeaf !== sessionManager.getLeafId())) {
               const refreshStartedAt = performance.now();
-              effectiveSessionManager = SessionManager.open(opts.sessionPath);
-              openedFileStamp = watchedFileStamp(opts.sessionPath);
+              effectiveSessionManager = SessionManager.open(restoreFile, sessionManager.getSessionDir(), cwd);
+              if (initialRestore) openedFileStamp = watchedFileStamp(restoreFile);
               logStage(key, "restore_refresh", refreshStartedAt, {
-                reason: "file_changed_during_services",
+                mode: initialRestore ? "initial" : "resume",
+                reason: changedDuringServices ? "file_changed_during_services" : "leaf_changed_before_restore",
                 status: "ok",
               });
             }
           } finally {
-            // The factory is retained for future /new and /resume operations;
-            // only the original restore needs this race-window verification.
-            initialSessionManager = undefined;
+            if (initialRestore) initialSessionManager = undefined;
           }
         }
-        return {
-          ...(await createAgentSessionFromServices({
+        const restoreStartedAt = performance.now();
+        activeStage = 'runtime_restore';
+        activeStageStartedAt = restoreStartedAt;
+        const restored = await createAgentSessionFromServices({
             services,
             sessionManager: effectiveSessionManager,
             sessionStartEvent,
-          })),
+          });
+        logStage(key, 'runtime_restore', restoreStartedAt, {status: 'ok'});
+        return {
+          ...restored,
           services,
           diagnostics: services.diagnostics,
         };
       } catch (cause) {
-        logStage(key, "services", servicesStartedAt, {
+        clearInterval(initWatch);
+        logStage(key, activeStage, activeStageStartedAt, {
           cwd,
           status: "error",
           error: cause instanceof Error ? cause.message : String(cause),
@@ -1166,6 +1223,7 @@ export class SessionHost {
       opts.activeRecheckMs,
     );
     host.pendingWatchBaseline = openedFileStamp;
+    host.creationStartedAt = creationStartedAt;
     if (previewData) {
       let liveMessageCount = -1;
       try {
@@ -1284,6 +1342,12 @@ export class SessionHost {
         });
         if (generation === this.readinessGeneration) {
           this.readinessState = "ready";
+          if (this.creationStartedAt !== undefined) {
+            logStage(this.key, 'ready_total', this.creationStartedAt, {
+              session_id: session.sessionId, status: status === 'ok' ? 'ok' : 'degraded',
+            });
+            this.creationStartedAt = undefined;
+          }
           this.slashCommandCache = undefined;
           this.snapshotLogPending = true;
           this.broadcastReadyState();
@@ -1302,47 +1366,15 @@ export class SessionHost {
     this.resourceWatch = new ResourceWatch([
       this.runtime.services.agentDir, join(this.cwd, ".pi"),
       join(this.cwd, ".agents"), join(homedir(), ".agents"),
-    ], files, () => {
-      this.resourcesDirty = true;
-      this.scheduleResourceReload();
-    });
+    ], files, paths => this.markResourcesChanged(paths));
   }
 
-  private get resourceReloadBlocked(): boolean {
-    const s = this.session;
-    return Boolean(s.isStreaming || s.isCompacting || s.isRetrying || s.isBashRunning
-      || this.stopPromise || this.reloading || this.activeToolCalls.size
-      || this.uiPending.size || this.customUi.isActive);
-  }
-
-  private scheduleResourceReload(): void {
-    clearTimeout(this.resourceReloadTimer);
-    if (this.disposed || !this.resourcesDirty) return;
-    this.resourceReloadTimer = setTimeout(() => {
-      if (this.disposed) return;
-      if (!this.isReady || this.resourceReloadBlocked || this.pendingCommandMutations > 0 || this.sockets.size === 0) {
-        this.scheduleResourceReload();
-        return;
-      }
-      this.resourcesDirty = false;
-      void this.withCommandMutation(async () => {
-        // Recheck admission after waiting for another browser's command.
-        if (this.resourceReloadBlocked) {
-          this.resourcesDirty = true;
-          return { ok: true };
-        }
-        console.log(`[session] resource_reload_started key=${JSON.stringify(this.key)}`);
-        const result = await this.runSlash("/reload");
-        if (!result.ok) this.broadcast({ type: "toast", message: `插件自动重载失败：${result.error}；可执行 /reload 重试。`, level: "warning" });
-        return result;
-      }).catch(cause => {
-        console.error(`[session] resource_reload_failed key=${JSON.stringify(this.key)}`, cause);
-        this.broadcast({ type: "toast", message: `插件自动重载失败：${cause instanceof Error ? cause.message : String(cause)}；可执行 /reload 重试。`, level: "warning" });
-        this.slashCommandCache = undefined;
-        this.broadcastSnapshot();
-      }).finally(() => this.scheduleResourceReload());
-    }, 1_000);
-    this.resourceReloadTimer.unref();
+  private markResourcesChanged(paths: string[]): void {
+    if (this.disposed) return;
+    const alreadyPending = this.resourcesDirty;
+    this.resourcesDirty = true;
+    console.info(`[session] resource_change_pending key=${JSON.stringify(this.key)} action=manual_reload paths=${JSON.stringify(paths.slice(0, 20))} already_pending=${alreadyPending}`);
+    if (!alreadyPending) this.broadcast({ type: 'toast', level: 'warning', message: '检测到资源变更，未自动重载，以免影响其他会话。请在任务空闲时执行 /reload。' });
   }
 
   /** Bind the watcher to the runtime's current file, replacing any stale binding. */
@@ -1496,10 +1528,17 @@ export class SessionHost {
       const after = await import("node:fs/promises").then((fs) =>
         fs.stat(file),
       );
-      this.settledMtime = Math.max(after.mtimeMs, Date.now());
+      // Do not advance the file's watermark to wall-clock time: an append
+      // during this reload can have an earlier mtime and still be unread.
+      this.settledMtime = after.mtimeMs;
       // blind window: the reload's own side-effects settle here; external bursts
       // (e.g. a pi CLI run) debounce to one reload per burst.
       this.cooldownUntil = Date.now() + 2000;
+      const afterTailId = await lastEntryId(file);
+      if (afterTailId && afterTailId !== this.runtime.session.sessionManager.getLeafId()) {
+        console.info(`[watch] reload_window_change file=${JSON.stringify(file)} action=retry`);
+        this.scheduleExternalReload(0);
+      }
       this.broadcastSnapshot();
     } catch (err) {
       console.log(
@@ -1798,6 +1837,7 @@ export class SessionHost {
       this.providerRequest = state;
       this.broadcast({ type: 'event', event: { type: 'provider_request', state: state ?? null } });
     });
+    installModelTiming(session);
     this.unsubscribe = session.subscribe((event) => {
       if (event.type === 'compaction_start' || event.type === 'compaction_end') {
         this.compactionState = updateCompactionState(this.compactionState, event);
@@ -1858,6 +1898,12 @@ export class SessionHost {
               this.nextStreamCheckpointChars *= 2;
             }
           }
+        }
+      }
+      if (event.type === 'message_end') {
+        const message = (event as unknown as { message?: { role?: string; content?: unknown[]; provider?: string; model?: string; stopReason?: string; usage?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number } } }).message;
+        if (message?.role === 'assistant') {
+          console.info(`[session] model_reply key=${JSON.stringify(this.key)} provider=${JSON.stringify(message.provider)} model=${JSON.stringify(message.model)} stop_reason=${JSON.stringify(message.stopReason)} blocks=${message.content?.length ?? 0} empty=${!message.content?.length} input=${message.usage?.input ?? 0} output=${message.usage?.output ?? 0} cache_read=${message.usage?.cacheRead ?? 0} cache_write=${message.usage?.cacheWrite ?? 0}`);
         }
       }
       const serializedEvent = serializeEvent(
@@ -1926,6 +1972,7 @@ export class SessionHost {
             args: e.args ?? {},
             startedAt: Date.now(),
           });
+        console.info(`[session] tool_started key=${JSON.stringify(this.key)} tool=${JSON.stringify(e.toolName)} call_id=${JSON.stringify(e.toolCallId)}`);
         this.onToolExecution?.(e.toolName ?? "", "start");
       }
       if (event.type === "tool_execution_update") {
@@ -1947,7 +1994,10 @@ export class SessionHost {
         const e = event as unknown as {
           toolCallId?: string;
           toolName?: string;
+          isError?: boolean;
         };
+        const active = e.toolCallId ? this.activeToolCalls.get(e.toolCallId) : undefined;
+        console.info(`[session] tool_completed key=${JSON.stringify(this.key)} tool=${JSON.stringify(e.toolName ?? active?.toolName)} call_id=${JSON.stringify(e.toolCallId)} duration_ms=${active ? Date.now() - active.startedAt : -1} status=${e.isError ? 'error' : 'ok'}`);
         if (e.toolCallId) this.activeToolCalls.delete(e.toolCallId);
         const name = e.toolName ?? "";
         this.onToolExecution?.(name, "end");
@@ -2293,6 +2343,7 @@ export class SessionHost {
       this.lastBranch,
       this.lastBranchBytes,
       total,
+      true,
     );
 
     let stats: SessionSnapshot["stats"];
@@ -2356,6 +2407,7 @@ export class SessionHost {
       messages: page.messages as SessionSnapshot["messages"],
       totalMessages: total,
       historyFrom: page.from,
+      historyBeforeEntryId: page.beforeEntryId,
       queue: {
         steering: queue.steering,
         followUp: queue.followUp,
@@ -2388,6 +2440,10 @@ export class SessionHost {
       logStage(this.key, "snapshot", startedAt, {
         cache: branchCacheHit ? "hit" : "miss",
         messages: page.messages.length,
+        visible_messages: page.visibleMessages,
+        recent_target: SESSION_RECENT_VISIBLE_MESSAGES,
+        recent_shortfall: page.from > 0 && page.visibleMessages < SESSION_RECENT_VISIBLE_MESSAGES
+          ? (page.messages.length >= SESSION_RECENT_MAX_MESSAGES ? 'record_limit' : 'byte_limit') : undefined,
         total_messages: total,
         page_bytes: page.bytes,
         oversize: page.oversize,
@@ -2693,6 +2749,9 @@ export class SessionHost {
         if (this.pendingUiRequest || this.customUi.isActive)
           return { ok: false, error: "请先关闭当前弹窗，再执行 /reload。" };
         console.log(`[session] reload_started key=${this.key}`);
+        const reloadStartedAt = performance.now();
+        let reloadSucceeded = false;
+        this.resourcesDirty = false;
         this.slashCommandCache = undefined;
         try {
           await s.reload({
@@ -2703,7 +2762,10 @@ export class SessionHost {
               this.broadcastStatuses();
             },
           });
+          reloadSucceeded = true;
         } finally {
+          if (!reloadSucceeded) this.resourcesDirty = true;
+          logStage(this.key, 'resource_reload', reloadStartedAt, { status: reloadSucceeded ? 'ok' : 'error' });
           this.slashCommandCache = undefined;
         }
         this.restartResourceWatch();
@@ -3155,6 +3217,7 @@ export class SessionHost {
    */
   private withCommandMutation<T extends { ok: boolean; error?: string }>(
     operation: () => T | Promise<T>,
+    diagnostic?: { type: string; deliveryId?: string },
   ): Promise<T> {
     const rejected = (error: string): T => ({ ok: false, error } as T);
     if (this.disposed)
@@ -3164,8 +3227,12 @@ export class SessionHost {
         rejected("session is stopping; command was not accepted"),
       );
     const admittedEpoch = this.stopEpoch;
+    const queuedAt = performance.now();
     this.pendingCommandMutations += 1;
     const result = this.commandMutationChain.then(async () => {
+      const waitMs = Math.round(performance.now() - queuedAt);
+      if (diagnostic && waitMs >= 100)
+        console.info(`[session] command_queue_wait key=${JSON.stringify(this.key)} type=${diagnostic.type} delivery_id=${diagnostic.deliveryId ?? 'none'} elapsed_ms=${waitMs} pending=${this.pendingCommandMutations}`);
       if (this.disposed)
         return rejected("session host is disposed");
       if (this.stopPromise || admittedEpoch !== this.stopEpoch)
@@ -3195,9 +3262,23 @@ export class SessionHost {
   }
 
   /** Serialize mutations across every browser attached to this Host. */
+  private deliveryReceipts?: DeliveryReceipts;
+
   handleOrdered(
     cmd: ClientCommand & { id?: string },
   ): Promise<{ ok: boolean; error?: string; data?: Record<string, unknown> }> {
+    this.deliveryReceipts ??= new DeliveryReceipts();
+    if (cmd.type === 'delivery_status')
+      return Promise.resolve({ ok: true, data: this.deliveryReceipts.status(cmd.deliveryId) });
+    if ((cmd.type === 'prompt' || cmd.type === 'steer' || cmd.type === 'followUp' || cmd.type === 'slash') && cmd.deliveryId) {
+      const { id: _requestId, deliveryId, ...payload } = cmd;
+      return this.deliveryReceipts.run(deliveryId, payload, async () => {
+        const started = performance.now();
+        const result = await this.withCommandMutation(() => this.handleCommand(cmd), { type: cmd.type, deliveryId });
+        console.info(`[session] message_delivery key=${JSON.stringify(this.key)} delivery_id=${deliveryId} type=${cmd.type} status=${result.ok ? 'accepted' : 'failed'} elapsed_ms=${Math.round(performance.now() - started)}`);
+        return result;
+      });
+    }
     const bypass =
       cmd.type === "abort" ||
       cmd.type === "editor_state" ||
@@ -3534,7 +3615,6 @@ export class SessionHost {
     );
     this.disposePromise = (async () => {
       clearTimeout(this.idleTimer);
-      clearTimeout(this.resourceReloadTimer);
       this.resourceWatch?.close();
       clearTimeout(this.watchDebounceTimer);
       clearTimeout(this.watchRetryTimer);

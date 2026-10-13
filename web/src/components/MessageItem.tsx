@@ -1,6 +1,9 @@
 import { memo, useEffect, useRef, useState } from 'react';
 import ImagePreview from './ImagePreview';
 import { imageDataUrl } from '../image-preview-utils';
+import { parseMentionMessage } from '../file-mentions';
+import FileMentionChips from './FileMentionChips';
+import { messageToolCallIds } from '../message-tool-dependencies';
 import MarkdownBody from './MessageMarkdownBody';
 import type { PiiMessage } from '../types';
 import type { ToolActivity } from '../api';
@@ -99,6 +102,11 @@ function MessageActions({ entryId, text, onFork, onBranch }: { entryId?: string;
   );
 }
 
+function UserText({ text, onOpenFile }: { text: string; onOpenFile?: (path: string) => void }) {
+  const parsed = parseMentionMessage(text);
+  return <><span>{parsed.text}</span><FileMentionChips items={parsed.mentions} onOpenFile={onOpenFile} /></>;
+}
+
 function MessageItem({ message, streaming, toolResults, tools, language, onFork, onBranch, onOpenFile, cwd, live }: Props) {
   const [preview, setPreview] = useState<string>();
   const entryId = message._entryId;
@@ -106,7 +114,7 @@ function MessageItem({ message, streaming, toolResults, tools, language, onFork,
   if (message.role === 'user') {
     const content = message.content;
     const bubble = typeof content === 'string' ? (
-      <div className="msg-user">{content}</div>
+      <div className="msg-user"><UserText text={content} onOpenFile={onOpenFile} /></div>
     ) : (
       <div className="msg-user">
         {((Array.isArray(content) ? content.filter(isContentBlock) : []) as unknown as Block[]).map((b, i) =>
@@ -125,7 +133,7 @@ function MessageItem({ message, streaming, toolResults, tools, language, onFork,
               onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setPreview(imageDataUrl(b.data as string, b.mimeType)); } }}
             />
           ) : (
-            <span key={i}>{typeof b.text === 'string' ? b.text : ''}</span>
+            <UserText key={i} text={typeof b.text === 'string' ? b.text : ''} onOpenFile={onOpenFile} />
           ),
         )}
       </div>
@@ -209,6 +217,9 @@ function MessageItem({ message, streaming, toolResults, tools, language, onFork,
         return null;
       })}
       {errorMessage && stopReason === 'error' && <div className="msg-error">{errorMessage}</div>}
+      {!streaming && blocks.length === 0 && stopReason !== 'error' && (
+        <div className="msg-error">{t('emptyModelReply')}</div>
+      )}
       </div>
       {!streaming && (
         <MessageActions
@@ -223,13 +234,6 @@ function MessageItem({ message, streaming, toolResults, tools, language, onFork,
       )}
     </div>
   );
-}
-
-function toolCallIds(message: PiiMessage): string[] {
-  if (!Array.isArray(message.content)) return [];
-  return (message.content.filter(isContentBlock) as unknown as Block[])
-    .filter((block) => block.type === 'toolCall' && Boolean(block.id))
-    .map((block) => block.id as string);
 }
 
 function sameLiveMetrics(previous: Props['live'], next: Props['live']): boolean {
@@ -257,7 +261,7 @@ function sameMessageItem(previous: Props, next: Props): boolean {
     previous.tools === next.tools
   )
     return true;
-  for (const id of toolCallIds(next.message)) {
+  for (const id of messageToolCallIds(next.message)) {
     if (previous.toolResults.get(id) !== next.toolResults.get(id)) return false;
     if (previous.tools.get(id) !== next.tools.get(id)) return false;
   }

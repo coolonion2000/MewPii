@@ -6,7 +6,7 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 COPY server/package.json server/
 COPY web/package.json web/
-COPY scripts/prepare-terminal.mjs scripts/
+COPY scripts/prepare-terminal.mjs scripts/prepare-pi-cache.mjs scripts/
 RUN npm ci --no-audit --no-fund
 COPY . .
 RUN npm run build
@@ -20,7 +20,7 @@ COPY package.json package-lock.json ./
 COPY server/package.json server/
 COPY web/package.json web/
 # Native PTY may need compilation when a prebuilt binary is unavailable.
-COPY scripts/prepare-terminal.mjs scripts/
+COPY scripts/prepare-terminal.mjs scripts/prepare-pi-cache.mjs scripts/
 RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ \
     && npm ci --omit=dev --no-audit --no-fund \
     && apt-get purge -y --auto-remove python3 make g++ && rm -rf /var/lib/apt/lists/*

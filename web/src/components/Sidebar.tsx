@@ -236,6 +236,7 @@ export default function Sidebar(props: Props) {
   }, [selectedAncestorKey, selection?.sessionPath]);
 
   const newSessionCwd = selection?.cwd ?? projects[0]?.cwd ?? '/';
+  const [currentWorkExpanded, setCurrentWorkExpanded] = useState(false);
   const agentOffline = Boolean(currentAgent && !agents?.includes(currentAgent));
   const usedSessions = useSyncExternalStore(
     subscribeUsedSessions,
@@ -474,7 +475,7 @@ export default function Sidebar(props: Props) {
         <section className="current-work" aria-label={t('currentWork')}>
           <div className="current-work-header">{t('currentWork')}</div>
           <div className="current-work-list">
-            {usedSessions.slice(0, 5).map((session) => {
+            {usedSessions.slice(0, currentWorkExpanded ? 20 : 5).map((session) => {
               const active = selection?.cwd === session.cwd && (
                 Boolean(session.sessionId && selection.sessionId === session.sessionId) ||
                 Boolean(session.sessionPath && selection.sessionPath === session.sessionPath)
@@ -518,6 +519,13 @@ export default function Sidebar(props: Props) {
               );
             })}
           </div>
+          {usedSessions.length > 5 && (
+            <button type="button" className="btn" aria-expanded={currentWorkExpanded}
+              onClick={() => setCurrentWorkExpanded(value => !value)}>
+              {t(currentWorkExpanded ? 'collapseCurrentWork' : 'expandCurrentWork')}
+              {!currentWorkExpanded && ` (${usedSessions.length - 5})`}
+            </button>
+          )}
         </section>
       )}
       <div className="wb-header">

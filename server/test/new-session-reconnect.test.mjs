@@ -155,7 +155,9 @@ export default function () {}
     const output = logs.join("");
     assert.equal((output.match(/stage=open .*mode="new"/g) ?? []).length, 1, output);
     assert.match(output, /pending_reattach/);
-    assert.match(output, /creation_settled status=ready .*pending=0/);
+    assert.match(output, /creation_settled status=created .*pending=0/);
+    assert.match(output, /stage=runtime_restore duration_ms=\d+(?:\.\d+)? status="ok"/);
+    assert.match(output, /stage=ready_total .*status="ok"/);
   } catch (cause) {
     throw new Error(`${cause.stack}\n${logs.join("")}`);
   } finally {

@@ -71,7 +71,7 @@ function inbox(ws) {
   };
 }
 
-test("WebSocket: native settings persist, file/copy dialogs, automatic new plugins and editor bridge", { timeout: 45_000 }, async () => {
+test("WebSocket: native settings persist, file/copy dialogs, manual plugin reload and editor bridge", { timeout: 45_000 }, async () => {
   const temp = await mkdtemp(join(tmpdir(), "mewpii-native-"));
   const home = join(temp, "home");
   const cwd = join(temp, "workspace");
@@ -144,13 +144,24 @@ test("WebSocket: native settings persist, file/copy dialogs, automatic new plugi
     for (const command of ["name example", "session", "changelog", "hotkeys", "reload"])
       await result(start(`/${command}`));
 
-    // No /reload and no reconnect: installing a new extension updates the existing browser.
+    // Resource discovery warns without restarting extensions in a live session.
+    // Explicit /reload updates commands in the existing browser, with no reconnect.
+    const reloadsBeforeInstall = logs.join("").match(/\[session\] reload_started /g)?.length ?? 0;
     await writeFile(join(extensionDir, "auto-plugin.js"), `export default pi => {
-      pi.registerCommand('auto-plugin', { description: 'automatic discovery fixture', handler: async (_args, ctx) => {
+      pi.registerCommand('auto-plugin', { description: 'manual discovery fixture', handler: async (_args, ctx) => {
         const value = await ctx.ui.editor('Plugin editor', 'prefilled');
         if (value !== undefined) ctx.ui.setEditorText('plugin: ' + value);
       }});
     };`);
+    await next(m => m.type === "toast" && /\/reload/.test(m.message), 5_000);
+    const changeDeadline = Date.now() + 5_000;
+    while (!logs.some(line => line.includes("resource_change_pending") && line.includes("auto-plugin.js"))) {
+      assert.ok(Date.now() < changeDeadline, "new plugin did not trigger the resource watcher");
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    assert.equal(logs.join("").match(/\[session\] reload_started /g)?.length ?? 0, reloadsBeforeInstall,
+      "resource watcher unexpectedly reloaded the live session");
+    await result(start("/reload"));
     await next(m => (m.type === "snapshot" || m.type === "session_ready") && m.snapshot.slashCommands?.some(c => c.name === "auto-plugin"), 15_000);
     const pluginId = start("/auto-plugin");
     const editor = (await next(m => m.type === "ui_request" && m.request.kind === "editor")).request;

@@ -64,6 +64,7 @@ export function wrapCodexStream(original: StreamFn,
       }
     }
     publish('preparing');
+    console.info(`[mewpii] codex_request_started session_id=${id ?? 'none'} transport=${transport} model=${JSON.stringify(model.id)}`);
     const fetcher = options?.fetch ?? globalThis.fetch;
     try {
       const stream = await original(model, context, {
@@ -109,6 +110,7 @@ export function wrapCodexStream(original: StreamFn,
             yield event;
           }
         } finally {
+          console.info(`[mewpii] codex_stream_closed session_id=${id ?? 'none'} transport=${transport} received_event=${received} elapsed_ms=${policy.now() - startedAt}`);
           if (id && hooks.stats(id)?.websocketFallbackActive && !fallbackSince.has(id)) fallbackSince.set(id, policy.now());
           notify(undefined);
         }

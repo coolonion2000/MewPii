@@ -16,7 +16,7 @@
     "sync-protocol": "node scripts/sync-protocol.mjs",
     "check-protocol": "node scripts/sync-protocol.mjs --check",
     "prepack": "npm run build",
-    "postinstall": "node scripts/prepare-terminal.mjs"
+    "postinstall": "node scripts/prepare-terminal.mjs && node scripts/prepare-pi-cache.mjs"
   },
   "devDependencies": {
     "concurrently": "^9.1.2"
@@ -32,7 +32,8 @@
     "docs",
     "README.md",
     "NOTICE",
-    "scripts/prepare-terminal.mjs"
+    "scripts/prepare-terminal.mjs",
+    "scripts/prepare-pi-cache.mjs"
   ],
   "engines": {
     "node": ">=22.19.0"

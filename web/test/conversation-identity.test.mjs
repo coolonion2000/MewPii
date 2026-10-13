@@ -43,6 +43,43 @@ function snapshot(cwd, id = idA, initializing = true) {
 }
 const selectionFor = (snap) => ({ cwd: snap.cwd, sessionPath: snap.sessionFile, sessionId: snap.sessionId });
 
+test('model selection waits for readiness and only sends the latest choice', async () => {
+  const conv = new Conversation('/model-select', pathFor(idA));
+  let ready;
+  conv.waitUntilReady = () => new Promise(resolve => { ready = resolve; });
+  const sent = [];
+  conv.send = async command => { sent.push(command); };
+  try {
+    const first = conv.selectModel('provider', 'a');
+    const releaseFirst = ready;
+    const second = conv.selectModel('provider', 'b');
+    assert.equal(sent.length, 0);
+    releaseFirst();
+    ready();
+    await Promise.all([first, second]);
+    assert.deepEqual(sent, [{type: 'setModel', provider: 'provider', modelId: 'b'}]);
+  } finally { conv.dispose(); }
+});
+
+test('HTTP stop works without ready WebSocket and does not claim success on failure', async () => {
+  const originalFetch = globalThis.fetch;
+  location.href = 'http://127.0.0.1/chat';
+  const conv = new Conversation('/stop-test', pathFor(idA), 'remote-worker');
+  conv.snapshot = { ...snapshot('/stop-test', idA, true), isStreaming: true };
+  try {
+    globalThis.fetch = async (url, init) => {
+      assert.equal(url.searchParams.get('agent'), 'remote-worker');
+      assert.equal(JSON.parse(init.body).sessionId, idA);
+      return { ok: false, json: async () => ({ok: false, error: 'stop incomplete'}) };
+    };
+    await assert.rejects(conv.stop(), /stop incomplete/);
+    assert.equal(conv.snapshot.isStreaming, true);
+    globalThis.fetch = async () => ({ok: true, json: async () => ({ok: true})});
+    await conv.stop();
+    assert.equal(conv.snapshot.isStreaming, false);
+  } finally { conv.dispose(); globalThis.fetch = originalFetch; }
+});
+
 // Exercise App's production reconciliation with real Conversation objects and
 // the same commit effect contract (dispose/connect only when owner changes).
 function lifecycle() {

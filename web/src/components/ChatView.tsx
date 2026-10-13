@@ -34,14 +34,15 @@ import type { PiiMessage, ProjectGroup, SessionSnapshot } from "../types";
 import {
   calculateLiveOutputMetrics,
   messageTimelineKey,
-  shouldShowDisconnected,
 } from "../state-utils";
 import {
   clampResizeWidth,
+  clampChatWidth,
   collectToolCallIds,
   hasConversationHistory,
   orphanRunningTools,
   validContentBlocks,
+  visibleTranscriptStart,
 } from "../ui-reliability";
 import {
   armCompletionSound,
@@ -50,6 +51,7 @@ import {
 } from "../completion-sound";
 import { t } from "../i18n";
 import { transcriptStart, TRANSCRIPT_PAGE_SIZE } from "../transcript-window";
+import { hasAuthoritativeRunState } from "../conversation-phase";
 
 const Trajectory = lazy(() => import("./Trajectory"));
 const FilePreview = lazy(() => import("./FilePreview"));
@@ -78,6 +80,7 @@ function ChatView({
   // React rechecks the revision after subscribing, so even a snapshot arriving
   // between render and commit cannot leave this view on stale empty state.
   useSyncExternalStore(conv.subscribe, conv.getRevision, conv.getRevision);
+  const authoritativeRunState = hasAuthoritativeRunState(conv);
 
   const runIsStreaming = Boolean(conv.snapshot?.isStreaming);
   const completionStateRef = useRef({
@@ -142,6 +145,16 @@ function ChatView({
   const previewDragCleanup = useRef<(() => void) | undefined>(undefined);
   const widthDragCleanup = useRef<(() => void) | undefined>(undefined);
   const [showJump, setShowJump] = useState(false);
+  const chatMainRef = useRef<HTMLDivElement>(null);
+  const [availableWidth, setAvailableWidth] = useState<number>();
+  useEffect(() => {
+    const node = chatMainRef.current;
+    if (!node) return;
+    const observer = new ResizeObserver(() => setAvailableWidth(node.clientWidth));
+    setAvailableWidth(node.clientWidth);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
   const [contentWidth, setContentWidth] = useState(
     () => Number(localStorage.getItem("pii-chat-w")) || 800,
   );
@@ -155,7 +168,7 @@ function ChatView({
       const dir = handle.classList.contains("right") ? -1 : 1;
       const pointerId = e.pointerId;
       const startX = e.clientX;
-      const startW = contentWidth;
+      const startW = clampChatWidth(contentWidth, chatMainRef.current?.clientWidth ?? 0);
       let clientX = startX;
       let clientY = e.clientY;
       let frame = 0;
@@ -163,10 +176,9 @@ function ChatView({
       // Centered column grows on both sides. Left handle widens when dragged left,
       // right handle widens when dragged right; dir flips the sign accordingly.
       const widthForPointer = () =>
-        clampResizeWidth(
+        clampChatWidth(
           startW + (startX - clientX) * dir * 2,
-          480,
-          Math.max(480, window.innerWidth - 96),
+          chatMainRef.current?.clientWidth ?? 0,
         );
       const renderWidth = () => {
         frame = 0;
@@ -234,9 +246,9 @@ function ChatView({
   useEffect(() => {
     document.documentElement.style.setProperty(
       "--chat-content-width",
-      `${contentWidth}px`,
+      `${availableWidth === undefined ? contentWidth : clampChatWidth(contentWidth, availableWidth)}px`,
     );
-  }, [contentWidth]);
+  }, [contentWidth, availableWidth]);
 
   const bindScroll = useCallback(
     (node: HTMLDivElement | null) => {
@@ -422,7 +434,13 @@ function ChatView({
     return { messageKeys: anchors, renderKeys: unique, occurrences: counts };
   }, [baseMessages]);
   const [historyAnchor, setHistoryAnchor] = useState<{ owner: Conversation; key: string | null }>();
-  const visibleStart = transcriptStart(renderKeys, historyAnchor?.owner === conv ? historyAnchor.key : undefined);
+  // Text deltas and the live ticker do not change finalized history. Avoid an
+  // indexOf + slice/some pass over a long transcript on each of those renders.
+  const visibleStart = useMemo(
+    () => visibleTranscriptStart(baseMessages, transcriptStart(renderKeys, historyAnchor?.owner === conv ? historyAnchor.key : undefined)),
+    [baseMessages, renderKeys, conv, historyAnchor],
+  );
+  // Tool results/custom entries render elsewhere. Never show an all-invisible window.
   useEffect(() => {
     if (!renderKeys.length) return;
     if (historyAnchor?.owner !== conv || (historyAnchor.key !== null && !renderKeys.includes(historyAnchor.key))) {
@@ -456,14 +474,19 @@ function ChatView({
     () => collectToolCallIds(baseMessages),
     [baseMessages],
   );
+  const runningTools = useMemo(() => {
+    const active = new Map<string, ToolActivity>();
+    for (const [id, tool] of conv.tools) if (tool.running) active.set(id, tool);
+    return active;
+  }, [conv.tools]);
   const orphanTools = useMemo(
     () =>
       orphanRunningTools(
-        conv.tools,
+        runningTools,
         finalizedToolCallIds,
         streamingMessage?.content,
       ),
-    [conv.tools, finalizedToolCallIds, streamingMessage?.content],
+    [runningTools, finalizedToolCallIds, streamingMessage?.content],
   );
   const { noticesBeforeMessages, noticesByMessage } = useMemo(() => {
     const before = conv.transcriptNotices.filter(
@@ -555,13 +578,10 @@ function ChatView({
     };
   }, [title]);
 
-  // This is deliberately a plain derived value rather than a hook: existing
-  // sessions return a loading placeholder until their first snapshot, and all
-  // hooks must run in the same order before and after that snapshot arrives.
-  const hasHistory = hasConversationHistory(
-    baseMessages,
-    conv.historyFrom,
-    conv.totalMessages,
+  // Keep this before either loading/hero return so hook order remains stable.
+  const hasHistory = useMemo(
+    () => hasConversationHistory(baseMessages, conv.historyFrom, conv.totalMessages),
+    [baseMessages, conv.historyFrom, conv.totalMessages],
   );
 
   // Existing sessions should show a loading state until their first snapshot;
@@ -650,12 +670,6 @@ function ChatView({
               )}
             </div>
           </div>
-          {conv.error && !conv.connected && (
-            <div className="hero-connection-error" role="alert">
-              {conv.reconnecting ? t("reconnecting") : t("disconnected")}{" "}
-              {conv.error}
-            </div>
-          )}
           {conv.transcriptNotices.length > 0 && (
             <div className="hero-transcript-notices">
               {conv.transcriptNotices.map((notice) => (
@@ -665,7 +679,7 @@ function ChatView({
           )}
           <EditorWidgets conv={conv} placement="aboveEditor" />
           <div className="hero-composer">
-            <Composer conv={conv} draft={draft} onDraft={setDraft} />
+            <Composer conv={conv} draft={draft} onDraft={setDraft} onOpenFile={handleOpenFile} />
           </div>
           <EditorWidgets conv={conv} placement="belowEditor" />
           <StatsBar conv={conv} />
@@ -763,7 +777,7 @@ function ChatView({
           {title}
         </div>
         <div className="spacer" />
-        {snap?.isStreaming && (
+        {snap?.isStreaming && authoritativeRunState && (
           <span
             style={{
               fontSize: 12,
@@ -796,7 +810,7 @@ function ChatView({
       <div
         className={`chat-body ${subagents.selected ? "has-subagent-detail" : ""} ${previewPath && !subagents.selected ? "has-file-preview" : ""}`}
       >
-        <div className="chat-main">
+        <div className="chat-main" ref={chatMainRef}>
           {!showTraj && !subagents.selected && (
             <>
               <div
@@ -937,7 +951,7 @@ function ChatView({
                     </div>
                   </div>
                 )}
-                {conv.connected &&
+                {authoritativeRunState &&
                   conv.snapshot?.providerRequest &&
                   !conv.compaction &&
                   (conv.snapshot.providerRequest.phase !== "streaming" ||
@@ -955,7 +969,7 @@ function ChatView({
                       language={language}
                     />
                   )}
-                {conv.connected &&
+                {authoritativeRunState &&
                   conv.snapshot?.isStreaming &&
                   !conv.snapshot.providerRequest &&
                   !conv.retry &&
@@ -987,7 +1001,7 @@ function ChatView({
                       </div>
                     );
                   })()}
-                {conv.connected &&
+                {authoritativeRunState &&
                   conv.retry &&
                   !conv.snapshot?.providerRequest && (
                     <div className="retry-banner">
@@ -1013,7 +1027,7 @@ function ChatView({
                       </span>
                     </div>
                   )}
-                {conv.connected && conv.compaction && (
+                {authoritativeRunState && conv.compaction && (
                   <div className="compaction-banner">
                     <span
                       className="composer-spinner"
@@ -1034,7 +1048,7 @@ function ChatView({
                     </span>
                   </div>
                 )}
-                {conv.connected &&
+                {authoritativeRunState &&
                   snap?.compactionState &&
                   snap.compactionState.status !== "running" && (
                     <div className="compaction-banner" role="status">
@@ -1074,14 +1088,6 @@ function ChatView({
                     </button>
                   </div>
                 )}
-                {conv.reconnecting && (
-                  <div className="msg-error">{t("reconnecting")}</div>
-                )}
-                {shouldShowDisconnected(
-                  conv.connected,
-                  conv.reconnecting,
-                  conv.error,
-                ) && <div className="msg-error">{t("disconnected")}</div>}
               </div>
             </div>
           )}
@@ -1142,7 +1148,7 @@ function ChatView({
           <div className="composer-wrap">
             <SubagentPanel key={snap?.sessionFile} />
             <InlineQuestions conv={conv} />
-            <Composer conv={conv} draft={draft} onDraft={setDraft} />
+            <Composer conv={conv} draft={draft} onDraft={setDraft} onOpenFile={handleOpenFile} />
           </div>
           <EditorWidgets conv={conv} placement="belowEditor" />
           <StatsBar conv={conv} />

@@ -1,11 +1,21 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+
+test('tool-heavy transcript tail retains every available visible conversation row', () => {
+  const messages = [{role: 'user'}, {role: 'assistant'}, ...Array.from({length: 225}, () => ({role: 'toolResult'}))];
+  assert.equal(visibleTranscriptStart(messages, 107), 0);
+  assert.equal(visibleTranscriptStart([...messages, {role: 'assistant'}], 107), 0);
+  assert.equal(visibleTranscriptStart([], 0), 0);
+});
 import {
   canFormatJson,
+  visibleTranscriptStart,
+  hasRecentVisibleMessages,
   canRenderMessageMarkdown,
   canRenderRichMarkdown,
   checkedJsonResponse,
   clampResizeWidth,
+  clampChatWidth,
   collectToolCallIds,
   hasConversationHistory,
   isContentBlock,
@@ -22,6 +32,28 @@ import {
   validContentBlocks,
 } from '../src/ui-reliability.ts';
 
+test('recent window counts 50 user/assistant rows, not hidden tool results or custom records', () => {
+  const messages = Array.from({length: 80}, (_, i) => [
+    { role: i % 2 ? 'assistant' : 'user' },
+    { role: 'toolResult' }, { role: 'custom' }, { role: 'toolResult' },
+  ]).flat();
+  const start = visibleTranscriptStart(messages, messages.length - 120);
+  assert.equal(start, 30 * 4);
+  assert.equal(hasRecentVisibleMessages(messages.slice(start)), true);
+  assert.equal(hasRecentVisibleMessages(messages.slice(start + 1)), false);
+  assert.equal(visibleTranscriptStart(messages, 12), 12, 'reading older history preserves its anchor');
+  assert.equal(hasRecentVisibleMessages(Array(100).fill({role: 'toolResult'})), false);
+});
+
+test('recent visible checks stop after their bounded tail budget', () => {
+  let roleReads = 0;
+  const messages = Array.from({length: 2000}, () => ({ get role() { roleReads++; return 'assistant'; } }));
+  assert.equal(visibleTranscriptStart(messages, 1880), 1880);
+  assert.equal(roleReads, 50);
+  assert.equal(hasRecentVisibleMessages(messages), true);
+  assert.equal(roleReads, 100);
+});
+
 test('paged assistant/tool-only history remains a conversation after streaming ends', () => {
   const page = [...Array(6).fill({ role: 'assistant' }), ...Array(5).fill({ role: 'toolResult' })];
   assert.equal(hasConversationHistory(page, 5206, 5217), true);
@@ -35,6 +67,15 @@ test('only truly new sessions and custom-only startup injections show the hero',
   assert.equal(hasConversationHistory([], 0, 0), false);
   assert.equal(hasConversationHistory([{ role: 'custom' }], 0, 1), false);
   assert.equal(hasConversationHistory([{ role: 'user' }], 0, 0), true);
+});
+
+test('chat width reserves independent handle space inside its actual pane', () => {
+  assert.equal(clampChatWidth(1200, 800), 752);
+  assert.equal(clampChatWidth(800, 600), 552);
+  assert.equal(clampChatWidth(800, 400), 352);
+  assert.equal(clampChatWidth(800, 0), 0);
+  assert.equal(clampChatWidth(600, 1200), 600);
+  assert.equal(clampChatWidth(100, 1200), 480);
 });
 
 test('resize helpers clamp widths and preserve sidebar hysteresis', () => {

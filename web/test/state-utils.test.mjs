@@ -483,6 +483,32 @@ test('history and overlapping snapshots merge by entryId without duplicates', ()
   assert.deepEqual(other.messages.map((item) => item._entryId), ['x']);
 });
 
+test('non-overlapping snapshot preserves proven adjacent history and trims a replaced branch tail', () => {
+  const current = [message('a'), message('b'), message('old-c')];
+  const next = snapshot([message('c'), message('d')], {
+    historyFrom: 12, totalMessages: 14, historyBeforeEntryId: 'b', branchHeadId: 'new-head',
+  });
+  const merged = mergeSnapshotMessages(current, 'session-a', next, 10);
+  assert.deepEqual(merged.messages.map(message => message._entryId), ['a', 'b', 'c', 'd']);
+  assert.equal(merged.historyFrom, 10);
+});
+
+test('adjacent snapshot proof rejects wrong position, provisional preview, unknown predecessor and other session', () => {
+  const current = [message('a'), message('b')];
+  const next = snapshot([message('c')], {historyFrom: 12, totalMessages: 13, historyBeforeEntryId: 'b'});
+  for (const [previousSession, previousFrom, overrides] of [
+    ['session-a', 9, {}], ['session-a', undefined, {}],
+    ['session-a', 10, {pagingProvisional: true}],
+    ['session-a', 10, {historyBeforeEntryId: 'other-branch'}],
+    ['session-a', 10, {historyBeforeEntryId: undefined}],
+    ['other-session', 10, {}],
+  ]) {
+    const merged = mergeSnapshotMessages(current, previousSession, {...next, ...overrides}, previousFrom);
+    assert.deepEqual(merged.messages.map(message => message._entryId), ['c']);
+    assert.equal(merged.historyFrom, 12);
+  }
+});
+
 test('agent URL is fixed and terminal run detection is explicit', () => {
   assert.equal(fixedAgentUrl('/api/file?path=x', 'mac mini'), '/api/file?path=x&agent=mac%20mini');
   assert.equal(fixedAgentUrl('/api/file?agent=one', 'two'), '/api/file?agent=one');

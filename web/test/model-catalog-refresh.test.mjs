@@ -47,14 +47,52 @@ test('failed background polling stops after its budget and never announces a fai
   } finally { f.dispose(); }
 });
 
-test('a stale initial response cannot overwrite a forced refresh or restart polling', async () => {
+test('cold load, focus refresh and menu opening share one pending request', async () => {
   let release;
   const old = new Promise(resolve => { release = resolve; });
   const f = await fixture(n => n === 1 ? old : reply(list('new', false)));
   try {
     const pending = f.api.fetchModels();
-    await f.api.fetchModels(true);
-    release(reply(list('old', true))); await pending;
-    assert.equal((await f.api.fetchModels()).models[0].id, 'new'); assert.equal(f.timers.size, 0);
+    const focused = f.api.fetchModels(true);
+    const menu = f.api.fetchModels(true);
+    assert.equal(f.calls, 1);
+    release(reply(list('ready', false)));
+    const results = await Promise.all([pending, focused, menu]);
+    assert.ok(results.every(r => r.models[0].id === 'ready'));
+    assert.equal(f.calls, 1); assert.equal(f.timers.size, 0);
+  } finally { f.dispose(); }
+});
+
+test('expired list is returned immediately while one background request updates it', async () => {
+  let release;
+  const slow = new Promise(resolve => { release = resolve; });
+  const f = await fixture(n => n === 1 ? reply(list('cached', false)) : slow);
+  const now = Date.now;
+  try {
+    await f.api.fetchModels();
+    const later = now() + 16000;
+    Date.now = () => later;
+    assert.equal(f.api.getCachedModels().models[0].id, 'cached');
+    assert.equal((await f.api.fetchModels()).models[0].id, 'cached');
+    assert.equal((await f.api.fetchModels()).models[0].id, 'cached');
+    const refresh = f.api.fetchModels(true);
+    assert.equal(f.calls, 2);
+    release(reply(list('updated', false))); await refresh;
+    assert.equal(f.api.getCachedModels().models[0].id, 'updated');
+    assert.equal(f.notifications, 1);
+  } finally { Date.now = now; f.dispose(); }
+});
+
+test('failed refresh preserves usable cache and a subsequent retry can succeed', async () => {
+  const f = await fixture(n => {
+    if (n === 2) throw Error('offline');
+    return reply(list(n === 1 ? 'cached' : 'recovered', false));
+  });
+  try {
+    await f.api.fetchModels();
+    await assert.rejects(f.api.fetchModels(true), /offline/);
+    assert.equal(f.api.getCachedModels().models[0].id, 'cached');
+    assert.equal((await f.api.fetchModels()).models[0].id, 'cached');
+    assert.equal((await f.api.fetchModels(true)).models[0].id, 'recovered');
   } finally { f.dispose(); }
 });

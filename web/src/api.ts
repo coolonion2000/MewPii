@@ -29,7 +29,9 @@ import {
   type TranscriptNotice,
 } from "./state-utils";
 import { ReadinessWaiters } from "./readiness-waiters";
-import { notifyModelCatalogChanged } from "./ui-reliability";
+import { watchServiceHealth } from "./service-health";
+import { canRecordDelivery, deliveryFingerprintForSend, readDeliveries, writeDeliveries } from './delivery-store';
+import { hasRecentVisibleMessages, notifyModelCatalogChanged } from "./ui-reliability";
 import {
   appendPartialEvent,
   isBatchablePartialEvent,
@@ -122,7 +124,6 @@ let modelsCache:
   | { value: ModelsResponse; loadedAt: number }
   | undefined;
 let modelsRequest: Promise<ModelsResponse> | undefined;
-let modelsGeneration = 0;
 let modelsPollTimer: ReturnType<typeof setTimeout> | undefined;
 let modelsPollAttempts = 0;
 
@@ -138,9 +139,7 @@ function followCatalogRefresh(value: ModelsResponse): void {
     modelsPollTimer = undefined;
     modelsPollAttempts += 1;
     try {
-      const next = await fetchModels(true);
-      // Cache is populated before subscribers read it; no extra catalog fetch.
-      if (!next.catalogRefreshing) notifyModelCatalogChanged();
+      await fetchModels(true);
     } catch {
       followCatalogRefresh(value);
     }
@@ -148,26 +147,27 @@ function followCatalogRefresh(value: ModelsResponse): void {
 }
 
 /** Deduplicate Composer/Settings model discovery across rapid view changes. */
+export function getCachedModels(): ModelsResponse | undefined {
+  return modelsCache?.value;
+}
+
 export async function fetchModels(force = false): Promise<ModelsResponse> {
-  if (force) {
-    modelsCache = undefined;
-    modelsRequest = undefined;
-    modelsGeneration += 1;
-  }
-  if (
-    modelsCache &&
-    Date.now() - modelsCache.loadedAt < MODELS_CACHE_TTL_MS
-  )
+  if (!force && modelsCache) {
+    if (Date.now() - modelsCache.loadedAt >= MODELS_CACHE_TTL_MS) {
+      // Keep the last usable list interactive while revalidating. Failure must
+      // not discard it or produce an unhandled background rejection.
+      void fetchModels(true).catch(() => {});
+    }
     return modelsCache.value;
+  }
   if (modelsRequest) return modelsRequest;
-  const generation = modelsGeneration;
   const loading = fetch("/api/models", { signal: AbortSignal.timeout(10_000) }).then(async (res) => {
     if (!res.ok) throw new Error(`models: ${res.status}`);
     const value = (await res.json()) as ModelsResponse;
-    if (generation === modelsGeneration) {
-      modelsCache = { value, loadedAt: Date.now() };
-      followCatalogRefresh(value);
-    }
+    const hadCache = Boolean(modelsCache);
+    modelsCache = { value, loadedAt: Date.now() };
+    followCatalogRefresh(value);
+    if (hadCache) notifyModelCatalogChanged();
     return value;
   });
   const tracked = loading.finally(() => {
@@ -339,6 +339,36 @@ const CONVERSATION_STATE_CACHE_CAPACITY = 24;
 const COMMAND_TIMEOUT_MS = 120_000;
 const PARTIAL_UPDATE_FLUSH_MS = 40;
 
+export type MessageDelivery = {
+  id: string;
+  type: 'prompt' | 'steer' | 'followUp' | 'slash';
+  state: 'sending' | 'accepted' | 'failed' | 'unknown';
+  updatedAt: number;
+  error?: string;
+};
+
+export class DeliveryUnknownError extends Error {
+  constructor(public readonly deliveryId: string, public readonly alreadySubmitted = false) {
+    super('Message delivery is unconfirmed; check its status before sending it again.');
+    this.name = 'DeliveryUnknownError';
+  }
+}
+
+export class DeliveryNotSentError extends Error {
+  constructor(public readonly reason: 'disposed' | 'session_changed') {
+    super(reason === 'disposed' ? 'Conversation closed while preparing the message; message was not sent.'
+      : 'Session changed while preparing the message; message was not sent.');
+    this.name = 'DeliveryNotSentError';
+  }
+}
+
+class CommandOutcomeUnknownError extends Error {}
+type MessageCommand = Extract<ClientCommand, { type: 'prompt' | 'steer' | 'followUp' | 'slash' }>;
+
+function retainedDeliveryData(data: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+  return data && JSON.stringify(data).length > 8192 ? { accepted: true, deliveryResultOmitted: true } : data;
+}
+
 export class Conversation {
   private ws?: WebSocket;
   private listeners = new Set<() => void>();
@@ -367,6 +397,29 @@ export class Conversation {
   /** Live tool execution states keyed by toolCallId. */
   tools = new Map<string, ToolActivity>();
   connected = false;
+  transportOpen = false;
+  delivery?: MessageDelivery;
+  private deliveryRecords = new Map<string, {
+    status: MessageDelivery;
+    fingerprint: string;
+    sessionId?: string;
+    scope?: string;
+    result?: Record<string, unknown>;
+  }>();
+  private deliveryChecks = new Map<string, Promise<Record<string, unknown> | undefined>>();
+  private deliveryRequestIds = new Map<string, string>();
+  private deliveryScope?: string;
+
+  get unsettledDeliveries(): MessageDelivery[] {
+    return [...this.deliveryRecords.values()].filter(record => record.scope === this.deliveryScope &&
+      (record.status.state === 'unknown' || record.status.state === 'sending')).map(record => record.status);
+  }
+
+  getDelivery(id: string): MessageDelivery | undefined {
+    return this.deliveryRecords.get(id)?.status;
+  }
+  serviceUnresponsive = false;
+  private stopHealthWatch?: () => void;
   /** True while attempting to re-establish a dropped connection. */
   reconnecting = false;
   error?: string;
@@ -389,7 +442,10 @@ export class Conversation {
   totalMessages = 0;
   historyInFlight = false;
   private historyRequestId?: string;
+  private historyRequest?: { before: number; sessionId: string; branchHeadId?: string };
   private historySeq = 0;
+  private recentHistoryScheduled = false;
+  private recentHistoryPaused = false;
   /** Active while a context compaction is running. */
   compaction?: { reason: string };
   /** Active while the provider request is being retried. */
@@ -489,7 +545,7 @@ export class Conversation {
       return Promise.resolve();
     if (this.closedIntentionally)
       return Promise.reject(new Error("conversation disposed"));
-    if (this.error) return Promise.reject(new Error(this.error));
+    if (this.error && !this.reconnecting) return Promise.reject(new Error(this.error));
     return this.readyWaiters.wait(timeoutMs);
   }
 
@@ -529,6 +585,14 @@ export class Conversation {
 
   connect(): void {
     if (this.closedIntentionally) return;
+    if (!this.stopHealthWatch) this.stopHealthWatch = watchServiceHealth(async signal => {
+      const response = await fetch(new URL(withAgent('/api/health', this.agent), location.href), { signal });
+      if (!response.ok) throw new Error(`health: ${response.status}`);
+    }, unresponsive => {
+      if (this.serviceUnresponsive === unresponsive) return;
+      this.serviceUnresponsive = unresponsive;
+      this.emit();
+    });
     clearTimeout(this.reconnectTimer);
     const proto = location.protocol === "https:" ? "wss" : "ws";
     // A stable Conversation can start blank or rebind via /new. Reconnect to
@@ -546,28 +610,37 @@ export class Conversation {
     const ws = new WebSocket(url);
     this.ws = ws;
     this.connected = false;
+    this.transportOpen = false;
+    this.recentHistoryPaused = false;
     ws.onopen = () => {
+      if (this.ws !== ws) return;
+      this.transportOpen = true;
       // The transport is open, but commands remain blocked until a ready
       // snapshot arrives. An earlier initializing snapshot may still carry UI.
       this.error = undefined;
       this.emit();
     };
     ws.onclose = (ev) => {
+      if (this.ws !== ws) return;
+      console.warn('[conversation] socket_closed', { code: ev.code, clean: ev.wasClean, ready: this.connected });
       this.flushPendingPartialEvents(false);
-      const wasConnected = this.connected;
       this.connected = false;
+      this.transportOpen = false;
       // fail all in-flight commands so the UI unblocks
       for (const [, p] of this.pending) {
         clearTimeout(p.timer);
-        p.reject(new Error("connection closed"));
+        p.reject(new CommandOutcomeUnknownError("connection closed"));
       }
       this.pending.clear();
+      this.deliveryRequestIds.clear();
       this.historyInFlight = false;
       this.historyRequestId = undefined;
+      this.historyRequest = undefined;
+      this.recentHistoryPaused = true;
       if (!this.closedIntentionally) {
         this.error = `connection closed (${ev.code})`;
         this.readyWaiters.rejectAll(new Error(this.error));
-        if (ev.code !== 1000 || wasConnected) this.scheduleReconnect();
+        this.scheduleReconnect();
       }
       this.emit();
     };
@@ -575,6 +648,7 @@ export class Conversation {
       // onclose follows; handled there
     };
     ws.onmessage = (ev) => {
+      if (this.ws !== ws) return;
       try {
         this.handleMessage(JSON.parse(String(ev.data)) as ServerMessage);
       } catch (cause) {
@@ -588,10 +662,11 @@ export class Conversation {
   }
 
   private scheduleReconnect(): void {
+    clearTimeout(this.reconnectTimer);
     this.reconnecting = true;
     this.reconnectAttempts += 1;
     const delay =
-      Math.min(15000, 800 * 2 ** Math.min(this.reconnectAttempts, 5)) +
+      Math.min(5000, 400 * 2 ** Math.min(this.reconnectAttempts - 1, 4)) +
       Math.random() * 400;
     this.reconnectTimer = setTimeout(() => this.connect(), delay);
   }
@@ -653,15 +728,19 @@ export class Conversation {
   }
 
   dispose(): void {
+    this.transportOpen = false;
+    this.stopHealthWatch?.();
+    this.stopHealthWatch = undefined;
     this.flushPendingPartialEvents(false);
     this.cacheCurrentState();
     this.closedIntentionally = true;
     clearTimeout(this.reconnectTimer);
     for (const [, pending] of this.pending) {
       clearTimeout(pending.timer);
-      pending.reject(new Error("conversation disposed"));
+      pending.reject(new CommandOutcomeUnknownError("conversation disposed"));
     }
     this.pending.clear();
+    this.deliveryRequestIds.clear();
     this.readyWaiters.rejectAll(new Error("conversation disposed"));
     this.ws?.close(1000);
     this.listeners.clear();
@@ -714,11 +793,19 @@ export class Conversation {
     }
     const flushedPartials = this.flushPendingPartialEvents(false);
     if (msg.type === "snapshot") {
+      const needsDeliveryRecovery = !this.connected || this.reconnecting ||
+        !isSessionSnapshotReady(this.snapshot) || this.snapshot?.sessionId !== msg.snapshot.sessionId;
       this.connected = true;
+      this.transportOpen = true;
+      this.error = undefined;
       this.reconnecting = false;
       this.reconnectAttempts = 0;
       this.applySnapshot(msg.snapshot);
-      if (isSessionSnapshotReady(msg.snapshot)) this.readyWaiters.resolveAll();
+      if (isSessionSnapshotReady(msg.snapshot)) {
+        this.readyWaiters.resolveAll();
+        if (needsDeliveryRecovery) this.recheckDelivery();
+        this.scheduleRecentHistory();
+      }
     } else if (msg.type === "session_ready") {
       if (this.snapshot?.sessionId !== msg.snapshot.sessionId) {
         if (flushedPartials) this.emit();
@@ -731,6 +818,8 @@ export class Conversation {
         msg.snapshot,
       );
       this.connected = true;
+      this.transportOpen = true;
+      this.error = undefined;
       this.reconnecting = false;
       this.reconnectAttempts = 0;
       this.snapshot = {
@@ -774,6 +863,8 @@ export class Conversation {
       }
       this.cacheCurrentState();
       this.readyWaiters.resolveAll();
+      this.recheckDelivery();
+      this.scheduleRecentHistory();
     } else if (msg.type === "event") {
       this.applyEvent(msg.event);
     } else if (msg.type === "widgets") {
@@ -797,12 +888,22 @@ export class Conversation {
         if (flushedPartials) this.emit();
         return;
       }
+      const requested = this.historyRequest;
       this.historyInFlight = false;
       this.historyRequestId = undefined;
+      this.historyRequest = undefined;
       if (
+        !requested ||
+        msg.sessionId !== requested.sessionId ||
+        msg.branchHeadId !== requested.branchHeadId ||
         msg.sessionId !== this.snapshot?.sessionId ||
-        msg.branchHeadId !== this.snapshot?.branchHeadId
+        msg.branchHeadId !== this.snapshot?.branchHeadId ||
+        !Number.isInteger(msg.before) || msg.before < 0 ||
+        msg.before >= requested.before ||
+        msg.messages.length !== requested.before - msg.before
       ) {
+        // Stop malformed/no-progress responses instead of repeatedly paging.
+        this.recentHistoryPaused = true;
         this.emit();
         return;
       }
@@ -810,9 +911,10 @@ export class Conversation {
         this.messages,
         msg.messages.map(normalizeMessageContent),
       );
-      this.historyFrom = msg.before;
+      this.historyFrom = Math.min(this.historyFrom, msg.before);
       this.syncSnapshotMessages();
       this.cacheCurrentState();
+      this.scheduleRecentHistory();
     } else if (msg.type === "editor_text") {
       this.editorUpdate = { text: msg.text, mode: msg.mode, revision: (this.editorUpdate?.revision ?? 0) + 1 };
     } else if (msg.type === "ui_request") {
@@ -825,6 +927,13 @@ export class Conversation {
     } else if (msg.type === "custom_ui_close") {
       if (this.customUi?.requestId === msg.requestId) this.customUi = undefined;
     } else if (msg.type === "command_result") {
+      const deliveryId = msg.id ? this.deliveryRequestIds.get(msg.id) : undefined;
+      if (deliveryId) {
+        this.deliveryRequestIds.delete(msg.id!);
+        const record = this.deliveryRecords.get(deliveryId);
+        if (record) record.result = retainedDeliveryData(msg.data);
+        this.updateDelivery(deliveryId, msg.ok ? 'accepted' : 'failed', msg.error);
+      }
       if (msg.id && this.pending.has(msg.id)) {
         const p = this.pending.get(msg.id)!;
         this.pending.delete(msg.id);
@@ -858,11 +967,13 @@ export class Conversation {
     ) {
       this.historyInFlight = false;
       this.historyRequestId = undefined;
+      this.historyRequest = undefined;
     }
     // Preserve A under A's canonical path before an in-host newSession rebinds
     // this Conversation to B.
     if (previousSessionId && previousSessionId !== snap.sessionId) {
       this.cacheCurrentState();
+      this.recentHistoryPaused = false;
     }
     const staleSnapshot = isStaleConversationSnapshot(
       previousSessionId,
@@ -872,7 +983,7 @@ export class Conversation {
     );
     const merged = staleSnapshot
       ? { messages: this.messages, historyFrom: this.historyFrom }
-      : mergeSnapshotMessages(this.messages, previousSessionId, snap);
+      : mergeSnapshotMessages(this.messages, previousSessionId, snap, this.historyFrom);
     this.messages = merged.messages;
     this.historyFrom = merged.historyFrom;
     this.snapshot = {
@@ -1289,11 +1400,32 @@ export class Conversation {
       ws.send(JSON.stringify(cmd));
   }
 
-  loadOlder(): void {
-    if (this.historyFrom <= 0 || this.historyInFlight || !this.snapshot) return;
+  /** Fill the recent visible transcript after readiness, without blocking prompts. */
+  private scheduleRecentHistory(): void {
+    if (this.recentHistoryScheduled || this.recentHistoryPaused) return;
+    this.recentHistoryScheduled = true;
+    queueMicrotask(() => {
+      this.recentHistoryScheduled = false;
+      if (this.closedIntentionally || this.recentHistoryPaused ||
+          !this.connected || !isSessionSnapshotReady(this.snapshot) ||
+          this.snapshot?.pagingProvisional === true || this.historyInFlight ||
+          this.historyFrom <= 0 || hasRecentVisibleMessages(this.messages)) return;
+      this.loadOlder(true);
+    });
+  }
+
+  loadOlder(automatic = false): void {
+    if (this.historyFrom <= 0 || this.historyInFlight || !this.snapshot ||
+        !this.connected || !isSessionSnapshotReady(this.snapshot)) return;
+    if (!automatic) this.recentHistoryPaused = false;
     const requestId = `history-${++this.historySeq}`;
     this.historyInFlight = true;
     this.historyRequestId = requestId;
+    this.historyRequest = {
+      before: this.historyFrom,
+      sessionId: this.snapshot.sessionId,
+      branchHeadId: this.snapshot.branchHeadId,
+    };
     void this.send({
       type: "history",
       before: this.historyFrom,
@@ -1302,22 +1434,207 @@ export class Conversation {
       if (this.historyRequestId !== requestId) return;
       this.historyInFlight = false;
       this.historyRequestId = undefined;
+      this.historyRequest = undefined;
+      this.recentHistoryPaused = true;
       this.emit();
     });
     this.emit();
   }
 
+  async stop(): Promise<void> {
+    const sessionId = this.snapshot?.sessionId ?? this.requestedSessionId;
+    if (!sessionId) {
+      await this.send({ type: 'abort' });
+      return;
+    }
+    const response = await fetch(new URL(withAgent('/api/sessions/stop', this.agent), location.href), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId }), signal: AbortSignal.timeout(15000),
+    });
+    const result = await response.json();
+    if (!response.ok || !result.ok) throw new Error(result.error ?? `stop: ${response.status}`);
+    if (this.closedIntentionally || this.snapshot?.sessionId !== sessionId) return;
+    // Success is acknowledged only after the server's stop settlement succeeds.
+    if (this.snapshot) this.snapshot = { ...this.snapshot, isStreaming: false };
+    this.streaming = undefined;
+    this.emit();
+  }
+
+  private modelSelectionRevision = 0;
+
+  async selectModel(provider: string, modelId: string): Promise<void> {
+    const revision = ++this.modelSelectionRevision;
+    await this.waitUntilReady();
+    if (revision !== this.modelSelectionRevision) return;
+    await this.send({ type: 'setModel', provider, modelId });
+  }
+
   send(cmd: ClientCommand): Promise<Record<string, unknown> | undefined> {
+    if (cmd.type === 'prompt' || cmd.type === 'steer' || cmd.type === 'followUp' || cmd.type === 'slash')
+      return this.sendDelivery(cmd);
+    return this.sendRequest(cmd);
+  }
+
+  private updateDelivery(id: string, state: MessageDelivery['state'], error?: string): void {
+    const record = this.deliveryRecords.get(id);
+    if (!record) return;
+    if ((record.status.state === 'accepted' || record.status.state === 'failed') &&
+        (state === 'sending' || state === 'unknown')) return;
+    record.status = { ...record.status, state, error: error?.slice(0, 4096), updatedAt: Date.now() };
+    if (record.scope === this.deliveryScope && (!this.delivery || this.delivery.id === id)) this.delivery = record.status;
+    if (state === 'accepted' || state === 'failed') {
+      for (const [requestId, deliveryId] of this.deliveryRequestIds)
+        if (deliveryId === id) this.deliveryRequestIds.delete(requestId);
+    }
+    this.persistDeliveries(record.scope);
+    this.emit();
+  }
+
+  private syncDeliveryScope(): void {
+    if (!this.snapshot?.sessionId) return;
+    const scope = JSON.stringify([this.agent ?? '', this.snapshot.cwd, this.snapshot.sessionId]);
+    if (scope === this.deliveryScope) return;
+    this.persistDeliveries();
+    this.deliveryScope = scope;
+    this.delivery = undefined;
+    for (const { fingerprint, ...status } of readDeliveries(scope)) {
+      if (!this.deliveryRecords.has(status.id))
+        this.deliveryRecords.set(status.id, { status, fingerprint, sessionId: this.snapshot.sessionId, scope });
+      this.delivery = this.deliveryRecords.get(status.id)!.status;
+    }
+  }
+
+  private persistDeliveries(scope = this.deliveryScope): void {
+    if (!scope) return;
+    writeDeliveries(scope, [...this.deliveryRecords.values()].flatMap(({ status, fingerprint, scope: owner }) =>
+      owner === scope && (status.state === 'sending' || status.state === 'unknown')
+        ? [{ ...status, state: status.state, fingerprint }] : []));
+  }
+
+  private async sendDelivery(cmd: MessageCommand): Promise<Record<string, unknown> | undefined> {
+    this.syncDeliveryScope();
+    const sessionId = this.snapshot?.sessionId;
+    const scope = this.deliveryScope;
+    const { deliveryId: _providedId, ...payload } = cmd;
+    // Queue mode can legitimately change after reconnecting to a running host;
+    // it must not make the same user message look like a new delivery.
+    const fingerprintValue = deliveryFingerprintForSend(payload.type === 'prompt'
+      ? { type: payload.type, message: payload.message, images: payload.images } : payload);
+    const fingerprint = typeof fingerprintValue === 'string' ? fingerprintValue : await fingerprintValue;
+    if (this.closedIntentionally) throw new DeliveryNotSentError('disposed');
+    if (sessionId !== this.snapshot?.sessionId || scope !== this.deliveryScope)
+      throw new DeliveryNotSentError('session_changed');
+    // An interrupted acknowledgement is not a rejection. Repeated clicks for
+    // that same payload ask about the original ID instead of submitting again.
+    for (const record of this.deliveryRecords.values()) {
+      if (record.sessionId === sessionId && record.fingerprint === fingerprint &&
+          (record.status.state === 'sending' || record.status.state === 'unknown')) {
+        this.delivery = record.status;
+        try {
+          const result = await this.checkDelivery(record.status.id);
+          return { ...result, deliveryAlreadySubmitted: true };
+        } catch (cause) {
+          if (cause instanceof DeliveryUnknownError) throw new DeliveryUnknownError(record.status.id, true);
+          throw cause;
+        }
+      }
+    }
+    if (this.unsettledDeliveries.length >= 64 || (this.deliveryScope && !canRecordDelivery(this.deliveryScope)))
+      throw new Error('Too many unconfirmed messages; check existing deliveries before sending more.');
+    // Use a browser-global random ID; request IDs such as c1 collide between
+    // tabs, new Conversation instances and page reloads.
+    // getRandomValues also works on a trusted local-network HTTP deployment,
+    // where randomUUID/subtle may be unavailable outside a secure context.
+    const id = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('');
+    const status: MessageDelivery = { id, type: cmd.type, state: 'sending', updatedAt: Date.now() };
+    this.deliveryRecords.set(id, { status, fingerprint, sessionId, scope });
+    this.delivery = status;
+    this.persistDeliveries();
+    // Keep unknown receipts available for safety; discard only settled entries.
+    if (this.deliveryRecords.size > 64) {
+      for (const [key, record] of this.deliveryRecords) {
+        if (this.deliveryRecords.size <= 64) break;
+        if (record.status.state === 'accepted' || record.status.state === 'failed') this.deliveryRecords.delete(key);
+      }
+    }
+    this.emit();
+    try {
+      const result = await this.sendRequest({ ...payload, deliveryId: id });
+      const record = this.deliveryRecords.get(id);
+      if (record) record.result = retainedDeliveryData(result);
+      this.updateDelivery(id, 'accepted');
+      return result;
+    } catch (cause) {
+      if (cause instanceof CommandOutcomeUnknownError) {
+        this.updateDelivery(id, 'unknown');
+        throw new DeliveryUnknownError(id);
+      }
+      this.updateDelivery(id, 'failed', cause instanceof Error ? cause.message : String(cause));
+      throw cause;
+    }
+  }
+
+  /** Only queries a receipt. Never resends a possibly accepted message. */
+  checkDelivery(id = this.delivery?.id): Promise<Record<string, unknown> | undefined> {
+    if (!id) return Promise.resolve(undefined);
+    const existing = this.deliveryChecks.get(id);
+    if (existing) return existing;
+    const record = this.deliveryRecords.get(id);
+    if (!record || record.sessionId !== this.snapshot?.sessionId)
+      return Promise.reject(new DeliveryUnknownError(id));
+    if (record.status.state === 'accepted') return Promise.resolve(record.result);
+    if (record.status.state === 'failed') return Promise.reject(new Error(record.status.error ?? 'command failed'));
+    const check = (async () => {
+      try {
+        const status = await this.sendRequest({ type: 'delivery_status', deliveryId: id });
+        // A delayed initial ACK may arrive while the lookup itself is running.
+        if (record.status.state === 'accepted') return record.result;
+        if (record.status.state === 'failed') throw new Error(record.status.error ?? 'command failed');
+        const result = status?.result as { ok?: boolean; error?: string; data?: Record<string, unknown> } | undefined;
+        if (status?.state === 'accepted' && result?.ok === true) {
+          record.result = retainedDeliveryData(result.data);
+          this.updateDelivery(id, 'accepted');
+          return result.data;
+        }
+        if (status?.state === 'failed' && result?.ok === false) {
+          this.updateDelivery(id, 'failed', result.error ?? 'command failed');
+          throw new Error(result.error ?? 'command failed');
+        }
+        this.updateDelivery(id, status?.state === 'sending' ? 'sending' : 'unknown');
+      } catch (cause) {
+        if (record.status.state === 'failed') throw cause;
+        this.updateDelivery(id, 'unknown');
+      }
+      throw new DeliveryUnknownError(id);
+    })().finally(() => this.deliveryChecks.delete(id));
+    this.deliveryChecks.set(id, check);
+    return check;
+  }
+
+  private recheckDelivery(): void {
+    this.syncDeliveryScope();
+    for (const delivery of this.unsettledDeliveries)
+      void this.checkDelivery(delivery.id).catch(() => {});
+  }
+
+  private sendRequest(cmd: ClientCommand): Promise<Record<string, unknown> | undefined> {
     const ws = this.ws;
-    if (!this.connected || !ws || ws.readyState !== WebSocket.OPEN)
+    if ((!this.connected && cmd.type !== 'abort') || !ws || ws.readyState !== WebSocket.OPEN)
       return Promise.reject(new Error("session is not ready"));
     const id = `c${++this.commandSeq}`;
-    const timeoutMs = cmd.type === "slash" ? 12 * 60_000 : COMMAND_TIMEOUT_MS;
+    if ('deliveryId' in cmd && cmd.type !== 'delivery_status') {
+      this.deliveryRequestIds.set(id, cmd.deliveryId!);
+      // Keep late ACK recovery bounded even if every request times out on an
+      // otherwise open socket. Receipts remain queryable after map eviction.
+      if (this.deliveryRequestIds.size > 256) this.deliveryRequestIds.delete(this.deliveryRequestIds.keys().next().value!);
+    }
+    const timeoutMs = cmd.type === 'delivery_status' ? 10_000
+      : cmd.type === "slash" ? 12 * 60_000 : COMMAND_TIMEOUT_MS;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(
-          new Error(
+          new CommandOutcomeUnknownError(
             `command ${cmd.type} timed out after ${timeoutMs}ms`,
           ),
         );
@@ -1328,6 +1645,7 @@ export class Conversation {
       } catch (cause) {
         clearTimeout(timer);
         this.pending.delete(id);
+        this.deliveryRequestIds.delete(id);
         reject(cause instanceof Error ? cause : new Error(String(cause)));
       }
     });

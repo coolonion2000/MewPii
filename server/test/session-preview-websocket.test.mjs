@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { appendFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -80,6 +80,80 @@ function collectStartup(url) {
   });
   return { ws, frames, ready };
 }
+
+test("external append during a later services reload survives the watcher settle window", { timeout: 25_000 }, async () => {
+  const temp = await mkdtemp(join(tmpdir(), "mewpii-reload-window-"));
+  const home = join(temp, "home");
+  const workspace = join(temp, "workspace");
+  const agentDir = join(home, ".pi", "agent");
+  const sessions = join(agentDir, "sessions", "project");
+  const extensions = join(agentDir, "extensions");
+  const file = join(sessions, "reload-window.jsonl");
+  const gateEntered = join(temp, "gate-entered");
+  const gateReleased = join(temp, "gate-released");
+  await Promise.all([workspace, sessions, extensions].map(path => mkdir(path, { recursive: true })));
+  await writeFile(file, sessionLines("reload-window", workspace, 2));
+  await writeFile(join(extensions, "gate.js"), `
+import { access, writeFile } from 'node:fs/promises';
+let calls = 0;
+export default async function () {
+  if (++calls !== 2) return;
+  await writeFile(${JSON.stringify(gateEntered)}, 'entered');
+  const deadline = Date.now() + 10000;
+  while (Date.now() < deadline) {
+    try { await access(${JSON.stringify(gateReleased)}); return; } catch {}
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  throw new Error('reload fixture gate was not released');
+}`);
+  const logs = [];
+  const child = spawn(process.execPath, ["server/dist/index.js", "--host", "127.0.0.1", "--port", "0"], {
+    cwd: root,
+    env: { ...process.env, HOME: home, PI_CODING_AGENT_DIR: agentDir, PII_PASSWORD: "", PII_WORKSPACE_ROOTS: temp },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  child.stdout.on("data", chunk => logs.push(String(chunk)));
+  child.stderr.on("data", chunk => logs.push(String(chunk)));
+  let startup;
+  try {
+    const port = await waitForServerPort(child, logs);
+    startup = collectStartup(`ws://127.0.0.1:${port}/ws?cwd=${encodeURIComponent(workspace)}&session=${encodeURIComponent(file)}`);
+    await startup.ready;
+    const last = JSON.parse((await readFile(file, "utf8")).trim().split("\n").at(-1));
+    await appendFile(file, `${JSON.stringify({
+      type: "message", id: "trigger-reload", parentId: last.id,
+      timestamp: new Date().toISOString(), message: { role: "user", content: "trigger file watcher" },
+    })}\n`);
+    const gateDeadline = Date.now() + 8_000;
+    while (true) {
+      if (await readFile(gateEntered, "utf8").catch(() => undefined)) break;
+      assert.ok(Date.now() < gateDeadline, "second services factory did not reach the gate");
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    // SessionManager.open() already ran, while service/extension discovery is gated.
+    await appendFile(file, [
+      { type: "message", id: "late-reload-message", parentId: "trigger-reload", timestamp: new Date().toISOString(),
+        message: { role: "assistant", content: [{ type: "text", text: "arrived during later services" }] } },
+      { type: "session_info", id: "late-reload-title", parentId: "late-reload-message", timestamp: new Date().toISOString(), name: "during-reload" },
+    ].map(entry => JSON.stringify(entry)).join("\n") + "\n");
+    await writeFile(gateReleased, "released");
+    const restoredDeadline = Date.now() + 6_000;
+    let restored;
+    while (!restored && Date.now() < restoredDeadline) {
+      restored = startup.frames.find(({ message }) =>
+        message.type === "snapshot" && !message.snapshot.initializing &&
+        message.snapshot.name === "during-reload" && message.snapshot.totalMessages === 4);
+      if (!restored) await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    assert.ok(restored, "later services reload lost the gated append or its title");
+    assert.equal(restored.message.snapshot.messages.some(message => message._entryId === "late-reload-message"), true);
+    assert.match(logs.join(""), /stage=restore_refresh[^\n]*mode="resume"/);
+  } finally {
+    startup?.ws.close();
+    if (child.exitCode === null) { child.kill("SIGTERM"); await once(child, "exit"); }
+    await rm(temp, { recursive: true, force: true });
+  }
+});
 
 test(
   "cold session preview reaches every viewer and preserves legacy readiness",
